@@ -395,7 +395,7 @@ main.grid .lap-grid { margin-bottom: auto; }
   position: fixed; inset: 0;
   background: rgba(4, 6, 10, 0.9);
   display: flex; align-items: center; justify-content: center;
-  z-index: 50;
+  z-index: 10; /* below the sticky header (20): nav must stay clickable */
 }
 .overlay.hidden { display: none; }
 .overlay .box {
