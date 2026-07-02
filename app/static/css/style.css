@@ -24,10 +24,14 @@ body {
   margin: 0;
   color: var(--text);
   font-family: "Segoe UI", system-ui, sans-serif;
+  /* four soft color fields leaning toward the center — cyan, violet, magenta, teal */
   background:
-    radial-gradient(1100px 500px at 12% -10%, rgba(0, 212, 255, 0.055), transparent 60%),
-    radial-gradient(900px 500px at 95% 108%, rgba(255, 61, 127, 0.045), transparent 60%),
+    radial-gradient(1000px 640px at 16% 6%, rgba(0, 212, 255, 0.075), transparent 62%),
+    radial-gradient(880px 600px at 88% 20%, rgba(124, 92, 255, 0.06), transparent 60%),
+    radial-gradient(1000px 660px at 82% 96%, rgba(255, 61, 127, 0.065), transparent 62%),
+    radial-gradient(860px 580px at 8% 84%, rgba(47, 230, 168, 0.05), transparent 60%),
     var(--bg);
+  background-attachment: fixed;
   min-height: 100vh;
 }
 
@@ -171,6 +175,15 @@ main.grid {
 
 canvas { display: block; }
 
+/* live page: panels are flex columns so gauges center in the leftover space */
+main.grid .panel { display: flex; flex-direction: column; }
+main.grid .panel h2 { flex: none; }
+main.grid .cluster-flex { flex: 1; }
+main.grid .inputs-flex { flex: 1; }
+#friction, #grip { margin: auto; }
+main.grid #delta { margin-top: auto; }
+main.grid .lap-grid { margin-bottom: auto; }
+
 /* ---------- cluster (rpm + speed) ---------- */
 
 .cluster { position: relative; padding-top: 10px; }
@@ -179,7 +192,7 @@ canvas { display: block; }
   display: flex;
   justify-content: center;
   gap: 9px;
-  margin: 2px 0 6px;
+  margin: 0 0 12px;
 }
 #shift-lights i {
   width: 13px; height: 13px;
@@ -306,7 +319,7 @@ canvas { display: block; }
 .inputs-flex {
   display: flex;
   justify-content: space-evenly;
-  align-items: flex-end;
+  align-items: center;
   gap: 14px;
   padding: 6px 4px 2px;
 }
@@ -431,6 +444,78 @@ canvas { display: block; }
   0% { transform: scale(0.6); opacity: 1; }
   100% { transform: scale(2.4); opacity: 0; }
 }
+
+/* ---------- modal dialogs (rename / confirm / notice) ---------- */
+
+.modal-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(4, 6, 10, 0.72);
+  backdrop-filter: blur(3px);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+  animation: fade-in 0.12s ease-out;
+}
+@keyframes fade-in { from { opacity: 0; } }
+
+.modal {
+  background: linear-gradient(165deg, var(--panel-hi), var(--panel-lo));
+  border: 1px solid var(--panel-edge);
+  border-radius: 14px;
+  padding: 20px 22px;
+  width: min(440px, calc(100vw - 40px));
+  box-shadow: 0 14px 60px rgba(0, 0, 0, 0.6);
+  animation: modal-in 0.15s ease-out;
+}
+@keyframes modal-in { from { opacity: 0; transform: translateY(10px) scale(0.97); } }
+
+.modal h3 {
+  margin: 0 0 10px;
+  font-family: var(--display);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  display: flex; align-items: center; gap: 8px;
+}
+.modal h3::before {
+  content: "";
+  width: 14px; height: 3px;
+  background: linear-gradient(90deg, var(--accent), transparent);
+  border-radius: 2px;
+  transform: skewX(-18deg);
+  flex: none;
+}
+.modal.danger h3::before { background: linear-gradient(90deg, var(--bad), transparent); }
+
+.modal p { margin: 0 0 14px; color: var(--muted); line-height: 1.5; font-size: 0.92rem; }
+
+.modal input {
+  width: 100%;
+  background: #0a0e14;
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  padding: 9px 12px;
+  margin-bottom: 16px;
+}
+.modal input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.12);
+}
+
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.modal-actions button {
+  padding: 7px 16px;
+  font-family: var(--display);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.modal-actions .primary { background: var(--accent); border-color: var(--accent); color: #001018; }
+.modal-actions .primary:hover { filter: brightness(1.12); }
+.modal-actions .danger-solid { background: var(--bad); border-color: var(--bad); color: #1a0505; }
+.modal-actions .danger-solid:hover { filter: brightness(1.1); border-color: var(--bad); color: #1a0505; }
 
 /* ---------- badges (shared) ---------- */
 

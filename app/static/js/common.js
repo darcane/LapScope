@@ -52,3 +52,91 @@ const DRIVETRAINS = ["FWD", "RWD", "AWD"];
 function dtBadge(dt) {
   return `<span class="dt-badge dt-${dt}">${dt}</span>`;
 }
+
+/* ---------- themed modal dialogs (replace window.prompt / confirm / alert) ---------- */
+
+function showModal({ title, message = "", value = null, placeholder = "",
+                     okText = "OK", cancelText = "Cancel",
+                     danger = false, showCancel = true }) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    const box = document.createElement("div");
+    box.className = "modal" + (danger ? " danger" : "");
+    box.setAttribute("role", "dialog");
+    box.setAttribute("aria-modal", "true");
+    backdrop.appendChild(box);
+
+    const h = document.createElement("h3");
+    h.textContent = title;
+    box.appendChild(h);
+
+    if (message) {
+      const p = document.createElement("p");
+      p.textContent = message;   // plain text: user-named sessions render literally
+      box.appendChild(p);
+    }
+
+    let inputEl = null;
+    if (value !== null) {
+      inputEl = document.createElement("input");
+      inputEl.type = "text";
+      inputEl.value = value;
+      inputEl.placeholder = placeholder;
+      inputEl.spellcheck = false;
+      box.appendChild(inputEl);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    box.appendChild(actions);
+
+    const done = (result) => {
+      document.removeEventListener("keydown", onKey, true);
+      backdrop.remove();
+      resolve(result);
+    };
+    if (showCancel) {
+      const cancel = document.createElement("button");
+      cancel.className = "modal-cancel";
+      cancel.textContent = cancelText;
+      cancel.onclick = () => done(null);
+      actions.appendChild(cancel);
+    }
+    const ok = document.createElement("button");
+    ok.className = "modal-ok " + (danger ? "danger-solid" : "primary");
+    ok.textContent = okText;
+    ok.onclick = () => done(inputEl ? inputEl.value : true);
+    actions.appendChild(ok);
+
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        done(null);
+      } else if (e.key === "Enter" && inputEl && document.activeElement === inputEl) {
+        e.preventDefault();
+        done(inputEl.value);
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    backdrop.addEventListener("pointerdown", (e) => { if (e.target === backdrop) done(null); });
+
+    document.body.appendChild(backdrop);
+    (inputEl || ok).focus();
+    if (inputEl) inputEl.select();
+  });
+}
+
+/* resolves to the entered string, or null when cancelled */
+function uiPrompt(title, { value = "", message = "", placeholder = "", okText = "Save" } = {}) {
+  return showModal({ title, message, value, placeholder, okText });
+}
+
+/* resolves to true, or null when cancelled */
+function uiConfirm(title, message, { okText = "Confirm", danger = false } = {}) {
+  return showModal({ title, message, okText, danger });
+}
+
+function uiAlert(title, message) {
+  return showModal({ title, message, okText: "OK", showCancel: false });
+}

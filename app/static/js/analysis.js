@@ -157,7 +157,11 @@ async function pickLap(lapId, slot) {
 }
 
 async function renameSession(session) {
-  const name = prompt("Session name:", session.name || session.display_name);
+  const name = await uiPrompt("Rename session", {
+    value: session.name || "",
+    placeholder: displayName(session),
+    message: "Shown in the session list on the left.",
+  });
   if (name === null || !name.trim()) return;
   await fetch(`/api/sessions/${session.id}`, {
     method: "PATCH",
@@ -169,11 +173,14 @@ async function renameSession(session) {
 
 async function renameRoute(session) {
   if (!session.route_id) {
-    alert("No route identified for this session yet — routes are fingerprinted from the first completed lap.");
+    await uiAlert("No route identified yet",
+      "Routes are fingerprinted from the first completed lap — finish a lap on this route first.");
     return;
   }
-  const name = prompt("Route / circuit name (applies to every session on this route):",
-    session.route_name || "");
+  const name = await uiPrompt("Name route / circuit", {
+    value: session.route_name || "",
+    message: "Applies to every session recorded on this route.",
+  });
   if (name === null || !name.trim()) return;
   await fetch(`/api/routes/${session.route_id}`, {
     method: "PATCH",
@@ -184,7 +191,10 @@ async function renameRoute(session) {
 }
 
 async function renameCar(session) {
-  const name = prompt("Car name (applies everywhere this car appears):", session.car_name);
+  const name = await uiPrompt("Name car", {
+    value: session.car_name || "",
+    message: "Applies everywhere this car appears.",
+  });
   if (name === null || !name.trim()) return;
   await fetch(`/api/cars/${session.car_ordinal}`, {
     method: "PATCH",
@@ -195,9 +205,15 @@ async function renameCar(session) {
 }
 
 async function deleteSession(session) {
-  if (!confirm(`Delete "${session.name || session.display_name}" and all its telemetry?`)) return;
+  const sure = await uiConfirm("Delete session",
+    `Delete "${displayName(session)}" and all of its telemetry? This cannot be undone.`,
+    { okText: "Delete", danger: true });
+  if (!sure) return;
   const res = await fetch(`/api/sessions/${session.id}`, { method: "DELETE" });
-  if (!res.ok) { alert((await res.json()).detail || "delete failed"); return; }
+  if (!res.ok) {
+    await uiAlert("Delete failed", (await res.json()).detail || "delete failed");
+    return;
+  }
   state.sessionId = null;
   $("#detail").innerHTML = `<div class="empty-hint">Session deleted.</div>`;
   loadSessions();

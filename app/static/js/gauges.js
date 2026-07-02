@@ -39,7 +39,11 @@ function glow(ctx, color, blur, fn) {
 function drawRpm(g, rpm, maxRpm, idleRpm, gear) {
   const { ctx, w, h } = g;
   ctx.clearRect(0, 0, w, h);
-  const cx = w / 2, cy = h * 0.6, r = Math.min(w, h * 1.5) / 2 - 12;
+  // arc spans 135°..405°; keep the whole stroke inside the canvas so the top
+  // of the dial is never clipped under the shift lights (lowest point: cy + r·sin45°)
+  const pad = 13;
+  const r = Math.min(w / 2 - pad, (h - 2 * pad) / (1 + Math.SQRT1_2));
+  const cx = w / 2, cy = pad + r;
   const a0 = Math.PI * 0.75, a1 = Math.PI * 2.25;
   const max = maxRpm > 0 ? maxRpm : 8000;
   const frac = Math.max(0, Math.min(1, rpm / max));

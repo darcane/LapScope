@@ -1,6 +1,6 @@
 /* Live dashboard: WebSocket feed -> canvas gauges at display refresh rate. */
 
-const rpmG = initCanvas("rpm", 290, 215);
+const rpmG = initCanvas("rpm", 290, 250);
 const fricG = initCanvas("friction", 250, 240);
 const gripG = initCanvas("grip", 230, 240);
 let stripG = initCanvas("strip", document.getElementById("strip").parentElement.clientWidth - 34, 170);
