@@ -91,7 +91,18 @@ Store (UWP) builds of games can be blocked from sending to `127.0.0.1`. In order
 2. Use your PC's **LAN IP** instead (find it with `ipconfig`, e.g. `192.168.1.20`),
    keeping port `9999`. Docker publishes the port on all interfaces, and this
    bypasses UWP loopback isolation.
-3. Last resort — add a one-time loopback exemption (admin PowerShell):
+3. Check that nothing else on the host has stolen UDP 9999 — another app can grab
+   the port while the container is being recreated, after which Docker's proxy
+   silently binds only IPv6 and `/api/status` shows 0 packets forever:
+
+   ```powershell
+   Get-NetUDPEndpoint -LocalPort 9999 | Format-Table LocalAddress, OwningProcess
+   ```
+
+   If a process other than `com.docker.backend` owns `0.0.0.0:9999`, close it (or
+   move ForzaCalibrator to a free port), then `docker compose down && docker compose up -d`.
+
+4. Last resort — add a one-time loopback exemption (admin PowerShell):
 
    ```powershell
    Get-AppxPackage *Forza* | Select-Object PackageFamilyName
