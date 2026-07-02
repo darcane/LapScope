@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from ..recorder.reprocess import reprocess_session
 from ..telemetry.packet import parse
 
 log = logging.getLogger("forzacalibrator.api")
@@ -117,6 +118,19 @@ def patch_session(session_id: int, body: SessionPatch, request: Request):
             raise HTTPException(400, f"track_type must be one of {sorted(TRACK_TYPES)}")
         store.set_session_track_type(session_id, body.track_type)
     return {"ok": True}
+
+
+@router.post("/sessions/{session_id}/reprocess")
+async def reprocess(session_id: int, request: Request):
+    """Rebuild the session's laps from its stored frames with the current
+    detection logic. async on purpose: the replay writes laps through the
+    Store's event-loop connection."""
+    store = request.app.state.store
+    if store.get_session(session_id) is None:
+        raise HTTPException(404, "session not found")
+    if request.app.state.tracker.session_id == session_id:
+        raise HTTPException(409, "session is currently recording")
+    return {"ok": True, "laps": reprocess_session(store, session_id)}
 
 
 @router.delete("/sessions/{session_id}")

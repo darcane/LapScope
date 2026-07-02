@@ -28,6 +28,12 @@ receives the game's official "Data Out" UDP stream, and serves a web UI with:
   while `LapNumber` stands still (final lap of a circuit race), and the race clock
   freezing during the finish cinematic. Sprints, drags, street races, and other
   point-to-point events (no laps at all) are captured as a single timed run.
+- **World Time Attack** — WTA broadcasts *no lap fields at all* (verified on a real
+  capture: LapNumber, CurrentLap, LastLap and BestLap stay 0 the whole event), so
+  laps are detected geometrically: the launch point becomes the anchor and a lap
+  completes on each same-direction return to it. The run finish is spotted by the
+  game hard-resetting `DistanceTraveled`. Sessions recorded *before* this support
+  existed can be recovered with the **Reprocess** button.
 - **Routes** — the game never broadcasts route names, so circuits are fingerprinted
   from the lap start position + lap length. Name a route once ("Name route" button)
   and every past and future session on it picks the name up automatically. Free-roam
@@ -100,8 +106,8 @@ Check what the server sees at any time: **http://localhost:8000/api/status**
 
 Sessions without a single completed lap are normally discarded (that's what keeps
 free-roam cruising out of the list) — but if the game signals some event type in a
-way the recorder doesn't recognize yet (reported for **World Time Attack**), those
-sessions get discarded too. Two tools to pin it down:
+way the recorder doesn't recognize yet, those sessions get discarded too. (World
+Time Attack was found and fixed exactly this way.) Two tools to pin it down:
 
 1. Every discard logs a one-line signal summary — after driving the event, look for
    it in `docker compose logs`:
@@ -120,6 +126,9 @@ sessions get discarded too. Two tools to pin it down:
    The session then shows up on the Analysis page (0 laps, but the driven line and
    an "incomplete" run are there) and the raw data is preserved for adding proper
    support. Unset the variable (or set `0`) and `docker compose up -d` again when done.
+
+Once support lands, the **Reprocess** button on the session rebuilds its laps from
+the stored frames — recordings are lossless, so nothing has to be redriven.
 
 ## Configuration
 

@@ -141,7 +141,7 @@ function render() {
   $("steer-ind").style.left = `calc(${(50 + st * 0.44).toFixed(1)}% - 9px)`;
   $("gear-mini").textContent = f.gear === 0 ? "R" : f.gear === 11 ? "N" : f.gear;
 
-  $("lap-cur").textContent = fmtLap(f.current_lap);
+  $("lap-cur").textContent = fmtLap(f.current_lap || f.lap_elapsed);
   $("lap-last").textContent = fmtLap(f.last_lap);
   $("lap-best").textContent = fmtLap(f.session_best ?? f.best_lap);
   $("lap-no").textContent = `${f.lap_number + 1} / ${f.race_position || "–"}`;

@@ -94,6 +94,7 @@ async function selectSession(id) {
   $("#btn-rename").onclick = () => renameSession(s);
   $("#btn-route").onclick = () => renameRoute(s);
   $("#btn-car").onclick = () => renameCar(s);
+  $("#btn-reprocess").onclick = () => reprocessSession(s);
   $("#btn-delete").onclick = () => deleteSession(s);
   $("#color-mode").value = state.colorMode;
   $("#color-mode").onchange = (e) => { state.colorMode = e.target.value; drawMap(); };
@@ -202,6 +203,24 @@ async function renameCar(session) {
     body: JSON.stringify({ name: name.trim() }),
   });
   selectSession(session.id);
+}
+
+async function reprocessSession(session) {
+  const sure = await uiConfirm("Reprocess session",
+    "Re-run lap detection over this session's stored telemetry? The lap list "
+    + "is rebuilt with the current detection logic (recovers laps from events "
+    + "recorded before a fix, e.g. World Time Attack).",
+    { okText: "Reprocess" });
+  if (!sure) return;
+  const res = await fetch(`/api/sessions/${session.id}/reprocess`, { method: "POST" });
+  if (!res.ok) {
+    await uiAlert("Reprocess failed", (await res.json()).detail || "failed");
+    return;
+  }
+  const { laps } = await res.json();
+  await uiAlert("Reprocess complete", `${laps} completed lap${laps === 1 ? "" : "s"} found.`);
+  selectSession(session.id);
+  loadSessions();
 }
 
 async function deleteSession(session) {

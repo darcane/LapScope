@@ -61,6 +61,9 @@ MIGRATIONS = (
     "ALTER TABLE sessions ADD COLUMN route_id INTEGER",
     "ALTER TABLE laps ADD COLUMN flags TEXT",  # "rewind,contact" etc.
     "ALTER TABLE sessions ADD COLUMN track_type TEXT",  # road/street/dirt/cross/drag
+    # kept=1 exempts a session from the no-completed-laps cleanup
+    # (FC_KEEP_DISCARDED captures, reprocessed sessions)
+    "ALTER TABLE sessions ADD COLUMN kept INTEGER NOT NULL DEFAULT 0",
 )
 
 # route fingerprint tolerances: same start point within this radius and a
@@ -108,6 +111,7 @@ class Store:
         cur = self.db.execute(
             "DELETE FROM sessions WHERE id NOT IN"
             " (SELECT DISTINCT session_id FROM laps WHERE lap_time IS NOT NULL)"
+            " AND COALESCE(kept, 0) = 0"
         )
         self.db.commit()
         return cur.rowcount
@@ -167,6 +171,20 @@ class Store:
             "UPDATE laps SET ended_t = ?, lap_time = ?, flags = ? WHERE id = ?",
             (ended_t, lap_time, flags, lap_id),
         )
+        self.db.commit()
+
+    def delete_lap(self, lap_id: int) -> None:
+        """Drop an open lap that turned out not to be one (post-finish coast)."""
+        self.db.execute("DELETE FROM laps WHERE id = ?", (lap_id,))
+        self.db.commit()
+
+    def delete_session_laps(self, session_id: int) -> None:
+        self.db.execute("DELETE FROM laps WHERE session_id = ?", (session_id,))
+        self.db.commit()
+
+    def mark_session_kept(self, session_id: int) -> None:
+        """Exempt from the no-completed-laps cleanup at startup."""
+        self.db.execute("UPDATE sessions SET kept = 1 WHERE id = ?", (session_id,))
         self.db.commit()
 
     def match_or_create_route(self, start_x: float, start_z: float,
@@ -273,6 +291,13 @@ class Store:
         with self.reader() as conn:
             row = conn.execute("SELECT * FROM laps WHERE id = ?", (lap_id,)).fetchone()
         return dict(row) if row else None
+
+    def session_frames(self, session_id: int) -> list[tuple[float, bytes]]:
+        with self.reader() as conn:
+            rows = conn.execute(
+                "SELECT t, raw FROM frames WHERE session_id = ? ORDER BY t",
+                (session_id,)).fetchall()
+        return [(r["t"], r["raw"]) for r in rows]
 
     def lap_frames(self, lap: dict) -> list[tuple[float, bytes]]:
         end = lap["ended_t"] if lap["ended_t"] is not None else float("1e18")

@@ -261,6 +261,71 @@ class Sim:
         print(f"  finish: run time {t:6.3f}s")
         self._finish_freeze(t, 0, 0.0, 0.0)
 
+    def wta(self, laps: int) -> None:
+        """World Time Attack (mirrors a real capture): every lap field stays
+        0 for the whole event; the race clock counts from event load through
+        a teleport to the track and a grid hold with DistanceTraveled pinned
+        at 0; at the finish the game auto-stops the car and hard-resets
+        DistanceTraveled while the clock keeps counting."""
+        print(f"wta ({laps} laps): no lap fields at all - geometric detection")
+        dead = dict(lap_no=0, cur_lap=0.0, last=0.0, best=0.0)
+        t = 0.0
+        # event load: parked far from the track, clock already counting
+        for _ in range(int(6.0 / self.dt)):
+            t += self.dt
+            self._send_parked(t, -5000.0, -4000.0)
+        # teleport to the grid, hold with the distance counter pinned at 0
+        self.s, self.v, self.total_dist = 0.0, 0.0, 0.0
+        gx, _, _, _ = track_point(0.0)
+        for _ in range(int(5.0 / self.dt)):
+            t += self.dt
+            self._send_parked(t, gx, -RADIUS)
+        print(f"  launch at rt={t:.1f}s")
+        self.v = 8.0
+        self.pace = random.uniform(0.97, 1.0)
+        lap_start, lap_no = t, 0
+        while lap_no < laps:
+            self._pace_tick()
+            t += self.dt
+            if self.s >= PERIMETER:
+                self.s -= PERIMETER
+                lap_no += 1
+                print(f"  lap {lap_no} done: {t - lap_start:6.3f}s (shown in-game only)")
+                lap_start = t
+                self.pace = random.uniform(0.955, 1.0)
+            self._send(race_time=t, **dead)
+        while self.v > 0.5:  # auto-stop after the line
+            t += self.dt
+            self.v = max(0.0, self.v - 6.0 * self.dt)
+            self.s += self.v * self.dt
+            self.total_dist += self.v * self.dt
+            self.lon_a = 0.0
+            self._send(race_time=t, **dead)
+        print(f"  finished: distance resets, clock keeps counting (rt={t:.1f}s)")
+        self.total_dist = 0.0
+        for _ in range(int(4.0 / self.dt)):
+            t += self.dt
+            self._send(race_time=t, **dead)
+
+    def _send_parked(self, race_time: float, x: float, z: float) -> None:
+        """Stationary frame at an explicit position with all lap fields dead."""
+        f = self.f
+        f.update(
+            timestamp_ms=int((time.monotonic() - self.t0) * 1000) & 0xFFFFFFFF,
+            current_engine_rpm=IDLE_RPM, accel_x=0.0, accel_z=0.0,
+            vel_x=0.0, vel_z=0.0, ang_vel_y=0.0,
+            pos_x=x, pos_y=105.0, pos_z=z,
+            speed=0.0, power=0.0, torque=0.0, boost=0.0,
+            distance_traveled=0.0, best_lap=0.0, last_lap=0.0,
+            current_lap=0.0, current_race_time=race_time, lap_number=0,
+            accel=0, brake=0, steer=0, gear=1,
+        )
+        self.sock.sendto(pack(f), self.target)
+        self.sent += 1
+        lag = self.t0 + self.sent * self.dt - time.monotonic()
+        if lag > 0:
+            time.sleep(lag)
+
     def _finish_freeze(self, t: float, lap_no: int, last: float, best: float,
                        seconds: float = 3.0) -> None:
         """Post-finish cinematic: race clock frozen, car coasting down."""
@@ -297,6 +362,9 @@ def main() -> None:
                          " does not increment at the final line, like the game)")
     ap.add_argument("--sprint", type=float, default=0.0, metavar="SECONDS",
                     help="run a point-to-point event (no lap counters at all)")
+    ap.add_argument("--wta", type=int, default=0, metavar="LAPS",
+                    help="run a World Time Attack: all lap fields dead, laps"
+                         " only detectable geometrically")
     ap.add_argument("--jumps", action="store_true",
                     help="add sharp elevation spikes (cross-country jumps)")
     args = ap.parse_args()
@@ -309,7 +377,9 @@ def main() -> None:
           f"{' [wet]' if args.wet else ''}{' [jumps]' if args.jumps else ''}")
     if args.freeroam > 0:
         sim.freeroam(args.freeroam)
-    if args.sprint > 0:
+    if args.wta > 0:
+        sim.wta(args.wta)
+    elif args.sprint > 0:
         sim.sprint(args.sprint)
     elif args.race > 0:
         sim.event(args.duration, f"race ({args.race} laps)",

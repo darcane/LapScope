@@ -70,6 +70,23 @@ All the rules exist because some real behavior broke a naive version:
   frozen clock. Abandoned events (no finish signal) are discarded.
 - Point-to-point events may never start `CurrentLap`; lap traces and the live
   delta fall back to race-time-elapsed-since-lap-open.
+- **World Time Attack broadcasts no lap fields at all** (real capture, 2026-07-02:
+  LapNumber/CurrentLap/LastLap/BestLap all 0 for the whole event; the clock counts
+  from event *load*, through a teleport + grid hold with `DistanceTraveled` pinned
+  at 0). Laps are detected geometrically (`_wta_logic`): launch = distance starts
+  growing → anchor + lap re-based there; a lap completes at the closest approach
+  to the anchor after being ≥120 m away, traveling within ~75° of the launch
+  heading, having covered ≥500 dist-units. The run finish is `DistanceTraveled`
+  hard-resetting (~18000 → 0) while the clock keeps counting; the post-finish
+  coast "lap" is deleted. Caveat: a free-roam session that starts at
+  `DistanceTraveled` 0 (fresh boot) and loops back over its start point can
+  produce a geometric lap — accepted trade-off.
+- `POST /api/sessions/{id}/reprocess` (UI: Reprocess button) replays stored
+  frames through a fresh `SessionTracker` via `_ReplayStore` (laps/routes real,
+  session row untouched, discard suppressed) — recovers laps recorded before a
+  detection fix. Must stay `async def` (writes on the event-loop connection).
+- `sessions.kept = 1` exempts a session from the startup no-laps cleanup
+  (FC_KEEP_DISCARDED captures and reprocessed sessions set it).
 - Dirty-lap inference: rewind = lap clock below its high-water mark while
   distance doesn't grow (per-frame comparison misses gradual scrubs — that bug
   shipped once); contact = ground-plane |accel| ≥ 45 m/s². Stored as
@@ -87,8 +104,9 @@ All the rules exist because some real behavior broke a naive version:
   and the `#track-select` options (analysis.html).
 
 When changing `_lap_logic`, walk every branch against: circuit race with finish,
-Rivals (endless laps), free-roam cruise, free-roam time-attack, sprint, rewind
-mid-lap, rewind across the start line, server joining mid-lap, event restart.
+Rivals (endless laps), free-roam cruise, free-roam time-attack, sprint, World
+Time Attack (no lap fields), rewind mid-lap, rewind across the start line,
+server joining mid-lap, event restart.
 
 ## Frontend conventions
 
@@ -111,4 +129,5 @@ mid-lap, rewind across the start line, server joining mid-lap, event restart.
 | Dirty laps | `--duration 180 --dirty` | lap 2 `contact`, lap 3 `rewind`, charts deduped |
 | Race finish | `--race 3 --duration 200` | 3 laps all timed (last via finish detection), no phantom open lap |
 | Point-to-point | `--sprint 75` | session kept, single run ≈75 s, route assigned |
+| World Time Attack | `--wta 3` | launch + 3 geometric laps + distance-reset finish, no post-finish phantom lap |
 | Jumps in 3D | `--sprint 75 --jumps` (or any + `--jumps`) | 3D map scale sane, spikes capped |

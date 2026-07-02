@@ -29,6 +29,18 @@ Point-to-point events may never start the CurrentLap clock, so the lap
 trace (and live delta) falls back to CurrentRaceTime elapsed since the lap
 opened whenever CurrentLap sits at zero.
 
+World Time Attack broadcasts NO lap information at all (verified on a real
+capture): LapNumber, CurrentLap, LastLap and BestLap stay 0 for the whole
+event; only CurrentRaceTime counts (from event load, through a teleport to
+the track and a grid hold with DistanceTraveled pinned at 0), and at the
+finish the game auto-stops the car and hard-resets DistanceTraveled while
+the clock keeps counting. Laps are therefore detected geometrically: the
+launch point (where DistanceTraveled starts growing) is the anchor, and a
+lap completes at the closest approach to the anchor after driving away,
+provided the car is traveling roughly the same direction it launched in
+and has covered enough distance. The DistanceTraveled collapse is the
+run-finished signal.
+
 Sessions that end without a single completed lap or run (free-roam
 cruising, menu blips, abandoned events) are discarded entirely. Every
 discard logs a one-line signal summary so event types the segmentation
@@ -68,6 +80,13 @@ RT_FREEZE_SECONDS = 1.5       # frozen race clock for this long = event finished
 FINISH_MIN_RT = 5.0           # ignore freezes before the clock really ran
 PTP_MIN_RUN_TIME = 10.0       # shortest believable point-to-point run
 
+# geometric lap detection for events with no lap fields (World Time Attack)
+WTA_ARM_DIST = 120.0          # m away from the launch anchor before a crossing can count
+WTA_CROSS_DIST = 60.0         # m from the anchor that counts as "at the line"
+WTA_MIN_LAP_DIST = 500.0      # DistanceTraveled units a lap must cover before crossing
+WTA_HEADING_COS = 0.25        # crossing direction within ~75 deg of the launch heading
+WTA_DIST_COLLAPSE = 1000.0    # DistanceTraveled dropping this much = run finished
+
 # keep sessions that would otherwise be discarded (no completed laps) - for
 # capturing event types the segmentation doesn't recognize yet
 KEEP_DISCARDED = os.environ.get("FC_KEEP_DISCARDED", "0").lower() not in ("", "0", "false")
@@ -102,8 +121,15 @@ class SessionTracker:
         self._lap_flags: set[str] = set()
         self._first_rt: float | None = None
         self._event_finished = False
+        self._finish_rt: float | None = None
         self._rt_freeze_since: float | None = None
         self._completed_laps = 0
+        self._lap_fields_dead = True
+        self._wta_anchor: tuple[float, float] | None = None
+        self._wta_heading: tuple[float, float] | None = None
+        self._wta_armed = False
+        self._wta_inside = False
+        self._wta_best: tuple | None = None  # (d, t, rt, dist, x, z) closest pass
         self._puddle_frames = 0
         self._route_assigned = False
         self._session_start_t = 0.0
@@ -143,6 +169,7 @@ class SessionTracker:
             elif (not self._event_finished
                   and t - self._rt_freeze_since >= RT_FREEZE_SECONDS):
                 self._event_finished = True
+                self._finish_rt = rt
                 log.info("Session %d: race timer frozen at %.1fs - event finished",
                          self.session_id, rt)
         else:
@@ -165,8 +192,15 @@ class SessionTracker:
         if t - self._last_flush >= FLUSH_INTERVAL:
             self.flush()
             self._last_flush = t
+        # live lap clock for events that never start CurrentLap (WTA/sprint)
+        lap_elapsed = None
+        if (self._lap_id is not None and frame["current_lap"] <= 0.001
+                and self._lap_open_rt is not None):
+            e = frame["current_race_time"] - self._lap_open_rt
+            if e > 0:
+                lap_elapsed = e
         return {"session_id": self.session_id, "delta": delta,
-                "session_best": self.best_lap_time}
+                "session_best": self.best_lap_time, "lap_elapsed": lap_elapsed}
 
     def tick(self, now: float) -> None:
         """Watchdog: close the session if the game simply stopped sending."""
@@ -196,8 +230,15 @@ class SessionTracker:
         self._prev_cur_lap = None
         self._first_rt = frame["current_race_time"]
         self._event_finished = False
+        self._finish_rt = None
         self._rt_freeze_since = None
         self._completed_laps = 0
+        self._lap_fields_dead = True
+        self._wta_anchor = None
+        self._wta_heading = None
+        self._wta_armed = False
+        self._wta_inside = False
+        self._wta_best = None
         self._puddle_frames = 0
         self._route_assigned = False
         self._session_start_t = t
@@ -239,6 +280,7 @@ class SessionTracker:
             if KEEP_DISCARDED:
                 self.store.end_session(self.session_id, end_t, self._frame_count,
                                        conditions=None)
+                self.store.mark_session_kept(self.session_id)
                 log.info("Session %d KEPT with no completed laps "
                          "(FC_KEEP_DISCARDED=1) | diag: %s", self.session_id, diag)
             else:
@@ -265,19 +307,28 @@ class SessionTracker:
         self._lap_open_last_lap = None
         self._first_rt = None
         self._event_finished = False
+        self._finish_rt = None
         self._rt_freeze_since = None
+        self._lap_fields_dead = True
+        self._wta_anchor = None
+        self._wta_heading = None
+        self._wta_armed = False
+        self._wta_inside = False
+        self._wta_best = None
         self._lap_flags = set()
 
     def _point_to_point_run_time(self) -> float | None:
         """Run time for an open lap in a session that ended without ever
         counting a lap: a finished point-to-point event (sprint, drag,
-        street...) is one run, timed by the (frozen) race clock. Abandoned
+        street...) is one run, timed from launch to the finish signal (the
+        frozen race clock, or the DistanceTraveled collapse). Abandoned
         events don't qualify - no finish was seen."""
         if (self._completed_laps == 0 and self._event_finished
                 and self._first_rt is not None and self._first_rt < 5.0
-                and self._prev_race_time is not None
-                and self._prev_race_time > PTP_MIN_RUN_TIME):
-            return self._prev_race_time
+                and self._finish_rt is not None):
+            run = self._finish_rt - (self._lap_open_rt or 0.0)
+            if run > PTP_MIN_RUN_TIME:
+                return run
         return None
 
     def _lap_logic(self, t: float, frame: dict) -> float | None:
@@ -288,6 +339,31 @@ class SessionTracker:
         last = frame["last_lap"]
         self._diag_max_ln = max(self._diag_max_ln, ln)
         self._diag_max_cur = max(self._diag_max_cur, cur)
+
+        if self._lap_fields_dead and (ln > 0 or cur > 0.001 or last > 0.001):
+            self._lap_fields_dead = False  # normal lap telemetry; forever
+
+        # WTA / point-to-point finish: the game hard-resets DistanceTraveled
+        # when the run completes while the clock keeps counting through the
+        # results screen (verified on a real World Time Attack capture)
+        if (self._lap_fields_dead and self._prev_dist is not None
+                and rt > FINISH_MIN_RT
+                and dist < self._prev_dist - WTA_DIST_COLLAPSE):
+            if not self._event_finished:
+                self._event_finished = True
+                self._finish_rt = rt
+                log.info("Session %d: distance counter reset (%.0f -> %.0f)"
+                         " - run finished", self.session_id, self._prev_dist, dist)
+            if self._completed_laps > 0 and self._lap_id is not None:
+                # crossings already timed the laps; the open remainder is the
+                # post-finish coast, not a lap
+                self._finalize_wta_crossing(frame)
+                if self._lap_id is not None:
+                    self.store.delete_lap(self._lap_id)
+                    self._lap_id = None
+            self._prev_dist = dist
+            self._prev_cur_lap = cur
+            return None
 
         # point-to-point events may never start the lap clock; fall back to
         # race time elapsed since the lap opened
@@ -361,6 +437,9 @@ class SessionTracker:
             self.store.restart_lap(self._lap_id, t, dist)
         self._prev_cur_lap = cur
 
+        if self._lap_fields_dead and self._lap_id is not None:
+            self._wta_logic(t, frame, rt, dist)
+
         if self._lap_id is None:
             return None  # event finished; coasting frames belong to no lap
         elapsed = lap_elapsed()  # _open_lap may have re-based the fallback
@@ -369,6 +448,71 @@ class SessionTracker:
             self._cur_d.append(lap_dist)
             self._cur_t.append(elapsed)
         return self._delta(lap_dist, elapsed)
+
+    def _wta_logic(self, t: float, frame: dict, rt: float, dist: float) -> None:
+        """Geometric lap detection for events that broadcast no lap fields at
+        all (World Time Attack): a lap is a return to the launch point."""
+        if self._wta_anchor is None:
+            if dist < 1.0:
+                # grid hold / event load: distance pinned at zero until GO
+                self._lap_start_dist = dist
+                return
+            if self._lap_start_dist < 1.0:
+                # launch: distance starts counting - re-anchor the open lap
+                # here so lap 1 isn't timed from the loading screen
+                self._wta_anchor = (frame["pos_x"], frame["pos_z"])
+                self._lap_opened_t = t
+                self._lap_start_dist = dist
+                self._lap_start_pos = self._wta_anchor
+                self._cur_d, self._cur_t = [], []
+                self._lap_max_elapsed = 0.0
+                self._lap_open_rt = rt
+                self.store.restart_lap(self._lap_id, t, dist)
+                log.info("Session %d: launch detected (race clock at %.1fs)",
+                         self.session_id, rt)
+            return
+        if self._wta_heading is None:
+            if frame["speed"] > 10.0:
+                n = math.hypot(frame["vel_x"], frame["vel_z"])
+                if n > 1e-6:
+                    self._wta_heading = (frame["vel_x"] / n, frame["vel_z"] / n)
+            return
+        d = math.hypot(frame["pos_x"] - self._wta_anchor[0],
+                       frame["pos_z"] - self._wta_anchor[1])
+        if not self._wta_armed:
+            self._wta_armed = d > WTA_ARM_DIST
+            return
+        if d < WTA_CROSS_DIST:
+            vn = math.hypot(frame["vel_x"], frame["vel_z"])
+            aligned = vn > 3.0 and (
+                (frame["vel_x"] * self._wta_heading[0]
+                 + frame["vel_z"] * self._wta_heading[1]) / vn > WTA_HEADING_COS)
+            if (aligned and dist - self._lap_start_dist > WTA_MIN_LAP_DIST
+                    and (self._wta_best is None or d < self._wta_best[0])):
+                self._wta_best = (d, t, rt, dist, frame["pos_x"], frame["pos_z"])
+            self._wta_inside = True
+        elif self._wta_inside:
+            self._finalize_wta_crossing(frame)
+            self._wta_inside = False
+
+    def _finalize_wta_crossing(self, frame: dict) -> None:
+        """Close the lap at the recorded closest approach to the anchor."""
+        if self._wta_best is None:
+            return
+        d, bt, brt, bdist, bx, bz = self._wta_best
+        self._wta_best = None
+        lap_time = brt - (self._lap_open_rt if self._lap_open_rt is not None else brt)
+        if lap_time <= 1.0:
+            return
+        log.info("Session %d: geometric lap %d done: %.3fs (crossed %.1f m"
+                 " from the launch point)", self.session_id,
+                 self._completed_laps + 1, lap_time, d)
+        self._complete_current_lap(bt, lap_time, self._lap_number)
+        self._open_lap(bt, self._lap_number, bdist, frame,
+                       stored_ln=self._completed_laps)
+        # the reopen used the current frame; rebase it to the crossing itself
+        self._lap_start_pos = (bx, bz)
+        self._lap_open_rt = brt
 
     def _complete_current_lap(self, t: float, lap_time: float | None, ln: int) -> None:
         self.store.complete_lap(self._lap_id, t, lap_time, self._flags())
@@ -387,7 +531,10 @@ class SessionTracker:
                 log.info("Session %d: new best lap %.3fs (lap %d)",
                          self.session_id, lap_time, ln + 1)
 
-    def _open_lap(self, t: float, ln: int, dist: float, frame: dict) -> None:
+    def _open_lap(self, t: float, ln: int, dist: float, frame: dict,
+                  stored_ln: int | None = None) -> None:
+        """stored_ln overrides the lap number written to the DB - geometric
+        (WTA) laps all report LapNumber 0, so they get sequential numbers."""
         self._lap_opened_t = t
         self._lap_number = ln
         self._lap_start_dist = dist
@@ -397,7 +544,8 @@ class SessionTracker:
         self._lap_max_elapsed = 0.0
         self._lap_open_rt = frame["current_race_time"]
         self._lap_open_last_lap = frame["last_lap"]
-        self._lap_id = self.store.add_lap(self.session_id, ln, t, dist)
+        self._lap_id = self.store.add_lap(
+            self.session_id, ln if stored_ln is None else stored_ln, t, dist)
 
     def _flags(self) -> str | None:
         return ",".join(sorted(self._lap_flags)) or None
