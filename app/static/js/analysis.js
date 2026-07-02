@@ -396,6 +396,34 @@ function drawMap() {
     ctx.arc(sx, sy, 6, 0, Math.PI * 2);
     ctx.fill();
 
+    // drive direction: stem + arrowhead pointing along the first stretch of
+    // the lap (sampled in screen space, so it follows the 3D projection too)
+    const nPts = A.channels.pos_x.length;
+    let j = 1;
+    while (j < nPts - 1) {
+      const [px, py] = at(A, j, false);
+      if (Math.hypot(px - sx, py - sy) >= 14) break;
+      j++;
+    }
+    const [hx, hy] = at(A, j, false);
+    if (Math.hypot(hx - sx, hy - sy) > 2) {
+      const ang = Math.atan2(hy - sy, hx - sx);
+      const ax = sx + Math.cos(ang) * 24, ay = sy + Math.sin(ang) * 24;
+      ctx.strokeStyle = "#34d399";
+      ctx.lineWidth = 2.5;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(sx + Math.cos(ang) * 9, sy + Math.sin(ang) * 9);
+      ctx.lineTo(ax, ay);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(ax + Math.cos(ang) * 9, ay + Math.sin(ang) * 9);
+      ctx.lineTo(ax + Math.cos(ang + 2.4) * 6.5, ay + Math.sin(ang + 2.4) * 6.5);
+      ctx.lineTo(ax + Math.cos(ang - 2.4) * 6.5, ay + Math.sin(ang - 2.4) * 6.5);
+      ctx.closePath();
+      ctx.fill();
+    }
+
     // driven length from integrated speed - FH6's DistanceTraveled is a
     // track-position parameter on real circuits, not meters
     let drivenM = 0;
