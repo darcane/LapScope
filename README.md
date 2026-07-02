@@ -20,7 +20,8 @@ receives the game's official "Data Out" UDP stream, and serves a web UI with:
   (FWD/RWD/AWD, straight from the packet), car names (bundled community FH6 ordinal
   list + your own overrides), track conditions (wet is auto-detected from puddle
   telemetry; snow/dirt are one-click manual tags), and a track-type tag
-  (road/street/dirt/cross-country/drag — not in the packet, so it's a dropdown).
+  (road/street/touge/dirt/cross-country/drag/WTC — not in the packet, so it's
+  a dropdown).
 - **Races and point-to-point events** — the game ends an event *without* counting
   the last lap, so the recorder watches for two finish signals: `LastLap` changing
   while `LapNumber` stands still (final lap of a circuit race), and the race clock
@@ -94,12 +95,38 @@ Check what the server sees at any time: **http://localhost:8000/api/status**
 (packet counters, last-packet age, wrong-size packet warnings) or
 `docker compose logs -f`.
 
+## Troubleshooting: an event type isn't being recorded
+
+Sessions without a single completed lap are normally discarded (that's what keeps
+free-roam cruising out of the list) — but if the game signals some event type in a
+way the recorder doesn't recognize yet (reported for **World Time Attack**), those
+sessions get discarded too. Two tools to pin it down:
+
+1. Every discard logs a one-line signal summary — after driving the event, look for
+   it in `docker compose logs`:
+
+   ```
+   Session 12 discarded (no completed laps, 4210 frames) | diag: dur=70s rt=0.0..68.2 maxLapNumber=0 maxCurrentLap=0.0 finish_seen=False dist=+1893
+   ```
+
+2. To keep the session (raw frames included) instead of losing it, restart with
+   `FC_KEEP_DISCARDED=1` and drive the event once:
+
+   ```powershell
+   $env:FC_KEEP_DISCARDED = "1"; docker compose up -d
+   ```
+
+   The session then shows up on the Analysis page (0 laps, but the driven line and
+   an "incomplete" run are there) and the raw data is preserved for adding proper
+   support. Unset the variable (or set `0`) and `docker compose up -d` again when done.
+
 ## Configuration
 
-| Env var              | Default     | Meaning                          |
-|----------------------|-------------|----------------------------------|
-| `TELEMETRY_UDP_PORT` | `9999`      | UDP port the listener binds      |
-| `DATA_DIR`           | `/app/data` | Where `telemetry.db` is written  |
+| Env var              | Default     | Meaning                                        |
+|----------------------|-------------|------------------------------------------------|
+| `TELEMETRY_UDP_PORT` | `9999`      | UDP port the listener binds                    |
+| `DATA_DIR`           | `/app/data` | Where `telemetry.db` is written                |
+| `FC_KEEP_DISCARDED`  | `0`         | `1` = keep sessions with no completed laps     |
 
 Recordings are raw 324-byte packets (~70 MB per hour of driving) in `./data/telemetry.db`;
 delete sessions from the Analysis page to reclaim space.

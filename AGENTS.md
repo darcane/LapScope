@@ -77,7 +77,14 @@ All the rules exist because some real behavior broke a naive version:
 - Routes are fingerprinted (start pos within 80 m + length within 5%) and named
   once by the user; names apply to every session on the route.
 - Sessions with zero completed laps/runs are discarded at close and again at
-  startup (`cleanup_sessions`).
+  startup (`cleanup_sessions`). Every discard logs a `diag:` signal summary
+  (duration, race-time range, max LapNumber/CurrentLap, finish seen, distance);
+  `FC_KEEP_DISCARDED=1` (compose env passthrough) keeps such sessions instead —
+  that's the capture path for event types the segmentation doesn't recognize
+  yet (World Time Attack is the known open case, reported 2026-07-02).
+- Track types are a manual tag; the allowed set lives in **three places that
+  must stay in sync**: `TRACK_TYPES` (api/routes.py), `TRACK_META` (common.js),
+  and the `#track-select` options (analysis.html).
 
 When changing `_lap_logic`, walk every branch against: circuit race with finish,
 Rivals (endless laps), free-roam cruise, free-roam time-attack, sprint, rewind

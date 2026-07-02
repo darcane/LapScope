@@ -30,7 +30,12 @@ trace (and live delta) falls back to CurrentRaceTime elapsed since the lap
 opened whenever CurrentLap sits at zero.
 
 Sessions that end without a single completed lap or run (free-roam
-cruising, menu blips, abandoned events) are discarded entirely.
+cruising, menu blips, abandoned events) are discarded entirely. Every
+discard logs a one-line signal summary so event types the segmentation
+doesn't recognize yet can be diagnosed from `docker compose logs`; setting
+FC_KEEP_DISCARDED=1 keeps such sessions (raw frames included) instead of
+deleting them - drive the unrecognized event once with the flag on and the
+data needed to add support for it is preserved.
 
 The packet carries no "lap invalidated" flag, so lap dirtiness is inferred:
 - rewind: the lap clock ran backwards mid-lap (reversing on track never
@@ -48,6 +53,7 @@ from __future__ import annotations
 import bisect
 import logging
 import math
+import os
 
 log = logging.getLogger("forzacalibrator.recorder")
 
@@ -61,6 +67,10 @@ IMPACT_ACCEL = 45.0           # m/s^2 in the ground plane (~4.6 g) = contact
 RT_FREEZE_SECONDS = 1.5       # frozen race clock for this long = event finished
 FINISH_MIN_RT = 5.0           # ignore freezes before the clock really ran
 PTP_MIN_RUN_TIME = 10.0       # shortest believable point-to-point run
+
+# keep sessions that would otherwise be discarded (no completed laps) - for
+# capturing event types the segmentation doesn't recognize yet
+KEEP_DISCARDED = os.environ.get("FC_KEEP_DISCARDED", "0").lower() not in ("", "0", "false")
 
 
 class SessionTracker:
@@ -96,6 +106,10 @@ class SessionTracker:
         self._completed_laps = 0
         self._puddle_frames = 0
         self._route_assigned = False
+        self._session_start_t = 0.0
+        self._diag_first_dist: float | None = None
+        self._diag_max_ln = 0
+        self._diag_max_cur = 0.0
 
     # -- per-frame entry point ------------------------------------------------
 
@@ -186,6 +200,10 @@ class SessionTracker:
         self._completed_laps = 0
         self._puddle_frames = 0
         self._route_assigned = False
+        self._session_start_t = t
+        self._diag_first_dist = frame["distance_traveled"]
+        self._diag_max_ln = frame["lap_number"]
+        self._diag_max_cur = 0.0
         log.info("Session %d started (car ordinal %d, PI %d)",
                  self.session_id, frame["car_ordinal"], frame["car_pi"])
 
@@ -206,9 +224,27 @@ class SessionTracker:
                         self.store.set_session_route(self.session_id, rid)
             self._lap_id = None
         if self._completed_laps == 0:
-            self.store.discard_session(self.session_id)
-            log.info("Session %d discarded (no completed laps, %d frames)",
-                     self.session_id, self._frame_count)
+            # signal summary for diagnosing event types the segmentation
+            # doesn't recognize yet (e.g. World Time Attack)
+            diag = ("dur=%.0fs rt=%.1f..%.1f maxLapNumber=%d maxCurrentLap=%.1f "
+                    "finish_seen=%s dist=%+.0f" % (
+                        end_t - self._session_start_t,
+                        self._first_rt if self._first_rt is not None else float("nan"),
+                        self._prev_race_time if self._prev_race_time is not None
+                        else float("nan"),
+                        self._diag_max_ln, self._diag_max_cur, self._event_finished,
+                        (self._prev_dist - self._diag_first_dist)
+                        if self._prev_dist is not None and self._diag_first_dist is not None
+                        else 0.0))
+            if KEEP_DISCARDED:
+                self.store.end_session(self.session_id, end_t, self._frame_count,
+                                       conditions=None)
+                log.info("Session %d KEPT with no completed laps "
+                         "(FC_KEEP_DISCARDED=1) | diag: %s", self.session_id, diag)
+            else:
+                self.store.discard_session(self.session_id)
+                log.info("Session %d discarded (no completed laps, %d frames) | diag: %s",
+                         self.session_id, self._frame_count, diag)
         else:
             wet = (self._frame_count > 0
                    and self._puddle_frames / self._frame_count > WET_FRAME_FRACTION)
@@ -250,6 +286,8 @@ class SessionTracker:
         cur = frame["current_lap"]
         rt = frame["current_race_time"]
         last = frame["last_lap"]
+        self._diag_max_ln = max(self._diag_max_ln, ln)
+        self._diag_max_cur = max(self._diag_max_cur, cur)
 
         # point-to-point events may never start the lap clock; fall back to
         # race time elapsed since the lap opened
