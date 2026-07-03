@@ -122,7 +122,7 @@ Check what the server sees at any time: **http://localhost:8000/api/status**
 Sessions without a single completed lap are normally discarded (that's what keeps
 free-roam cruising out of the list) — but if the game signals some event type in a
 way the recorder doesn't recognize yet, those sessions get discarded too. (World
-Time Attack was found and fixed exactly this way.) Two tools to pin it down:
+Time Attack was found and fixed exactly this way.) Three tools to pin it down:
 
 1. Every discard logs a one-line signal summary — after driving the event, look for
    it in `docker compose logs`:
@@ -138,9 +138,20 @@ Time Attack was found and fixed exactly this way.) Two tools to pin it down:
    $env:FC_KEEP_DISCARDED = "1"; docker compose up -d
    ```
 
-   The session then shows up on the Analysis page (0 laps, but the driven line and
-   an "incomplete" run are there) and the raw data is preserved for adding proper
-   support. Unset the variable (or set `0`) and `docker compose up -d` again when done.
+   (Or put `FC_KEEP_DISCARDED=1` in a `.env` file next to `docker-compose.yml` —
+   compose reads it automatically.) The session then shows up on the Analysis page
+   (0 laps, but the driven line and an "incomplete" run are there) and the raw data
+   is preserved for adding proper support. Unset the variable (or set `0`) and
+   `docker compose up -d` again when done.
+
+3. Dump every signal transition of a stored session (race-clock resets and
+   freezes, distance resets, lap-field activity, teleports, stream gaps) straight
+   from the database — no game or container needed:
+
+   ```powershell
+   python tools/inspect_session.py --list     # find the session id
+   python tools/inspect_session.py 12
+   ```
 
 Once support lands, the **Reprocess** button on the session rebuilds its laps from
 the stored frames — recordings are lossless, so nothing has to be redriven.

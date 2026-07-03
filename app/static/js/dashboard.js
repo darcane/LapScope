@@ -3,11 +3,11 @@
 const rpmG = initCanvas("rpm", 290, 250);
 const fricG = initCanvas("friction", 250, 240);
 const gripG = initCanvas("grip", 230, 240);
-let stripG = initCanvas("strip", document.getElementById("strip").parentElement.clientWidth - 34, 170);
-let liveMapG = initCanvas("livemap", document.getElementById("livemap").parentElement.clientWidth - 34, 340);
+let stripG = initCanvas("strip", document.getElementById("strip").parentElement.clientWidth - 34, 280);
+let liveMapG = initCanvas("livemap", document.getElementById("livemap").parentElement.clientWidth - 34, 280);
 window.addEventListener("resize", () => {
-  stripG = initCanvas("strip", document.getElementById("strip").parentElement.clientWidth - 34, 170);
-  liveMapG = initCanvas("livemap", document.getElementById("livemap").parentElement.clientWidth - 34, 340);
+  stripG = initCanvas("strip", document.getElementById("strip").parentElement.clientWidth - 34, 280);
+  liveMapG = initCanvas("livemap", document.getElementById("livemap").parentElement.clientWidth - 34, 280);
 });
 
 const STRIP_CAP = 12 * 60; // ~12 s at 60 Hz
@@ -33,25 +33,31 @@ const liveMap = {
   minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity,
 };
 
+function resetLiveMap(sessionId) {
+  liveMap.session = sessionId;
+  liveMap.pts = [];
+  liveMap.last = null;
+  liveMap.minDist = 3;
+  liveMap.minX = liveMap.minZ = Infinity;
+  liveMap.maxX = liveMap.maxZ = -Infinity;
+}
+
 function feedLiveMap(f) {
   // only draw during an actual event (race / time attack / point-to-point):
   // IsRaceOn is 1 in free roam too, so fast-travel sprawl would wreck the
   // map - race_mode comes from the recorder, which knows the difference.
   // The finished track stays on screen until the next event starts.
   if (f.session_id == null || !f.race_mode) return;
-  if (f.session_id !== liveMap.session) { // new session -> fresh track
-    liveMap.session = f.session_id;
-    liveMap.pts = [];
-    liveMap.last = null;
-    liveMap.minDist = 3;
-    liveMap.minX = liveMap.minZ = Infinity;
-    liveMap.maxX = liveMap.maxZ = -Infinity;
-  }
+  if (f.session_id !== liveMap.session) resetLiveMap(f.session_id); // new session -> fresh track
   const x = f.pos_x, z = f.pos_z;
   if (liveMap.last) {
     const jump = Math.hypot(x - liveMap.last[0], z - liveMap.last[1]);
     if (jump < liveMap.minDist) return;
-    if (jump > 250) liveMap.pts.push(null); // teleport / grid reset: break the line
+    // a car can't move 250 m in one frame: that's a grid snap / event
+    // restart. Start the track fresh from here - keeping the old points
+    // would wreck the scale (the bounds span both places) and overlay
+    // two different pieces of world on one map.
+    if (jump > 250) resetLiveMap(f.session_id);
   }
   liveMap.last = [x, z];
   liveMap.pts.push(liveMap.last);

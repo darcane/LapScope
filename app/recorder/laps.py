@@ -14,7 +14,7 @@ subdivide what would otherwise be one long stream:
 Event finishes are tricky: the game ends an event *without* incrementing
 LapNumber, so the final lap of a race - and the whole run of a
 point-to-point event (sprint, drag, street, touge, cross-country) - would
-otherwise be lost. Three finish signals fix that:
+otherwise be lost. Four finish signals fix that:
 
 - LastLap changing while LapNumber stays put = the line was crossed and the
   event ended -> the open lap is completed with that time.
@@ -30,6 +30,14 @@ otherwise be lost. Three finish signals fix that:
   session end, an open lap that covered a full lap's distance (compared to
   the session's completed laps) is the final lap; it is completed with the
   lap clock's last reading plus the remaining meters at the last speed.
+- The same cutoff for a *point-to-point race* (sprint/street/cross-country
+  against a grid), where there are no completed laps to compare distance
+  against: a session that was gridded (RacePosition > 0 - never true in
+  free roam), broadcast no lap fields, launched from a DistanceTraveled
+  reset, covered real distance and was still at speed when the stream
+  stopped is a finished run, timed by the race clock's last reading. A
+  mid-run quit can look identical, so these laps carry a "cutoff" flag to
+  say the time is inferred, not confirmed by a finish signal.
 
 Point-to-point events may never start the CurrentLap clock, so the lap
 trace (and live delta) falls back to CurrentRaceTime elapsed since the lap
@@ -137,6 +145,7 @@ class SessionTracker:
         self._rt_freeze_since: float | None = None
         self._completed_laps = 0
         self._lap_fields_dead = True
+        self._gridded = False  # RacePosition > 0 seen (a race, never free roam)
         self._wta_anchor: tuple[float, float] | None = None
         self._wta_heading: tuple[float, float] | None = None
         self._wta_armed = False
@@ -193,6 +202,8 @@ class SessionTracker:
             self._start_session(t, frame)
         self._buffer.append((t, raw))
         self._frame_count += 1
+        if frame["race_position"] > 0:
+            self._gridded = True
         if any(d > PUDDLE_DEPTH_MIN for d in frame["wheel_in_puddle"]):
             self._puddle_frames += 1
         if math.hypot(frame["accel_x"], frame["accel_z"]) >= IMPACT_ACCEL:
@@ -263,6 +274,7 @@ class SessionTracker:
         self._rt_freeze_since = None
         self._completed_laps = 0
         self._lap_fields_dead = True
+        self._gridded = False
         self._wta_anchor = None
         self._wta_heading = None
         self._wta_armed = False
@@ -281,21 +293,31 @@ class SessionTracker:
     def _end_session(self, end_t: float) -> None:
         self.flush()
         if self._lap_id is not None:
+            is_run = True  # a point-to-point run (fingerprint the whole course)
             lap_time = self._point_to_point_run_time()
             if lap_time is not None:
                 log.info("Session %d: point-to-point run captured (%.3fs)",
                          self.session_id, lap_time)
-                if not self._route_assigned and self._prev_dist is not None:
-                    length = self._prev_dist - self._lap_start_dist
-                    if length > 100.0:
-                        rid = self.store.match_or_create_route(
-                            self._lap_start_pos[0], self._lap_start_pos[1], length)
-                        self.store.set_session_route(self.session_id, rid)
             else:
+                lap_time = self._ptp_run_time_at_cutoff()
+                if lap_time is not None:
+                    self._lap_flags.add("cutoff")
+                    log.info("Session %d: point-to-point run recovered at"
+                             " telemetry cutoff (%.3fs) - no finish signal,"
+                             " timed to the last packet", self.session_id, lap_time)
+            if lap_time is None:
+                is_run = False
                 lap_time = self._final_lap_time_at_cutoff()
                 if lap_time is not None:
                     log.info("Session %d: final lap recovered at telemetry"
                              " cutoff (%.3fs)", self.session_id, lap_time)
+            if (is_run and lap_time is not None and not self._route_assigned
+                    and self._prev_dist is not None):
+                length = self._prev_dist - self._lap_start_dist
+                if length > 100.0:
+                    rid = self.store.match_or_create_route(
+                        self._lap_start_pos[0], self._lap_start_pos[1], length)
+                    self.store.set_session_route(self.session_id, rid)
             self.store.complete_lap(self._lap_id, end_t, lap_time, self._flags())
             if lap_time is not None:
                 self._completed_laps += 1
@@ -304,12 +326,14 @@ class SessionTracker:
             # signal summary for diagnosing event types the segmentation
             # doesn't recognize yet (e.g. World Time Attack)
             diag = ("dur=%.0fs rt=%.1f..%.1f maxLapNumber=%d maxCurrentLap=%.1f "
-                    "finish_seen=%s dist=%+.0f" % (
+                    "finish_seen=%s gridded=%s launch=%s lastSpeed=%.1f dist=%+.0f" % (
                         end_t - self._session_start_t,
                         self._first_rt if self._first_rt is not None else float("nan"),
                         self._prev_race_time if self._prev_race_time is not None
                         else float("nan"),
                         self._diag_max_ln, self._diag_max_cur, self._event_finished,
+                        self._gridded, self._wta_anchor is not None,
+                        self._prev_speed,
                         (self._prev_dist - self._diag_first_dist)
                         if self._prev_dist is not None and self._diag_first_dist is not None
                         else 0.0))
@@ -348,6 +372,7 @@ class SessionTracker:
         self._finish_rt = None
         self._rt_freeze_since = None
         self._lap_fields_dead = True
+        self._gridded = False
         self._wta_anchor = None
         self._wta_heading = None
         self._wta_armed = False
@@ -366,6 +391,31 @@ class SessionTracker:
                 and self._first_rt is not None and self._first_rt < 5.0
                 and self._finish_rt is not None):
             run = self._finish_rt - (self._lap_open_rt or 0.0)
+            if run > PTP_MIN_RUN_TIME:
+                return run
+        return None
+
+    def _ptp_run_time_at_cutoff(self) -> float | None:
+        """Run time for a gridded point-to-point race whose telemetry cut
+        dead mid-run: real races stop Data Out the instant the event ends
+        (verified on circuit captures - the last frame lands within meters
+        of the line), so neither finish signal ever arrives and the frozen
+        clock / distance collapse never show. Requirements that free roam
+        can't meet: gridded (RacePosition > 0), no lap fields the whole
+        session, and a launch from a DistanceTraveled reset with the
+        geometric anchor still armed (a teleport - the free-roam giveaway -
+        disarms it). Requiring speed at the cutoff filters parked/AFK ends.
+        A quit mid-run at speed is indistinguishable, hence the "cutoff"
+        flag the caller adds."""
+        if (self._completed_laps == 0 and not self._event_finished
+                and self._lap_fields_dead and self._gridded
+                and self._wta_anchor is not None
+                and self._lap_open_rt is not None
+                and self._prev_race_time is not None
+                and self._prev_speed > 5.0
+                and self._prev_dist is not None
+                and self._prev_dist - self._lap_start_dist > WTA_MIN_LAP_DIST):
+            run = self._prev_race_time - self._lap_open_rt
             if run > PTP_MIN_RUN_TIME:
                 return run
         return None

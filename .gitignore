@@ -1,6 +1,9 @@
 # recorded telemetry (bind-mounted into the container)
 data/
 
+# local compose overrides (FC_KEEP_DISCARDED capture toggle)
+.env
+
 # python
 __pycache__/
 *.pyc

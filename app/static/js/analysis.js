@@ -16,6 +16,7 @@ const state = {
 const FLAG_META = {
   rewind: ["⏪", "rewind used during this lap"],
   contact: ["💥", "hard contact (wall / obstacle) during this lap"],
+  cutoff: ["🏁", "time inferred — telemetry cut off at the finish with no finish signal"],
 };
 
 function flagIcons(flags) {

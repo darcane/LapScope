@@ -93,6 +93,11 @@ class Store:
             except sqlite3.OperationalError:
                 pass  # column already exists
         self.db.commit()
+        # session ids must never be reused: discarding a session deletes the
+        # max rowid, which plain INTEGER PRIMARY KEY would hand out again -
+        # and the live dashboard detects "new event" by the id changing
+        self._next_session_id = self.db.execute(
+            "SELECT COALESCE(MAX(id), 0) + 1 FROM sessions").fetchone()[0]
 
     def close(self) -> None:
         self.db.commit()
@@ -117,14 +122,16 @@ class Store:
         return cur.rowcount
 
     def create_session(self, started_at: float, frame: dict) -> int:
-        cur = self.db.execute(
-            "INSERT INTO sessions (started_at, car_ordinal, car_class, car_pi, drivetrain_type)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (started_at, frame["car_ordinal"], frame["car_class"],
+        sid = self._next_session_id
+        self._next_session_id += 1
+        self.db.execute(
+            "INSERT INTO sessions (id, started_at, car_ordinal, car_class, car_pi,"
+            " drivetrain_type) VALUES (?, ?, ?, ?, ?, ?)",
+            (sid, started_at, frame["car_ordinal"], frame["car_class"],
              frame["car_pi"], frame["drivetrain_type"]),
         )
         self.db.commit()
-        return cur.lastrowid
+        return sid
 
     def end_session(self, session_id: int, ended_at: float, frame_count: int,
                     conditions: str | None = None) -> None:

@@ -74,15 +74,21 @@ All the rules exist because some real behavior broke a naive version:
 - Session = `IsRaceOn` stretch, ends after 15 s of race-off or silence.
 - `CurrentRaceTime` warping back to ~0 splits sessions (event restarts,
   free-roam time-attacks).
-- **Finishes don't increment `LapNumber`.** Three signals: `LastLap` changing
+- **Finishes don't increment `LapNumber`.** Four signals: `LastLap` changing
   while `LapNumber` is static; the race clock freezing ≥1.5 s while `IsRaceOn`
   stays 1 (point-to-point finish cinematic → one run timed by the frozen clock);
   and — the usual case for real circuit races — **the stream cutting dead at the
   finish line** (verified: the last packet lands within meters of the line). An
   open lap that covered ≥97% of the session's typical lap length at session end
   is completed from the lap clock's last reading plus the remaining meters at
-  the last speed. Abandoned events (no finish signal, partial distance) are
-  discarded.
+  the last speed. The same cutoff on a *gridded point-to-point race* (sprint /
+  street / cross-country — no completed laps to compare distance against) is
+  accepted as a finished run when the session was gridded (`RacePosition > 0`),
+  broadcast no lap fields, launched from a `DistanceTraveled` reset (geometric
+  anchor armed, never disarmed by a teleport) and cut at speed; the run is timed
+  by the race clock's last reading and flagged `cutoff` (shown 🏁 in the lap
+  table) because a mid-run quit at speed looks identical. Abandoned events with
+  none of these signatures are discarded.
 - Point-to-point events may never start `CurrentLap`; lap traces and the live
   delta fall back to race-time-elapsed-since-lap-open.
 - **World Time Attack broadcasts no lap fields at all** (real capture, 2026-07-02:
@@ -120,10 +126,17 @@ All the rules exist because some real behavior broke a naive version:
   once by the user; names apply to every session on the route.
 - Sessions with zero completed laps/runs are discarded at close and again at
   startup (`cleanup_sessions`). Every discard logs a `diag:` signal summary
-  (duration, race-time range, max LapNumber/CurrentLap, finish seen, distance);
-  `FC_KEEP_DISCARDED=1` (compose env passthrough) keeps such sessions instead —
+  (duration, race-time range, max LapNumber/CurrentLap, finish seen, gridded,
+  launch anchor, last speed, distance); `FC_KEEP_DISCARDED=1` (compose env
+  passthrough; a repo-root `.env` file works too) keeps such sessions instead —
   that's the capture path for event types the segmentation doesn't recognize
-  yet (World Time Attack is the known open case, reported 2026-07-02).
+  yet. Inspect a kept capture with `python tools/inspect_session.py <id>`
+  (`--list` to enumerate): it prints every signal transition the segmentation
+  cares about, straight from `data/telemetry.db`, no container needed.
+- Session ids are handed out by an in-memory monotonic counter
+  (`Store._next_session_id`), never SQLite's rowid: discards delete the max
+  rowid, which plain `INTEGER PRIMARY KEY` would reuse — and the live map
+  resets on session-id *change*, so a reused id left stale points on screen.
 - Track types are a manual tag; the allowed set lives in **three places that
   must stay in sync**: `TRACK_TYPES` (api/routes.py), `TRACK_META` (common.js),
   and the `#track-select` options (analysis.html).
@@ -145,6 +158,10 @@ server joining mid-lap, event restart.
   JS once); keep that middleware.
 - Canvas gauges are pure functions of passed state (`gauges.js`); DPR-scaled via
   `initCanvas`.
+- The live track map resets on session-id change and on any single-frame
+  position jump > 250 m (grid snap / event restart — a car can't move that far
+  in 1/60 s; keeping the old points would wreck the bounds). The finished
+  track intentionally stays on screen until the next event starts drawing.
 
 ## Testing scenarios that must keep passing
 
@@ -154,6 +171,7 @@ server joining mid-lap, event restart.
 | Dirty laps | `--duration 180 --dirty` | lap 2 `contact`, lap 3 `rewind`, charts deduped |
 | Race finish | `--race 3 --duration 200` | 3 laps all timed (last via finish detection), no phantom open lap |
 | Point-to-point | `--sprint 75` | session kept, single run ≈75 s, route assigned |
+| Sprint, stream cut at line | `--sprint 60 --cut` | session kept, single run ≈60 s flagged `cutoff`, route assigned |
 | World Time Attack | `--wta 3` | launch + 3 geometric laps + distance-reset finish, no post-finish phantom lap |
 | Jumps in 3D | `--sprint 75 --jumps` (or any + `--jumps`) | 3D map scale sane, spikes capped |
 | Race-mode gating | `--freeroam 35 --race 3` | chip FREE ROAM then RACE MODE; timer dashed in free roam; live map draws the race only |

@@ -282,11 +282,14 @@ class Sim:
             self._send(race_time=t, lap_no=lap_no, cur_lap=t - lap_start,
                        last=last, best=best)
 
-    def sprint(self, seconds: float) -> None:
+    def sprint(self, seconds: float, cut: bool = False) -> None:
         """Point-to-point event (sprint/drag/street): LapNumber and CurrentLap
         stay 0 the whole run, the race clock runs from 0 and freezes at the
-        finish line."""
-        print(f"sprint: ~{seconds:.0f}s point-to-point (no lap counter)")
+        finish line. cut=True models the verified real-game race behavior
+        instead: the stream stops dead at the line, at speed - no finish
+        cinematic frames, no race-off tail, just silence."""
+        print(f"sprint: ~{seconds:.0f}s point-to-point (no lap counter)"
+              f"{' [stream cuts at the line]' if cut else ''}")
         self.s = 0.0
         self.total_dist = 0.0
         self.f["race_position"] = random.randint(1, 8)
@@ -299,6 +302,8 @@ class Sim:
             t += self.dt
             self._send(race_time=t, lap_no=0, cur_lap=0.0, last=0.0, best=0.0)
         print(f"  finish: run time {t:6.3f}s")
+        if cut:
+            return
         self._finish_freeze(t, 0, 0.0, 0.0)
 
     def wta(self, laps: int) -> None:
@@ -403,6 +408,9 @@ def main() -> None:
                          " does not increment at the final line, like the game)")
     ap.add_argument("--sprint", type=float, default=0.0, metavar="SECONDS",
                     help="run a point-to-point event (no lap counters at all)")
+    ap.add_argument("--cut", action="store_true",
+                    help="with --sprint: cut the stream dead at the finish line"
+                         " (like real races do) instead of freezing the clock")
     ap.add_argument("--wta", type=int, default=0, metavar="LAPS",
                     help="run a World Time Attack: all lap fields dead, laps"
                          " only detectable geometrically")
@@ -421,7 +429,7 @@ def main() -> None:
     if args.wta > 0:
         sim.wta(args.wta)
     elif args.sprint > 0:
-        sim.sprint(args.sprint)
+        sim.sprint(args.sprint, cut=args.cut)
     elif args.race > 0:
         sim.event(args.duration, f"race ({args.race} laps)",
                   dirty=args.dirty, race_laps=args.race)
@@ -429,7 +437,8 @@ def main() -> None:
         for i in range(args.events):
             sim.event(args.duration / args.events, f"event {i + 1}/{args.events}",
                       dirty=args.dirty)
-    sim.race_off()
+    if not (args.sprint > 0 and args.cut):
+        sim.race_off()  # a cut stream ends in silence, not race-off frames
     print(f"Done: {sim.sent} packets.")
 
 
