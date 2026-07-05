@@ -37,7 +37,7 @@ def main() -> None:
     url = f"http://{HTTP_HOST}:{HTTP_PORT}"
     threading.Timer(1.5, lambda: webbrowser.open(url)).start()
 
-    print(f"LapScope starting — dashboard at {url}")
+    print(f"LapScope starting - dashboard at {url}")
     print(f"Recording telemetry to {os.environ['DATA_DIR']}")
     uvicorn.run(app, host=HTTP_HOST, port=HTTP_PORT, log_level="info")
 

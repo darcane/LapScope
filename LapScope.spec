@@ -42,6 +42,7 @@ exe = EXE(
     # Keep the console so users/support can read the "Listening…/Session ended"
     # logs; the dashboard is the real UI, this window is a live status/error log.
     console=True,
+    icon="assets/lapscope.ico",
 )
 
 coll = COLLECT(

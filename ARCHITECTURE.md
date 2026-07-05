@@ -147,6 +147,10 @@ assert them here.
   `hiddenimports` cover uvicorn/websockets submodules that are imported lazily.
   Build locally: `pip install -r requirements.txt -r requirements-build.txt &&
   pyinstaller LapScope.spec` -> `dist/LapScope/LapScope.exe`.
+- Exe icon: `assets/lapscope.ico` (committed; the brand track+lens mark).
+  Regenerate from `assets/lapscope.svg` with
+  [tools/make_icon.py](tools/make_icon.py) only when the artwork changes — the
+  build/CI never rasterizes, they just consume the committed `.ico`.
 - `app.__version__` ([app/\_\_init\_\_.py](app/__init__.py)) is `0.0.0` in source
   and stamped with the git tag at release-build time.
 - [.github/workflows/release.yml](.github/workflows/release.yml): fires **only on
