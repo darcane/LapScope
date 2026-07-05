@@ -52,6 +52,20 @@ you faster in Rivals.
 
 ## Quick start
 
+### Normal users — Windows exe (plug and play)
+
+Grab the latest `LapScope-<version>-win64.zip` from the
+[Releases page](../../releases), unzip it anywhere, and double-click
+**LapScope.exe**. It opens the dashboard automatically at
+**http://127.0.0.1:8000** and records to `%LOCALAPPDATA%\LapScope`. A console
+window stays open showing live status/logs — leave it running while you play.
+
+The build is unsigned, so Windows SmartScreen may warn on first run
+("More info" -> "Run anyway"); each release lists SHA256 checksums so you can
+verify the download.
+
+### Power / cross-platform users — Docker
+
 ```bash
 docker compose up --build -d
 ```
@@ -165,7 +179,9 @@ the stored frames — recordings are lossless, so nothing has to be redriven.
 | `LS_KEEP_DISCARDED`  | `0`         | `1` = keep sessions with no completed laps     |
 
 Recordings are raw 324-byte packets (~70 MB per hour of driving) in `./data/telemetry.db`;
-delete sessions from the Analysis page to reclaim space.
+delete sessions from the Analysis page to reclaim space. The Windows exe defaults
+`DATA_DIR` to `%LOCALAPPDATA%\LapScope` instead (set the env var before launching
+to override); it serves the dashboard on `127.0.0.1:8000`.
 
 ## How it works
 

@@ -1,0 +1,71 @@
+name: Release
+
+# Builds the plug-and-play Windows exe and publishes it to a GitHub Release.
+# Fires ONLY on version tags (e.g. v1.2.0) — never on branch pushes or PRs, so
+# the exe exists exactly once per tagged release. Cut a tag with:
+#   git tag v1.2.0 && git push origin v1.2.0   (owner does the push)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write        # needed to create the Release and upload assets
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"          # matches the Docker base image / CI
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Stamp version from tag
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          $init = "app/__init__.py"
+          (Get-Content $init) -replace '^__version__ = .*', "__version__ = `"$version`"" | Set-Content $init
+          Write-Host "Stamped __version__ = $version"
+
+      - name: Build exe (PyInstaller onedir)
+        run: pyinstaller LapScope.spec
+
+      - name: Package zip + checksum
+        shell: pwsh
+        run: |
+          $zip = "LapScope-${{ github.ref_name }}-win64.zip"
+          Compress-Archive -Path dist/LapScope -DestinationPath $zip
+          (Get-FileHash $zip -Algorithm SHA256).Hash + "  " + $zip | Out-File -Encoding ascii checksums.txt
+          Get-Content checksums.txt
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            LapScope-${{ github.ref_name }}-win64.zip
+            checksums.txt
+          body: |
+            ## LapScope ${{ github.ref_name }} — Windows
+
+            Plug-and-play build for normal users: download the zip, unzip, and
+            double-click **LapScope.exe**. The dashboard opens automatically at
+            http://127.0.0.1:8000 and telemetry records to
+            `%LOCALAPPDATA%\LapScope`. Power/cross-platform users: see the Docker
+            path in the README.
+
+            **In-game:** enable FH6 "Data Out" to your PC's IP on UDP port 9999.
+
+            ### Verify your download
+            SHA256 checksums are in `checksums.txt`. This is an unsigned binary,
+            so Windows SmartScreen may warn ("More info" -> "Run anyway"); you can
+            confirm it independently by uploading the exe to
+            https://www.virustotal.com/ before running.

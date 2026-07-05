@@ -9,6 +9,10 @@ __pycache__/
 *.pyc
 .venv/
 
+# PyInstaller build output (the exe is published via GitHub Releases, not tracked)
+build/
+dist/
+
 # editors / os
 .vscode/
 .idea/
