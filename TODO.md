@@ -107,6 +107,29 @@ the build. Playground Games ships new cars → new ordinals, so it goes stale.
 - Keep README basic: what it is, features, install, in-game setup, a little
   troubleshooting.
 
+## Contact & lap-invalidation detection (accuracy)
+
+The `contact` 💥 flag is a ground-plane accel spike (`IMPACT_ACCEL` = 45 m/s²).
+Real cross-country data (session 55) shows it is both too eager and too blind:
+
+- **False positives: hard jump-landings flagged as contact.** Cross-country is
+  full of big jumps; landing hard trips the ground-plane threshold even though
+  it isn't a wall/car hit. On session 55 roughly half of ~12 contact markers
+  were landings, not the AI bumps they looked like. Idea: detect the airborne
+  phase preceding a spike (all wheels unloaded / suspension at full droop / no
+  tire load for several frames) and classify the following spike as a landing,
+  not contact.
+- **Manual session editing.** Let the user curate a recording — dismiss/ignore
+  specific contact markers on the map, re-tag, or trim — for when the auto
+  detector is wrong. Pairs with the analysis-map layer toggles in the settings
+  work.
+- **False negatives: light wall scrapes (Rivals).** In Rivals the faintest wall
+  touch invalidates the lap in-game, but the lateral force is far below
+  `IMPACT_ACCEL`, so the flag misses it — and the packet has no lap-invalidated
+  field to read directly. Would need a subtler signature (a small sharp lateral
+  jolt + speed drop with no brake input, or a sustained scrape). Hard; tracked
+  as a known gap.
+
 ## Ideas / nice-to-have (unscheduled)
 
 - Auto-suggest track type from geometry instead of a manual dropdown.
@@ -117,14 +140,11 @@ the build. Playground Games ships new cars → new ordinals, so it goes stale.
 
 ## In flight (carried over)
 
-- **Confirm the last unverified event type: cross-country.** Point-to-point
-  finishes (dirt/touge/sprint/drag/street) are implemented, simulator-verified,
-  and confirmed on real captures. Capture mode is still ON — `.env` has
-  `FC_KEEP_DISCARDED=1` — to catch any event type the recorder doesn't yet
-  recognize (cross-country is the remaining candidate). After driving one:
-  `python tools/inspect_session.py <id>`, confirm it's kept and timed correctly,
-  add support if needed, then set the flag back to 0 (or delete `.env`) and
-  `docker compose up -d`.
+- _(none)_ — all known FH6 event types are recognized. Cross-country was the
+  last unconfirmed one: **verified 2026-07-05 on a real race (session 55)** — it
+  uses the touge signature (gridded, `CurrentLap` counts, stream cut dead at the
+  line at 67 m/s) and is already recovered by the existing gridded cut-dead path,
+  no new code. Capture mode (`FC_KEEP_DISCARDED`) is now **off**.
 
 ## Known accepted trade-offs (not bugs; revisit only with new signal data)
 

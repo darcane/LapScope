@@ -141,6 +141,11 @@ All the rules exist because some real behavior broke a naive version:
   incremented (circuits recover their final lap via `_final_lap_time_at_cutoff`
   instead), real distance covered, still at speed → run timed launch-to-line,
   flagged `cutoff`. Simulate with `python tools/simulator.py --dirt 40 --cut`.
+  **Cross-country shares this exact signature** (verified 2026-07-05, session 55:
+  gridded start P8→P3, `CurrentLap` counting the whole way with `LapNumber` at 0,
+  stream cut dead at the line at 67 m/s) — recovered by the same gridded cut-dead
+  path, timed launch-to-line = 144.747 s, `cutoff`. No separate handling; it was
+  the last unconfirmed point-to-point type, so all known event types are covered.
 - Point-to-point events may never start `CurrentLap`; lap traces and the live
   delta fall back to race-time-elapsed-since-lap-open.
 - **World Time Attack broadcasts no lap fields at all** (real capture, 2026-07-02:
@@ -173,7 +178,12 @@ All the rules exist because some real behavior broke a naive version:
 - Dirty-lap inference: rewind = lap clock below its high-water mark while
   distance doesn't grow (per-frame comparison misses gradual scrubs — that bug
   shipped once); contact = ground-plane |accel| ≥ 45 m/s². Stored as
-  `laps.flags` ("rewind,contact").
+  `laps.flags` ("rewind,contact"). **Known contact-flag limits (real
+  cross-country, session 55):** hard jump-landings trip it (false positives —
+  roughly half of that race's spikes were landings, not the AI bumps they looked
+  like), and light Rivals wall-scrapes stay below the threshold (false negatives;
+  there is no lap-invalidated packet field to cross-check against). Improving
+  both is tracked in TODO.md ("Contact & lap-invalidation detection").
 - Routes are fingerprinted (start pos within 80 m + length within 5%) and named
   once by the user; names apply to every session on the route.
 - Sessions with zero completed laps/runs are discarded at close and again at
