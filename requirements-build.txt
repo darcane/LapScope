@@ -1,0 +1,4 @@
+# Packaging tooling for the plug-and-play Windows build. Kept separate from the
+# lean runtime deps (requirements.txt) and the test/lint tooling
+# (requirements-dev.txt). Used by LapScope.spec and .github/workflows/release.yml.
+pyinstaller>=6.10

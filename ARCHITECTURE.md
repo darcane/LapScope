@@ -133,6 +133,31 @@ assert them here.
 - [.claude/launch.json](.claude/launch.json): preview server runs
   `docker compose up` and owns the process.
 
+### Windows exe (plug-and-play build for normal users)
+
+- Entry point [run_desktop.py](run_desktop.py): defaults `DATA_DIR` to
+  `%LOCALAPPDATA%\LapScope`, runs uvicorn on `127.0.0.1:8000`, and opens the
+  browser. It imports the `app.main:app` object by reference (not the string
+  form) so PyInstaller statically follows the whole `app` package.
+- [LapScope.spec](LapScope.spec): PyInstaller **onedir** build. Bundles the full
+  `app/static/` tree via `Tree(...)` (HTML/CSS/JS **plus** the binary
+  `fonts/*.woff2`, `css/uplot.min.css`, `js/vendor/uplot.iife.min.js`) to
+  `app/static` and `app/car_ordinals.json` to `app/`, matching the runtime paths
+  in [app/main.py](app/main.py) and [app/api/routes.py](app/api/routes.py).
+  `hiddenimports` cover uvicorn/websockets submodules that are imported lazily.
+  Build locally: `pip install -r requirements.txt -r requirements-build.txt &&
+  pyinstaller LapScope.spec` -> `dist/LapScope/LapScope.exe`.
+- Exe icon: `assets/lapscope.ico` (committed; the brand track+lens mark).
+  Regenerate from `assets/lapscope.svg` with
+  [tools/make_icon.py](tools/make_icon.py) only when the artwork changes — the
+  build/CI never rasterizes, they just consume the committed `.ico`.
+- `app.__version__` ([app/\_\_init\_\_.py](app/__init__.py)) is `0.0.0` in source
+  and stamped with the git tag at release-build time.
+- [.github/workflows/release.yml](.github/workflows/release.yml): fires **only on
+  `v*` tags** (separate from PR CI in [.github/workflows/ci.yml](.github/workflows/ci.yml)),
+  builds on `windows-latest`, zips `dist/LapScope`, writes SHA256 `checksums.txt`,
+  and publishes a GitHub Release with both attached.
+
 ## Cross-file invariants (change one → change all)
 
 - Track-type set: `TRACK_TYPES` (api/routes.py) = `TRACK_META` (common.js)

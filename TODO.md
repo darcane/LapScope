@@ -34,26 +34,27 @@ Ideas.**
 ✅ Decided: ship **both** — a single-click `.exe` as the headline path for normal
 users, Docker documented for power/cross-platform users.
 
-- **Single-file Windows build (PyInstaller).** The app is a near-perfect
-  candidate: pure Python (FastAPI + uvicorn), stdlib SQLite, no frontend build
-  step. Bundle `app/` + static assets + fonts + `car_ordinals.json` into one
-  `LapScope.exe` that binds UDP 9999, serves the dashboard on
-  `localhost:8000`, and auto-opens the browser. Decide DB location (next to the
-  exe = portable, or `%LOCALAPPDATA%`).
-- **GitHub Releases pipeline.** GitHub Action that builds the exe on a version
-  tag and attaches it to a Release, with checksums and a VirusTotal link in the
-  notes (transparency vs. SmartScreen/AV false positives).
+- ✅ **Windows build (PyInstaller).** Shipped as an **onedir** build (fewer AV
+  heuristics than onefile): [run_desktop.py](run_desktop.py) entry +
+  [LapScope.spec](LapScope.spec) bundle `app/` + static assets + fonts +
+  `car_ordinals.json`; the exe binds UDP 9999, serves `127.0.0.1:8000`, and
+  auto-opens the browser. DB location: `%LOCALAPPDATA%\LapScope`.
+- ✅ **GitHub Releases pipeline.** [.github/workflows/release.yml](.github/workflows/release.yml)
+  builds the exe on a `v*` tag and attaches a zip + SHA256 `checksums.txt` to a
+  Release, with a VirusTotal note in the body (transparency vs. SmartScreen/AV
+  false positives).
 - **SmartScreen / antivirus trust.** Unsigned PyInstaller binaries get flagged.
-  Evaluate: Azure Trusted Signing or SignPath (free for OSS) for code signing;
-  meanwhile prefer a onedir build over onefile (fewer heuristics) and publish
-  reproducible-build instructions.
+  Onedir is already shipped (fewer heuristics than onefile) and checksums are in
+  the release notes. Remaining: evaluate Azure Trusted Signing or SignPath (free
+  for OSS) for code signing, and publish reproducible-build instructions.
 - **Version / update check.** Exe users don't get `git pull`. Add a lightweight
   "newer version available" notice (checks the GitHub Releases API, dismissible,
-  no auto-download).
-- **Keep the Docker path** for advanced/cross-platform users; document both in
-  the README (exe for normal users, Docker for power users). Note: a native exe
-  also sidesteps the Docker IPv6-proxy port bug and one layer of UWP-loopback
-  pain, so it is arguably *more* reliable for the common case.
+  no auto-download). `app.__version__` is already stamped from the tag at build
+  time — the check can compare against it.
+- ✅ **Keep the Docker path** for advanced/cross-platform users; both are now
+  documented in the README (exe for normal users, Docker for power users). Note:
+  a native exe also sidesteps the Docker IPv6-proxy port bug and one layer of
+  UWP-loopback pain, so it is arguably *more* reliable for the common case.
 
 ## Settings page (user preferences)
 
@@ -94,8 +95,8 @@ the build. Playground Games ships new cars → new ordinals, so it goes stale.
   game, no wall-clock wait (~2 s total).
 - ✅ **CI on PRs** (`.github/workflows/ci.yml`): ruff + the `packet.py`
   self-test + pytest on every push and pull request.
-- **Build the exe on version tags** — the remaining CI job (folds into the
-  Distribution / GitHub Releases items).
+- ✅ **Build the exe on version tags** — [.github/workflows/release.yml](.github/workflows/release.yml)
+  builds and publishes the exe on `v*` tags only.
 - **Branch protection** on `main` (needs the GitHub remote): require a PR and the
   passing CI check, no direct pushes. Enable in repo settings once pushed and
   document the rule in CONTRIBUTING.
