@@ -20,7 +20,7 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
 
 | File | Responsibility |
 |---|---|
-| [app/main.py](app/main.py) | Wiring: lifespan creates Store/Hub/SessionTracker, binds the UDP endpoint, runs a 1 s watchdog that closes sessions on silence. `no-cache` middleware for non-`/api` paths (keep it — stale-JS bug shipped once). Serves `app/static/` at `/`. |
+| [app/main.py](app/main.py) | Wiring: lifespan creates Store/Hub/SessionTracker, binds the UDP endpoint (a busy port is caught, logged, and surfaced via `app.state.udp_error` / `/api/status` rather than crash-exiting — the dashboard keeps serving), runs a 1 s watchdog that closes sessions on silence. `no-cache` middleware for non-`/api` paths (keep it — stale-JS bug shipped once). Serves `app/static/` at `/`. |
 | [app/telemetry/packet.py](app/telemetry/packet.py) | 324-byte Data Out struct: `parse()`, `pack()` (simulator/tests), `empty_fields()`, `FIELDS` name/count table. Self-test via `python app/telemetry/packet.py`. |
 | [app/telemetry/listener.py](app/telemetry/listener.py) | `asyncio.DatagramProtocol`: counts packets, warns once on wrong size (hex dump), parses, feeds tracker, publishes frame+extras to hub. Recorder exceptions never kill the stream. |
 | [app/telemetry/hub.py](app/telemetry/hub.py) | Fan-out to WebSocket subscriber queues (drop-oldest on slow clients) + stream stats used by `/api/status`. |
@@ -61,7 +61,7 @@ each runs on every startup inside try/except (existing-column errors swallowed).
 
 | Endpoint | Notes |
 |---|---|
-| `GET /status` | Packet counters, last-packet age/size, active session, session best. First stop when "nothing works". |
+| `GET /status` | Packet counters, last-packet age/size, active session, session best, and `udp_error` (non-null when the UDP port could not be bound). First stop when "nothing works". |
 | `GET /sessions` | List with route/car-name joins, lap counts, best lap. |
 | `PATCH /sessions/{id}` | `name`, `conditions` (`dry/wet/snow`, `""` clears), `track_type` (`road/street/touge/dirt/cross/drag/wtc`, `""` clears). |
 | `POST /sessions/{id}/reprocess` | Rebuild laps from stored frames (async def — event-loop writes). 409 while recording. |

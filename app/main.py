@@ -45,17 +45,38 @@ async def lifespan(app: FastAPI):
     app.state.store, app.state.hub, app.state.tracker = store, hub, tracker
     app.state.udp_port = udp_port
 
+    app.state.udp_error = None
     loop = asyncio.get_running_loop()
-    transport, _ = await loop.create_datagram_endpoint(
-        lambda: TelemetryProtocol(hub, tracker), local_addr=("0.0.0.0", udp_port)
-    )
-    log.info("Listening for FH6 Data Out on UDP %d; dashboard on HTTP 8000", udp_port)
+    transport = None
+    try:
+        transport, _ = await loop.create_datagram_endpoint(
+            lambda: TelemetryProtocol(hub, tracker), local_addr=("0.0.0.0", udp_port)
+        )
+        log.info("Listening for FH6 Data Out on UDP %d; dashboard on HTTP 8000", udp_port)
+    except OSError as exc:
+        # Port already taken (another telemetry tool, or a second LapScope
+        # window). Don't crash-exit — that slams the console shut on a
+        # double-clicked exe before the user can read anything. Keep the
+        # dashboard serving (past-session analysis still works) and surface an
+        # actionable message here and in /api/status.
+        app.state.udp_error = (
+            f"UDP port {udp_port} is already in use - another program (or a second "
+            "LapScope window) has it. Close that program, or set TELEMETRY_UDP_PORT to "
+            "a free port, then restart LapScope."
+        )
+        log.error(
+            "Could not bind UDP telemetry port %d (%s). %s "
+            "The dashboard is still available on HTTP 8000, but no live telemetry "
+            "will arrive until the port is free.",
+            udp_port, exc, app.state.udp_error,
+        )
     watchdog = asyncio.create_task(_watchdog(tracker))
 
     yield
 
     watchdog.cancel()
-    transport.close()
+    if transport is not None:
+        transport.close()
     tracker.shutdown(time.time())
     store.close()
 

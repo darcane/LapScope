@@ -137,11 +137,18 @@ async function pollStatus() {
   try {
     const st = await (await fetch("/api/status")).json();
     $("nd-port").textContent = st.udp_port;
-    $("nd-stat").textContent =
-      st.packets_total === 0
-        ? `server: no packets received yet on UDP ${st.udp_port}` +
-          (st.bad_packets ? ` (${st.bad_packets} wrong-size packets!)` : "")
-        : `server: ${st.packets_total} packets received, last ${st.last_packet_age}s ago`;
+    const stat = $("nd-stat");
+    if (st.udp_error) {
+      stat.textContent = st.udp_error;
+      stat.classList.add("error");
+    } else {
+      stat.classList.remove("error");
+      stat.textContent =
+        st.packets_total === 0
+          ? `server: no packets received yet on UDP ${st.udp_port}` +
+            (st.bad_packets ? ` (${st.bad_packets} wrong-size packets!)` : "")
+          : `server: ${st.packets_total} packets received, last ${st.last_packet_age}s ago`;
+    }
   } catch { /* server briefly unavailable */ }
 }
 setInterval(() => { if (!$("nodata").classList.contains("hidden")) pollStatus(); }, 2000);

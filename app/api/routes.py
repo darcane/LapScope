@@ -83,6 +83,7 @@ async def status(request: Request):
     now = time.time()
     return {
         "udp_port": request.app.state.udp_port,
+        "udp_error": getattr(request.app.state, "udp_error", None),
         "packets_total": hub.packets_total,
         "bad_packets": hub.bad_packets,
         "last_packet_age": None if hub.last_packet_time is None else round(now - hub.last_packet_time, 3),

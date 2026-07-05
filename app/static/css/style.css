@@ -421,6 +421,15 @@ main.grid .lap-grid { margin-bottom: auto; }
 }
 .setup-lines { line-height: 2; }
 .overlay .stat { color: var(--muted); font-size: 0.85rem; margin-top: 16px; }
+.overlay .stat.error {
+  color: var(--bad);
+  font-size: 0.95rem;
+  font-weight: 600;
+  max-width: 42ch;
+  border: 1px solid #5b2a2a;
+  border-radius: 8px;
+  padding: 10px 14px;
+}
 
 .pulse-ring { display: flex; justify-content: center; }
 .pulse-ring i {
