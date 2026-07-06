@@ -29,9 +29,10 @@ Ideas.**
   Analysis/session shots are from real recorded sessions; the hero was captured live.
 - **CI on pull requests** (see Testing & CI) — required before opening the repo
   to outside PRs.
-- **Repo hygiene files:** `CONTRIBUTING.md`, issue templates (bug / feature /
-  "unrecognized event type" capture report), a PR template, and a short
-  `CODE_OF_CONDUCT.md`. Document the branch-protection rules in CONTRIBUTING.
+- **Repo hygiene files:** ✅ Added `CONTRIBUTING.md` (workflow + branch-protection
+  rules + squash-merge), `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), a PR
+  template, and issue forms (bug / feature / "unrecognized event" capture) with
+  an `ISSUE_TEMPLATE/config.yml`. README's Contributing section links them.
 
 ## Distribution & packaging (make it plug & play)
 
@@ -101,9 +102,11 @@ the build. Playground Games ships new cars → new ordinals, so it goes stale.
   self-test + pytest on every push and pull request.
 - ✅ **Build the exe on version tags** — [.github/workflows/release.yml](.github/workflows/release.yml)
   builds and publishes the exe on `v*` tags only.
-- **Branch protection** on `main` (needs the GitHub remote): require a PR and the
-  passing CI check, no direct pushes. Enable in repo settings once pushed and
-  document the rule in CONTRIBUTING.
+- **Branch protection** on `main`: require a PR + review, the passing `test` CI
+  check, up-to-date branches, and no direct pushes; allow **squash-merge only**.
+  Rules documented in [CONTRIBUTING.md](CONTRIBUTING.md); apply them in the GitHub
+  repo settings (Settings → Branches / General — see the checklist handed over
+  when this landed).
 
 ## Docs
 

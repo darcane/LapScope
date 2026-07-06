@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / discussion
+    url: https://github.com/darcane/LapScope/discussions
+    about: Ask a question or discuss an idea before filing an issue.
+  - name: Troubleshooting (no packets, setup)
+    url: https://github.com/darcane/LapScope/wiki
+    about: Setup, in-game Data Out settings, and the UWP-loopback / Docker port fixes live in the README and Wiki.
+  - name: Report a security issue (private)
+    url: https://github.com/darcane/LapScope/security/advisories/new
+    about: Please report vulnerabilities privately, not as a public issue.
