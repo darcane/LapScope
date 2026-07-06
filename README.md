@@ -14,11 +14,7 @@ you can see *where* you're losing time and *why*.
 [![CI](https://github.com/darcane/LapScope/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-<!-- SCREENSHOT: hero GIF — live dashboard in motion (gauges sweeping, friction circle,
-     track map drawing itself as you take a corner). ~8-12 s loop, save to
-     docs/media/hero.gif and swap the line below. -->
-<!-- ![LapScope live dashboard](docs/media/hero.gif) -->
-> **📸 Hero GIF goes here** — `docs/media/hero.gif`
+![LapScope live dashboard](docs/media/hero.gif)
 
 </div>
 
@@ -58,17 +54,25 @@ in Rivals.
 - **Routes** — the game never sends route names, so circuits are fingerprinted from lap
   geometry. Name a route once and every past and future session on it picks it up.
 
-<!-- SCREENSHOT: analysis A/B comparison — two laps loaded, delta chart showing time
-     gained/lost, save to docs/media/analysis-compare.png -->
-> **📸 Analysis A/B comparison** — `docs/media/analysis-compare.png`
+**Analysis — A/B lap comparison** (distance-aligned delta, speed, inputs, steering, slip):
 
-<!-- SCREENSHOT: track map colored by speed (and/or slip), ideally the 3D view of a
-     hilly route, save to docs/media/track-map.png -->
-> **📸 Track map (speed/slip, 2D & 3D)** — `docs/media/track-map.png`
+![Analysis A/B comparison](docs/media/analysis-compare.png)
 
-<!-- SCREENSHOT: a lap list showing dirty-lap flags (⏪ rewind, 💥 contact) and
-     class/PI + drivetrain ribbons, save to docs/media/session-list.png -->
-> **📸 Session & lap list with flags/ribbons** — `docs/media/session-list.png`
+**Track map**, colored by speed — the same real circuit in 2D and in 3D. The 3D view uses
+the packet's elevation and is drag-to-rotate; the ✦ markers are detected contacts:
+
+![Track map in 2D, colored by speed](docs/media/track-map.png)
+
+![Track map in 3D, drag-to-rotate](docs/media/track-map-3d.png)
+
+**Lap list with dirty-lap flags** (💥 contact, ⏪ rewind) and A/B compare tags:
+
+![Lap list with dirty-lap flags](docs/media/session-list.png)
+
+**Session list** — every drive with Forza-colored class/PI, drivetrain, track-type, and
+conditions ribbons, plus the auto-named route:
+
+![Session list with ribbons](docs/media/session-sidebar.png)
 
 ## Quick start
 
@@ -107,8 +111,7 @@ Then just drive. Telemetry is only sent while you're driving (not in menus). You
 
 > ⚠️ Do **not** use ports **5200–5300** — the game binds its own socket in that range.
 
-<!-- SCREENSHOT: the in-game Data Out settings screen, save to docs/media/fh6-settings.png -->
-> **📸 In-game Data Out settings** — `docs/media/fh6-settings.png`
+![FH6 Data Out settings](docs/media/fh6-settings.png)
 
 ## Try it without the game
 
