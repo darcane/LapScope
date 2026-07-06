@@ -91,15 +91,19 @@ lands on it except a green, reviewed PR.
 These are enforced in the GitHub repo settings; contributors just need to know
 what they imply:
 
-- **No direct pushes to `main`** — all changes go through a pull request.
-- **A pull request is required**, with at least **one approving review** and all
-  review conversations resolved before merge.
+- **No direct pushes to `main`** — all changes go through a pull request (rules
+  apply to admins too).
+- **A pull request is required**, with all review conversations resolved before
+  merge. Required approvals are currently **0** (LapScope is solo-maintained, and
+  GitHub won't let you approve your own PR); this will move to **≥1** once there
+  are other reviewers.
 - **Status checks must pass** before merging — the required check is **`test`**
   (the CI workflow: `ruff`, the `packet.py` self-test, and `pytest`).
 - **Branches must be up to date with `main`** before merging (so CI runs against
-  the final merged state).
+  the final merged state), and **linear history** is required.
 - **Squash and merge is the only allowed merge method** — merge commits and
-  rebase merges are disabled, so `main` stays one commit per PR.
+  rebase merges are disabled, so `main` stays one commit per PR. Head branches
+  are auto-deleted after merge.
 
 ## Reporting security issues
 
