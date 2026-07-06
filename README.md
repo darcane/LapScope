@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/lapscope.svg" alt="LapScope" width="120" />
+<img src="assets/logo-with-brand.png" alt="LapScope" width="220" />
 
 # LapScope
 

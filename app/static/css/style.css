@@ -63,9 +63,8 @@ header {
 }
 .brand span { color: var(--accent); }
 .brand i {
-  width: 20px; height: 20px;
-  background: center/contain no-repeat
-    url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><path d='M24 12 C40 8 54 16 51 28 C48 40 34 38 27 44 C18 51 10 44 11 32 C12 22 14 15 24 12 Z' fill='none' stroke='%2300d4ff' stroke-width='6' stroke-linejoin='round'/><circle cx='42' cy='43' r='12' fill='none' stroke='%23ff3d7f' stroke-width='5'/><line x1='50.5' y1='51.5' x2='59' y2='60' stroke='%23ff3d7f' stroke-width='6' stroke-linecap='round'/></svg>");
+  width: 24px; height: 24px;
+  background: center/contain no-repeat url("../img/logo.png");
 }
 
 nav { display: flex; gap: 4px; }
