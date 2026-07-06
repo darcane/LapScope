@@ -1,0 +1,94 @@
+name: Unrecognized / mis-recorded event capture
+description: An event or lap wasn't recorded, was discarded, or was timed wrong.
+title: "capture: "
+labels: ["event-detection", "capture"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This is the most valuable kind of report.** FH6 sends no explicit
+        event boundaries, so LapScope infers them — and it can only learn a new
+        event type from a real capture. Please help it self-heal.
+
+        **How to capture a discarded session:**
+        1. Set `LS_KEEP_DISCARDED=1` (Docker: it's passed through from the
+           environment or a repo-root `.env`; exe/source: set the env var before
+           launching) so the session is kept instead of discarded.
+        2. Drive/replay the event that misbehaves.
+        3. Find its id and dump its signal transitions:
+           ```
+           python tools/inspect_session.py --list
+           python tools/inspect_session.py <id>
+           ```
+        4. Paste the `inspect_session` output below. If you can, attach (or
+           offer) the `data/telemetry.db` — the raw frames let us reproduce and
+           add a test.
+
+        More on the workflow: the README "Troubleshooting" section and the Wiki.
+  - type: dropdown
+    id: event-type
+    attributes:
+      label: What kind of event was it?
+      options:
+        - Circuit race
+        - Rivals
+        - Sprint / point-to-point
+        - Dirt / cross-country
+        - Touge
+        - Drag
+        - World Time Attack
+        - Free roam
+        - Other / not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: What went wrong?
+      options:
+        - The session was discarded (didn't show up at all)
+        - A lap/run was missing
+        - A phantom / extra lap was recorded
+        - A lap/run time was wrong
+        - A dirty-lap flag was wrong (missing or false 💥 contact / ⏪ rewind)
+        - Wrong route / condition / metadata
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: e.g. "one run of ~92 s", "3 laps, last one timed".
+    validations:
+      required: true
+  - type: textarea
+    id: inspect
+    attributes:
+      label: inspect_session output
+      description: Output of `python tools/inspect_session.py <id>` for the affected session.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: LapScope version
+      placeholder: "e.g. v0.3.1 / commit 47ef0c7"
+    validations:
+      required: true
+  - type: textarea
+    id: db-offer
+    attributes:
+      label: Raw capture (telemetry.db)
+      description: >
+        The raw frames are what let us add a regression test. Can you share the
+        session's `data/telemetry.db`? Say yes/no here; a maintainer will follow
+        up on how to send it if needed.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmation
+      options:
+        - label: I captured this with `LS_KEEP_DISCARDED=1` (or the session was kept anyway) and included the inspect_session output.
+          required: true

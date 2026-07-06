@@ -1,0 +1,72 @@
+name: Bug report
+description: Something isn't working the way it should.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! Please search [existing issues](../issues) first.
+        If the problem is **an event/lap not being recorded correctly**, use the
+        "Unrecognized / mis-recorded event capture" template instead — it asks
+        for the extra data we need.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start LapScope ...
+        2. Drive / run `python tools/simulator.py ...`
+        3. See ...
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How are you running LapScope?
+      options:
+        - Windows .exe (release build)
+        - Docker
+        - From source (python)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: LapScope version
+      description: From the release zip name, or the git commit if running from source.
+      placeholder: "e.g. v0.3.1 / commit 47ef0c7"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS / environment
+      placeholder: "e.g. Windows 11 26200, or Docker on Ubuntu 24.04"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / console output
+      description: >
+        Paste any relevant output from the console window (exe) or
+        `docker compose logs`. Also useful: what
+        http://localhost:8000/api/status shows.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmation
+      options:
+        - label: I searched existing issues and this isn't a duplicate.
+          required: true
+        - label: This is a bug, not an unrecognized-event capture (that has its own template).
+          required: true

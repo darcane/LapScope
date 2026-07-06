@@ -175,8 +175,10 @@ event-detection model, the hard-won FH6 quirks) is in the **[Wiki](../../wiki)**
 ## Contributing
 
 [Issues](../../issues) and PRs welcome — especially **captures of event types that
-aren't detected yet** and **car-ordinal additions**. See [ARCHITECTURE.md](ARCHITECTURE.md)
-for the code map and [AGENTS.md](AGENTS.md) for the dev workflow.
+aren't detected yet** and **car-ordinal additions**. Start with
+[CONTRIBUTING.md](CONTRIBUTING.md) (workflow, branch rules, how to file a capture);
+see [ARCHITECTURE.md](ARCHITECTURE.md) for the code map, [AGENTS.md](AGENTS.md) for
+the dev workflow, and our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
