@@ -13,16 +13,24 @@ Ideas.**
 
 ## Release blockers (do before announcing publicly)
 
-- **LICENSE.** ✅ Decided **MIT**, `LICENSE` file added. Remaining: add a
-  `## License` line to the README, and credit vendored third-party assets
-  (Rajdhani font — OFL; uPlot — MIT) in a NOTICES/THIRD-PARTY section.
-- **Public README rewrite.** Lead with what it is + a hero GIF, then a features
-  list and a one-line install for the chosen distribution method. Move the deep
-  troubleshooting / capture-diagnosis material to the wiki and link it. Keep the
-  in-game Data Out setup table front and centre.
-- **Screenshots + GIFs** for the README and the Reddit post (live dashboard in
-  motion, analysis A/B comparison, track map colored by speed/slip, dirty-lap
-  flags). Captured from real gameplay — see the asset shot-list.
+- **LICENSE.** ✅ **MIT**, `LICENSE` file added; the README now has a `## License`
+  line and a Third-party assets section crediting Rajdhani (OFL) and uPlot (MIT).
+- **Public README rewrite.** ✅ Rewritten public-facing: hero block (logo + tagline
+  + badges), condensed features, exe-first install, in-game Data Out table front
+  and centre, brief troubleshooting with the deep material pushed to the Wiki. Hero
+  GIF and screenshots are stubbed with `docs/media/*` placeholders (see below).
+- **Screenshots + GIFs** for the README and the Reddit post. Placeholders are marked
+  inline in the README (`<!-- SCREENSHOT: … -->` + a `docs/media/…` path). Shot list:
+  1. `docs/media/hero.gif` — live dashboard in motion (gauges, friction circle,
+     track map drawing itself), ~8-12 s loop.
+  2. `docs/media/analysis-compare.png` — A/B lap comparison with the delta chart.
+  3. `docs/media/track-map.png` — racing line colored by speed/slip, ideally the 3D
+     view of a hilly route.
+  4. `docs/media/session-list.png` — session/lap list showing ⏪/💥 flags and
+     class/PI + drivetrain ribbons.
+  5. `docs/media/fh6-settings.png` — the in-game Data Out settings screen.
+  Capture from real gameplay, drop into `docs/media/`, then uncomment the `![]()`
+  lines in the README (replacing the `> 📸 …` placeholder blockquotes).
 - **CI on pull requests** (see Testing & CI) — required before opening the repo
   to outside PRs.
 - **Repo hygiene files:** `CONTRIBUTING.md`, issue templates (bug / feature /
