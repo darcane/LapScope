@@ -150,10 +150,9 @@ assert them here.
 - Brand artwork: `assets/logo-alone.png` (the speedometer + road mark) and
   `assets/logo-with-brand.png` (mark + wordmark, used on the README hero). Both
   are raster (gradients + glow), so they stay PNG rather than being traced to
-  SVG. Exe icon `assets/lapscope.ico` and the web `app/static/img/logo.png`
-  (favicon + header mark) are committed and regenerated from `logo-alone.png`
-  with [tools/make_icon.py](tools/make_icon.py) only when the artwork changes —
-  the mark is used as-is (centered on a transparent square, only downscaled; no
+  SVG. The derived exe icon `assets/lapscope.ico` and web
+  `app/static/img/logo.png` (favicon + header mark) are committed directly — the
+  mark is used as-is (centered on a transparent square, only downscaled; no
   crop/round/distortion). The build/CI never rasterizes, they just consume the
   committed files.
 - `app.__version__` ([app/\_\_init\_\_.py](app/__init__.py)) is `0.0.0` in source
