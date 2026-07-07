@@ -68,20 +68,24 @@ users, Docker documented for power/cross-platform users.
 
 ## Settings page (user preferences)
 
-Today a couple of preferences are ad-hoc: the live dashboard has an mph/km/h
-toggle in `localStorage` (`fc_mph`) but the analysis page is hard-coded to km/h.
-Consolidate into one Settings page and apply preferences across both pages.
+✅ **Shipped** a shared ⚙ Settings panel (`app/static/js/settings.js`, opened
+from the header on both pages), `localStorage`-backed under one `ls_settings`
+key, migrating the old `fc_mph` / `fc_mapmode` keys. Delivered:
 
-- **Units:** speed (mph / km/h), tire temp (°F / °C — packet is Fahrenheit),
-  distance (mi / km). Make the analysis charts honor the choice too (currently
-  km/h only).
-- **Free-roam map:** optional toggle to draw the live track map in free roam,
-  not only race mode.
-- **Analysis map layers:** show/hide overlays — contact spikes, 2D/3D default,
-  color-by (speed vs. slip) default.
-- **Persistence:** decide `localStorage` (per-browser, zero backend) vs. a
-  server-side settings row (shared across devices). Start with `localStorage`.
-- **Theme / accent** (optional, low priority).
+- ✅ **Units:** speed (mph / km/h), tire temp (°F / °C), distance (mi / km) —
+  applied on both the live dashboard and the analysis charts/map/readouts.
+- ✅ **Free-roam map:** toggle to draw the live track map in free roam, not only
+  race mode.
+- ✅ **Analysis map layers:** contact-spike show/hide, plus default 2D/3D and
+  default color-by (speed vs. slip).
+- ✅ **Persistence:** `localStorage` (per-browser, zero backend) — the right home
+  since every conversion is display-time and never touches stored packets.
+
+Remaining / follow-ups:
+
+- **More unit choices:** power (kW / hp / PS), boost (psi / bar).
+- **Theme / accent** (optional, low priority; the theme is already centralized in
+  CSS custom props in `style.css`).
 
 ## Car database (community ordinal list)
 

@@ -16,7 +16,6 @@ const state = {
   lastMsg: 0,
   trail: [],       // [latG, lonG] history for friction circle
   strip: [],       // input history
-  mph: localStorage.getItem("fc_mph") === "1",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -53,8 +52,13 @@ function resetLiveMap(sessionId) {
 // (many frames over the threshold) leaves a single dot. Gated exactly like the
 // map path — races/time-attacks only, same session — and runs after
 // feedLiveMap so a session change / grid snap has already cleared old hits.
+function mapActive(f) {
+  // races/time-attacks always; free roam only when the user opts in
+  return f.race_mode || getSettings().freeroamMap;
+}
+
 function feedCollision(f) {
-  if (f.session_id == null || !f.race_mode || f.session_id !== liveMap.session) {
+  if (f.session_id == null || !mapActive(f) || f.session_id !== liveMap.session) {
     liveMap.overImpact = false;
     return;
   }
@@ -71,7 +75,7 @@ function feedLiveMap(f) {
   // IsRaceOn is 1 in free roam too, so fast-travel sprawl would wreck the
   // map - race_mode comes from the recorder, which knows the difference.
   // The finished track stays on screen until the next event starts.
-  if (f.session_id == null || !f.race_mode) return;
+  if (f.session_id == null || !mapActive(f)) return;
   if (f.session_id !== liveMap.session) resetLiveMap(f.session_id); // new session -> fresh track
   const x = f.pos_x, z = f.pos_z;
   if (liveMap.last) {
@@ -125,12 +129,9 @@ function setConn(text, cls) {
   el.className = `chip ${cls}`;
 }
 
-$("unit-toggle").textContent = state.mph ? "mph" : "km/h";
-$("unit-toggle").onclick = () => {
-  state.mph = !state.mph;
-  localStorage.setItem("fc_mph", state.mph ? "1" : "0");
-  $("unit-toggle").textContent = state.mph ? "mph" : "km/h";
-};
+// toggling the free-roam-map setting off mid-drive: drop the accumulated path
+// so it doesn't linger on screen (races clear it on their own on session change)
+onSettingsChange(() => { if (!getSettings().freeroamMap) resetLiveMap(liveMap.session); });
 
 /* no-data overlay: refresh server stats while visible */
 async function pollStatus() {
@@ -195,18 +196,18 @@ function render() {
   updateCarChip(f);
   drawRpm(rpmG, f.current_engine_rpm, f.engine_max_rpm, f.engine_idle_rpm, f.gear);
   drawFriction(fricG, state.trail, f.accel_x / 9.80665, f.accel_z / 9.80665);
-  drawGrip(gripG, f.tire_combined_slip, f.tire_temp, f.norm_susp_travel);
+  drawGrip(gripG, f.tire_combined_slip, f.tire_temp, f.norm_susp_travel, fmtTireTemp);
   drawStrip(stripG, state.strip, STRIP_CAP);
   // heading from yaw: the packet's Velocity is car-local (always "forward"),
   // yaw is world-space - the car moves along (sin yaw, cos yaw)
   drawLiveMap(liveMapG, liveMap.pts, liveMap,
-    f.race_mode && f.session_id != null
+    mapActive(f) && f.session_id != null
       ? { x: f.pos_x, z: f.pos_z, hx: Math.sin(f.yaw), hz: Math.cos(f.yaw) } : null);
   updateShiftLights(f.engine_max_rpm > 0 ? f.current_engine_rpm / f.engine_max_rpm : 0);
 
-  const v = f.speed * (state.mph ? 2.23694 : 3.6);
+  const v = speedFromMps(f.speed);
   $("speed").textContent = Math.round(Math.max(0, v));
-  $("speed-unit").textContent = state.mph ? "mph" : "km/h";
+  $("speed-unit").textContent = speedUnit();
   $("power").textContent = Math.max(0, f.power / 1000).toFixed(0);
   $("boost").textContent = Math.max(0, f.boost).toFixed(1);
 

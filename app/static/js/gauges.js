@@ -143,7 +143,10 @@ function drawFriction(g, trail, latG, lonG) {
   });
 }
 
-function drawGrip(g, slip, temps, susp) {
+// tempFmt maps a raw Fahrenheit tire temp to its display string (the caller
+// applies the user's °C/°F unit); the hot/cold color thresholds stay in
+// Fahrenheit because that's what the packet always carries.
+function drawGrip(g, slip, temps, susp, tempFmt = (t) => `${Math.round(t)}°`) {
   const { ctx, w, h } = g;
   ctx.clearRect(0, 0, w, h);
   const carW = w * 0.32, carH = h * 0.62;
@@ -183,10 +186,10 @@ function drawGrip(g, slip, temps, susp) {
     ctx.fillStyle = COL.muted;
     ctx.font = `600 10px ${FONT}`;
     ctx.fillText(labels[i], x, y - th / 2 - 10);
-    const temp = Math.round(temps[i]);
-    ctx.fillStyle = temp < 160 ? "#7fb2ff" : temp > 230 ? "#ff8a5d" : COL.text;
+    const tF = temps[i];
+    ctx.fillStyle = tF < 160 ? "#7fb2ff" : tF > 230 ? "#ff8a5d" : COL.text;
     ctx.font = `600 11px ${FONT}`;
-    ctx.fillText(`${temp}°`, x, y + th / 2 + 11);
+    ctx.fillText(tempFmt(tF), x, y + th / 2 + 11);
 
     // spring compression: outer-side bar, filled bottom-up (1 = bottomed out)
     if (susp) {

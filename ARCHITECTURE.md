@@ -86,6 +86,7 @@ listener: `session_id`, `delta` (vs session-best), `session_best`,
 | `js/gauges.js` | Pure canvas renderers (RPM arc, friction circle, grip panel, input strip, live map); `initCanvas` handles DPR scaling. |
 | `analysis.html` + `js/analysis.js` | Session browser, lap table, 2D/3D track map (color by speed/slip, drag-to-rotate 3D, chart-hover → map marker), A/B comparison charts (uPlot, x = DistanceTraveled track position). |
 | `js/common.js` | Shared badges (class/PI, drivetrain, conditions, track type incl. `TRACK_META`) + themed modal dialogs (`uiPrompt`/`uiConfirm`/`uiAlert` — never use `window.prompt/confirm/alert`) + the fail-soft client-side update check (`/api/version` vs the GitHub Releases API; dismissible `.update-banner`, 24 h cached, skipped on `0.0.0`). |
+| `js/settings.js` | User display preferences, `localStorage`-only (no backend — conversions are display-time, the recorder stores raw packets). One JSON key `ls_settings`; converters (`speedFromMps`/`speedFromKmh`/`speedUnit`, `tempFromF`/`tempUnit`/`fmtTireTemp`, `distFromM`/`distUnit`); `getSettings`/`saveSettings`/`onSettingsChange` pub-sub; `openSettings()` themed panel (reuses `common.js` modal chrome). Loaded after `common.js` on both pages; the ⚙ header button (`#settings-btn`) opens it. |
 | `css/style.css` | Theme = CSS custom props. `css/fonts.css` + `fonts/` = vendored Rajdhani (OFL); app must work fully offline. |
 | `js/vendor/uplot.iife.min.js` | Only dependency, vendored, analysis page only. |
 
@@ -173,6 +174,13 @@ assert them here.
 
 - Track-type set: `TRACK_TYPES` (api/routes.py) = `TRACK_META` (common.js)
   = `#track-select` options (analysis.html).
+- Settings map options: the `defaultMapMode` / `defaultColor` values offered by
+  the panel (`settings.js`) must match the `#map-mode` (`2d`/`3d`) and
+  `#color-mode` (`speed`/`slip`) options in analysis.html; `analysis.js` seeds
+  `state.mapMode`/`state.colorMode` from them and writes changes back via
+  `saveSettings`. The `ls_settings` schema (`speed` kmh/mph, `temp` c/f, `dist`
+  km/mi, `freeroamMap`, `contactLayer`, `defaultMapMode`, `defaultColor`) lives in
+  `settings.js` and migrates the legacy `fc_mph` / `fc_mapmode` keys on first load.
 - Conditions set: `CONDITIONS` (api/routes.py) = `CONDITION_META` (common.js)
   = `#cond-select` options (analysis.html).
 - Car classes / colors: `CAR_CLASSES` (api/routes.py) = `CLASS_LETTERS` +

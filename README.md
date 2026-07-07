@@ -53,6 +53,10 @@ in Rivals.
   auto-detected wet conditions, and a track-type tag.
 - **Routes** — the game never sends route names, so circuits are fingerprinted from lap
   geometry. Name a route once and every past and future session on it picks it up.
+- **Settings** — a ⚙ **Settings** panel (top-right on both pages) to switch units —
+  **speed** (km/h ↔ mph), **tire temp** (°C ↔ °F), **distance** (km ↔ mi) — plus map
+  preferences (draw the live map in free roam, show/hide analysis contact markers,
+  default 2D/3D view and color-by). Preferences are saved in your browser.
 
 **Analysis — A/B lap comparison** (distance-aligned delta, speed, inputs, steering, slip):
 
@@ -73,6 +77,8 @@ the packet's elevation and is drag-to-rotate; the ✦ markers are detected conta
 conditions ribbons, plus the auto-named route:
 
 ![Session list with ribbons](docs/media/session-sidebar.png)
+
+![Settings panel](docs/media/settings.png)
 
 ## Quick start
 
