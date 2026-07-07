@@ -85,6 +85,34 @@ nav a.active {
 }
 nav a:hover:not(.active) { color: var(--text); background: var(--panel-hi); }
 
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 8px 20px;
+  font-size: 0.85rem;
+  color: #001018;
+  background: linear-gradient(90deg, var(--accent), var(--good));
+  border-bottom: 1px solid var(--panel-edge-soft);
+}
+.update-banner a {
+  color: #001018;
+  font-weight: 700;
+  text-decoration: underline;
+}
+.update-banner-x {
+  background: transparent;
+  border: none;
+  color: #001018;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  opacity: 0.7;
+}
+.update-banner-x:hover { opacity: 1; }
+
 .chip {
   margin-left: auto;
   background: var(--panel-lo);

@@ -11,6 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from .. import __version__
 from ..recorder.laps import IMPACT_ACCEL
 from ..recorder.reprocess import reprocess_session
 from ..telemetry.packet import parse
@@ -82,6 +83,7 @@ async def status(request: Request):
     tracker = request.app.state.tracker
     now = time.time()
     return {
+        "version": __version__,
         "udp_port": request.app.state.udp_port,
         "udp_error": getattr(request.app.state, "udp_error", None),
         "packets_total": hub.packets_total,
@@ -92,6 +94,14 @@ async def status(request: Request):
         "session_id": tracker.session_id,
         "session_best": tracker.best_lap_time,
     }
+
+
+@router.get("/version")
+def version():
+    """The running app version. The frontend compares this against the latest
+    GitHub Release (client-side) to surface a dismissible update notice.
+    "0.0.0" marks an unversioned dev/source run and suppresses the check."""
+    return {"version": __version__}
 
 
 @router.get("/sessions")

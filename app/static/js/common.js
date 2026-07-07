@@ -146,3 +146,90 @@ function uiConfirm(title, message, { okText = "Confirm", danger = false } = {}) 
 function uiAlert(title, message) {
   return showModal({ title, message, okText: "OK", showCancel: false });
 }
+
+/* ---------- update check (client-side, fail-soft, dismissible) ----------
+   Exe users don't get `git pull`, so surface a "newer version available"
+   notice: ask the backend which version we're running (/api/version), then
+   compare against the latest GitHub Release from the browser. Strictly
+   offline-first — any failure is swallowed, dev builds ("0.0.0") are skipped,
+   and the GitHub call is cached for a day to respect the unauthenticated
+   60 req/hr limit. No auto-download; the banner only links to the release. */
+
+const UPDATE_REPO = "darcane/LapScope";
+const UPDATE_CACHE_KEY = "ls_update_check";        // { ts, latest }
+const UPDATE_DISMISS_KEY = "ls_update_dismissed";  // last dismissed version
+const UPDATE_CACHE_TTL = 24 * 60 * 60 * 1000;      // 1 day
+
+/* -1 / 0 / 1 for a<b / a==b / a>b over dotted numeric versions ("1.2.0"). */
+function cmpVersion(a, b) {
+  const pa = String(a).split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = String(b).split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+/* Latest release tag ("1.2.0", v-stripped), cached for a day. null on failure. */
+async function fetchLatestVersion() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(UPDATE_CACHE_KEY) || "null");
+    if (cached && Date.now() - cached.ts < UPDATE_CACHE_TTL) return cached.latest;
+  } catch { /* corrupt cache: fall through and refetch */ }
+  try {
+    const r = await fetch(`https://api.github.com/repos/${UPDATE_REPO}/releases/latest`);
+    if (!r.ok) return null;
+    const latest = String((await r.json()).tag_name || "").replace(/^v/, "");
+    if (!latest) return null;
+    localStorage.setItem(UPDATE_CACHE_KEY, JSON.stringify({ ts: Date.now(), latest }));
+    return latest;
+  } catch { return null; }
+}
+
+function showUpdateBanner(latest) {
+  if (document.getElementById("update-banner")) return;
+  const bar = document.createElement("div");
+  bar.id = "update-banner";
+  bar.className = "update-banner";
+
+  const msg = document.createElement("span");
+  const link = document.createElement("a");
+  link.href = `https://github.com/${UPDATE_REPO}/releases/latest`;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = `LapScope v${latest} is available`;
+  msg.append("A newer version of ", link, " \u2014 what's new");
+
+  const close = document.createElement("button");
+  close.className = "update-banner-x";
+  close.setAttribute("aria-label", "Dismiss");
+  close.textContent = "\u00d7";
+  close.onclick = () => {
+    localStorage.setItem(UPDATE_DISMISS_KEY, latest);
+    bar.remove();
+  };
+
+  bar.append(msg, close);
+  document.body.prepend(bar);
+}
+
+async function checkForUpdate() {
+  let current;
+  try {
+    current = (await (await fetch("/api/version")).json()).version;
+  } catch { return; }
+  if (!current || current === "0.0.0") return;  // dev/source run: don't nag
+
+  const latest = await fetchLatestVersion();
+  if (!latest) return;
+  if (cmpVersion(latest, current) <= 0) return;
+  if (localStorage.getItem(UPDATE_DISMISS_KEY) === latest) return;
+  showUpdateBanner(latest);
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", checkForUpdate);
+} else {
+  checkForUpdate();
+}

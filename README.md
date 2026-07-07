@@ -84,9 +84,12 @@ conditions ribbons, plus the auto-named route:
 3. Your browser opens automatically at **http://127.0.0.1:8000**. Leave the little
    console window running while you play.
 
-> The build is unsigned, so Windows SmartScreen may warn on first run — click
-> **More info → Run anyway**. Every release lists SHA256 checksums so you can verify
-> the download.
+> If the build isn't code-signed yet, Windows SmartScreen may warn on first run —
+> click **More info → Run anyway**. Every release lists SHA256 checksums, and you
+> can rebuild and verify the download yourself: see [docs/BUILDING.md](docs/BUILDING.md).
+>
+> LapScope also shows a dismissible "newer version available" notice in the
+> dashboard when a newer GitHub release exists (it never auto-downloads).
 
 ### Docker (power / cross-platform users)
 
@@ -190,6 +193,12 @@ the dev workflow, and our [Code of Conduct](CODE_OF_CONDUCT.md).
   Font License 1.1 (vendored in `app/static/fonts`).
 - **[uPlot](https://github.com/leeoniya/uPlot)** charting library — MIT (vendored for
   the analysis page).
+
+### Code signing
+
+Windows releases are code-signed with a free code-signing certificate generously
+provided by [SignPath Foundation](https://signpath.org/), using code-signing
+infrastructure by [SignPath.io](https://about.signpath.io/).
 
 > LapScope is an unofficial, fan-made tool and is not affiliated with or endorsed by
 > Playground Games, Turn 10, or Microsoft. "Forza Horizon" is a trademark of Microsoft.

@@ -48,14 +48,19 @@ users, Docker documented for power/cross-platform users.
   builds the exe on a `v*` tag and attaches a zip + SHA256 `checksums.txt` to a
   Release, with a VirusTotal note in the body (transparency vs. SmartScreen/AV
   false positives).
-- **SmartScreen / antivirus trust.** Unsigned PyInstaller binaries get flagged.
-  Onedir is already shipped (fewer heuristics than onefile) and checksums are in
-  the release notes. Remaining: evaluate Azure Trusted Signing or SignPath (free
-  for OSS) for code signing, and publish reproducible-build instructions.
-- **Version / update check.** Exe users don't get `git pull`. Add a lightweight
-  "newer version available" notice (checks the GitHub Releases API, dismissible,
-  no auto-download). `app.__version__` is already stamped from the tag at build
-  time — the check can compare against it.
+- **SmartScreen / antivirus trust.** ✅ Chose **SignPath Foundation** (free for
+  OSS). The release workflow now has a signing step that stays **inert until the
+  grant lands** (runs only when `SIGNPATH_API_TOKEN` is set), checksums the final
+  (signed) zip, and templates the release notes on signed vs. unsigned. Build
+  inputs are pinned for reproducibility (`requirements-build.lock` with hashes +
+  a pinned Python patch), and reproducible-build / verify instructions are in
+  [docs/BUILDING.md](docs/BUILDING.md). Remaining (owner, out of code): apply to
+  the SignPath OSS program, then add the secret/variable in repo settings.
+- **Version / update check.** ✅ Done. `app.__version__` is surfaced at
+  `GET /api/version` (and in `/status` + the console banner); the frontend
+  (`common.js`) compares it client-side against the latest GitHub Release and
+  shows a dismissible `.update-banner` (24 h cached, fail-soft/offline-safe, no
+  auto-download, skipped on the `0.0.0` dev build).
 - ✅ **Keep the Docker path** for advanced/cross-platform users; both are now
   documented in the README (exe for normal users, Docker for power users). Note:
   a native exe also sidesteps the Docker IPv6-proxy port bug and one layer of

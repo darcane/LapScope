@@ -21,12 +21,15 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"          # matches the Docker base image / CI
+          # Pinned patch (not just "3.12") so the build inputs are reproducible;
+          # keep in step with requirements-build.lock (regenerate the lock under
+          # this interpreter — see docs/BUILDING.md).
+          python-version: "3.12.8"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-build.txt
+          pip install --require-hashes -r requirements-build.lock
 
       - name: Stamp version from tag
         shell: pwsh
@@ -39,6 +42,40 @@ jobs:
       - name: Build exe (PyInstaller onedir)
         run: pyinstaller LapScope.spec
 
+      # --- Code signing (SignPath Foundation, free for OSS) ---
+      # Inert until enrolled: with no SIGNPATH_API_TOKEN secret set, every step
+      # below is skipped and the release ships unsigned exactly as before. Once
+      # the OSS grant lands, add the SIGNPATH_API_TOKEN secret and the
+      # SIGNPATH_ORGANIZATION_ID variable (repo Settings -> Secrets and
+      # variables -> Actions) and adjust the project/policy slugs to match your
+      # SignPath project. See docs/BUILDING.md.
+      - name: Check signing availability
+        id: signing
+        shell: bash
+        run: echo "enabled=${{ secrets.SIGNPATH_API_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload unsigned build for signing
+        if: steps.signing.outputs.enabled == 'true'
+        id: unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: LapScope-unsigned
+          path: dist/LapScope
+
+      - name: Submit signing request (SignPath)
+        if: steps.signing.outputs.enabled == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: lapscope
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          # Signed PEs come back in the same tree layout; overwrite the build so
+          # the zip + checksum below cover the signed exe.
+          output-artifact-directory: dist/LapScope
+
       - name: Package zip + checksum
         shell: pwsh
         run: |
@@ -47,25 +84,43 @@ jobs:
           (Get-FileHash $zip -Algorithm SHA256).Hash + "  " + $zip | Out-File -Encoding ascii checksums.txt
           Get-Content checksums.txt
 
+      - name: Compose release notes
+        shell: pwsh
+        run: |
+          $signed = "${{ steps.signing.outputs.enabled }}" -eq "true"
+          $verify = if ($signed) {
+            "SHA256 checksums are in ``checksums.txt``. This build is code-signed" +
+            " (SignPath Foundation), so Windows SmartScreen should recognise it." +
+            " You can still confirm the download independently at" +
+            " https://www.virustotal.com/ and rebuild it yourself (see" +
+            " docs/BUILDING.md)."
+          } else {
+            "SHA256 checksums are in ``checksums.txt``. This is an unsigned" +
+            " binary, so Windows SmartScreen may warn (`"More info`" -> `"Run" +
+            " anyway`"); you can confirm it independently by uploading the exe to" +
+            " https://www.virustotal.com/ or rebuild it yourself (see" +
+            " docs/BUILDING.md)."
+          }
+          @"
+          ## LapScope ${{ github.ref_name }} — Windows
+
+          Plug-and-play build for normal users: download the zip, unzip, and
+          double-click **LapScope.exe**. The dashboard opens automatically at
+          http://127.0.0.1:8000 and telemetry records to
+          ``%LOCALAPPDATA%\LapScope``. Power/cross-platform users: see the Docker
+          path in the README.
+
+          **In-game:** enable FH6 "Data Out" to your PC's IP on UDP port 9999.
+
+          ### Verify your download
+          $verify
+          "@ | Out-File -Encoding utf8 release_notes.md
+          Get-Content release_notes.md
+
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             LapScope-${{ github.ref_name }}-win64.zip
             checksums.txt
-          body: |
-            ## LapScope ${{ github.ref_name }} — Windows
-
-            Plug-and-play build for normal users: download the zip, unzip, and
-            double-click **LapScope.exe**. The dashboard opens automatically at
-            http://127.0.0.1:8000 and telemetry records to
-            `%LOCALAPPDATA%\LapScope`. Power/cross-platform users: see the Docker
-            path in the README.
-
-            **In-game:** enable FH6 "Data Out" to your PC's IP on UDP port 9999.
-
-            ### Verify your download
-            SHA256 checksums are in `checksums.txt`. This is an unsigned binary,
-            so Windows SmartScreen may warn ("More info" -> "Run anyway"); you can
-            confirm it independently by uploading the exe to
-            https://www.virustotal.com/ before running.
+          body_path: release_notes.md

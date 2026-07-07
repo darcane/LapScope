@@ -61,7 +61,8 @@ each runs on every startup inside try/except (existing-column errors swallowed).
 
 | Endpoint | Notes |
 |---|---|
-| `GET /status` | Packet counters, last-packet age/size, active session, session best, and `udp_error` (non-null when the UDP port could not be bound). First stop when "nothing works". |
+| `GET /status` | Packet counters, last-packet age/size, active session, session best, `version` (`app.__version__`), and `udp_error` (non-null when the UDP port could not be bound). First stop when "nothing works". |
+| `GET /version` | `{"version": app.__version__}` — the running build. The frontend compares it (client-side) against the latest GitHub Release for the update notice; `"0.0.0"` (dev/source run) suppresses the check. |
 | `GET /sessions` | List with route/car-name joins, lap counts, best lap. |
 | `PATCH /sessions/{id}` | `name`, `conditions` (`dry/wet/snow`, `""` clears), `track_type` (`road/street/touge/dirt/cross/drag/wtc`, `""` clears). |
 | `POST /sessions/{id}/reprocess` | Rebuild laps from stored frames (async def — event-loop writes). 409 while recording. |
@@ -84,7 +85,7 @@ listener: `session_id`, `delta` (vs session-best), `session_best`,
 | `index.html` + `js/dashboard.js` | Live page: WebSocket → `requestAnimationFrame` render loop; live track map state (`feedLiveMap`: resets on session-id change or >250 m jump); race-mode gating of timer/chip/map; no-data overlay polling `/api/status`. |
 | `js/gauges.js` | Pure canvas renderers (RPM arc, friction circle, grip panel, input strip, live map); `initCanvas` handles DPR scaling. |
 | `analysis.html` + `js/analysis.js` | Session browser, lap table, 2D/3D track map (color by speed/slip, drag-to-rotate 3D, chart-hover → map marker), A/B comparison charts (uPlot, x = DistanceTraveled track position). |
-| `js/common.js` | Shared badges (class/PI, drivetrain, conditions, track type incl. `TRACK_META`) + themed modal dialogs (`uiPrompt`/`uiConfirm`/`uiAlert` — never use `window.prompt/confirm/alert`). |
+| `js/common.js` | Shared badges (class/PI, drivetrain, conditions, track type incl. `TRACK_META`) + themed modal dialogs (`uiPrompt`/`uiConfirm`/`uiAlert` — never use `window.prompt/confirm/alert`) + the fail-soft client-side update check (`/api/version` vs the GitHub Releases API; dismissible `.update-banner`, 24 h cached, skipped on `0.0.0`). |
 | `css/style.css` | Theme = CSS custom props. `css/fonts.css` + `fonts/` = vendored Rajdhani (OFL); app must work fully offline. |
 | `js/vendor/uplot.iife.min.js` | Only dependency, vendored, analysis page only. |
 
@@ -146,7 +147,11 @@ assert them here.
   in [app/main.py](app/main.py) and [app/api/routes.py](app/api/routes.py).
   `hiddenimports` cover uvicorn/websockets submodules that are imported lazily.
   Build locally: `pip install -r requirements.txt -r requirements-build.txt &&
-  pyinstaller LapScope.spec` -> `dist/LapScope/LapScope.exe`.
+  pyinstaller LapScope.spec` -> `dist/LapScope/LapScope.exe`. For a
+  release-faithful build (pinned Python + hash-locked deps) and download
+  verification, see [docs/BUILDING.md](docs/BUILDING.md); CI installs from the
+  hash-pinned [requirements-build.lock](requirements-build.lock) with
+  `--require-hashes`.
 - Brand artwork: `assets/logo-alone.png` (the speedometer + road mark) and
   `assets/logo-with-brand.png` (mark + wordmark, used on the README hero). Both
   are raster (gradients + glow), so they stay PNG rather than being traced to
@@ -159,8 +164,10 @@ assert them here.
   and stamped with the git tag at release-build time.
 - [.github/workflows/release.yml](.github/workflows/release.yml): fires **only on
   `v*` tags** (separate from PR CI in [.github/workflows/ci.yml](.github/workflows/ci.yml)),
-  builds on `windows-latest`, zips `dist/LapScope`, writes SHA256 `checksums.txt`,
-  and publishes a GitHub Release with both attached.
+  builds on `windows-latest`, optionally code-signs via SignPath Foundation
+  (inert unless the `SIGNPATH_API_TOKEN` secret is set), zips `dist/LapScope`,
+  writes SHA256 `checksums.txt` over the final (signed) zip, and publishes a
+  GitHub Release with both attached (notes templated on whether it was signed).
 
 ## Cross-file invariants (change one → change all)
 
