@@ -68,7 +68,7 @@ each runs on every startup inside try/except (existing-column errors swallowed).
 | `POST /sessions/{id}/reprocess` | Rebuild laps from stored frames (async def — event-loop writes). 409 while recording. |
 | `DELETE /sessions/{id}` | Cascades frames+laps. 409 while recording. |
 | `GET /sessions/{id}/laps` | Session + laps with `is_best` / `gap_to_best`. |
-| `GET /laps/{id}/data?channels=&max_points=` | Distance-indexed channel arrays; drops rewound-over samples; decimates to `max_points`. Channel names = `CHANNELS` keys in routes.py. |
+| `GET /laps/{id}/data?channels=&max_points=` | Distance-indexed channel arrays; drops rewound-over samples; decimates to `max_points`. Channel names = `CHANNELS` keys in routes.py. `lap_time` falls back to time-since-lap-start when the packet lap clock never ran (WTA / bare sprints keep `CurrentLap` at 0), so the A/B Δ-time chart works for those events. |
 | `PATCH /routes/{id}`, `GET/PATCH /cars/{ordinal}` | Rename route / car override. |
 
 ## WebSocket `/ws/live` frame
@@ -115,6 +115,7 @@ listener: `session_id`, `delta` (vs session-best), `session_best`,
 | [tests/test_packet.py](tests/test_packet.py) | Packet invariants: `_STRUCT.size == PACKET_SIZE`, `FIELDS`↔`_STRUCT` value-count lockstep, scalar + wheel-array round trip. |
 | [tests/test_scenarios.py](tests/test_scenarios.py) | The AGENTS.md event-detection matrix as headless assertions (free-roam discard, dirty flags, race finish, sprint/dirt/touge point-to-point, WTA geometric laps, jumps). |
 | [tests/test_tracker.py](tests/test_tracker.py) | Direct-drive tracker regressions the scenarios can't stage: flag hygiene across lap re-anchors, `race_mode` dropping at a LastLap-change finish, the listener's crash-fallback frame shape. |
+| [tests/test_api.py](tests/test_api.py) | Endpoint functions run directly against a harness-produced store (stub request, no HTTP server): the `lap_time` channel fallback for dead lap clocks. |
 | [conftest.py](conftest.py), [pyproject.toml](pyproject.toml) | Put the repo root + `tests/` on `sys.path`; `pytest` testpaths and `ruff` lint config (defaults: pyflakes F + E4/E7/E9, line length 100). |
 
 Run `pytest -q` and `ruff check .` from the repo root (tooling in

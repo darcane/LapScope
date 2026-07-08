@@ -50,6 +50,8 @@ CHANNELS = {
     "slip_rear": lambda p: (p["tire_combined_slip"][2] + p["tire_combined_slip"][3]) / 2,
     "slip_max": lambda p: max(p["tire_combined_slip"]),
     "boost": lambda p: p["boost"],
+    # falls back to time-since-lap-start when the lap clock never ran (WTA /
+    # bare sprints keep CurrentLap at 0) - see the post-pass in lap_data()
     "lap_time": lambda p: p["current_lap"],
     "pos_x": lambda p: p["pos_x"],
     "pos_y": lambda p: p["pos_y"],   # elevation (world up-axis, meters)
@@ -268,6 +270,14 @@ def lap_data(
         t_rel.append(round(t - t0, 3))
         for n in names:
             out[n].append(round(CHANNELS[n](p), 4))
+
+    # World Time Attack and bare sprints broadcast no lap clock at all
+    # (CurrentLap stays 0 for the whole event), which made the A/B delta-time
+    # chart a flat zero line for exactly those events. Fall back to time since
+    # the lap's first frame - restart_lap re-anchors geometric laps at launch,
+    # so it counts from the line like a live lap clock would.
+    if "lap_time" in out and not any(v > 0.5 for v in out["lap_time"]):
+        out["lap_time"] = list(t_rel)
 
     return {"lap": lap, "n_frames": len(rows), "dist": dist, "t": t_rel,
             "channels": out, "collisions": collisions}
