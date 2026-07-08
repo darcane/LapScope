@@ -225,7 +225,14 @@ server joining mid-lap, event restart.
 - Theme lives in CSS custom props in `style.css`; display font is vendored
   Rajdhani (OFL) in `app/static/fonts` — the app must work fully offline.
 - Shared UI helpers (badges: class/PI, drivetrain, conditions, track type) live in
-  `common.js` and are used by both pages.
+ `common.js` and are used by both pages.
+- User display preferences (units, map toggles) live in `settings.js`, stored
+ **`localStorage`-only** under one `ls_settings` key — there is no backend for
+ them and there should not be: the recorder stores raw packets and every
+ conversion (`speedFromMps`, `tempFromF`, `distFromM`, …) is applied at display
+ time, so units never touch stored data. Pages read via `getSettings()` and
+ re-render through `onSettingsChange`. Migrated the pre-Settings `fc_mph` /
+ `fc_mapmode` keys once on load.
 - Server sends `Cache-Control: no-cache` for non-API paths (browsers cached stale
   JS once); keep that middleware.
 - Canvas gauges are pure functions of passed state (`gauges.js`); DPR-scaled via

@@ -7,8 +7,8 @@ const state = {
   laps: [],
   lapA: null, lapB: null,     // lap ids
   dataA: null, dataB: null,   // /api/laps/{id}/data payloads
-  colorMode: "speed",
-  mapMode: localStorage.getItem("fc_mapmode") || "2d",
+  colorMode: getSettings().defaultColor,
+  mapMode: getSettings().defaultMapMode,
   charts: [],
 };
 
@@ -98,12 +98,16 @@ async function selectSession(id) {
   $("#btn-reprocess").onclick = () => reprocessSession(s);
   $("#btn-delete").onclick = () => deleteSession(s);
   $("#color-mode").value = state.colorMode;
-  $("#color-mode").onchange = (e) => { state.colorMode = e.target.value; drawMap(); };
+  $("#color-mode").onchange = (e) => {
+    state.colorMode = e.target.value;
+    saveSettings({ defaultColor: state.colorMode });
+    drawMap();
+  };
   for (const b of document.querySelectorAll("#map-mode button")) {
     b.classList.toggle("active", b.dataset.mode === state.mapMode);
     b.onclick = () => {
       state.mapMode = b.dataset.mode;
-      localStorage.setItem("fc_mapmode", state.mapMode);
+      saveSettings({ defaultMapMode: state.mapMode });
       for (const x of document.querySelectorAll("#map-mode button"))
         x.classList.toggle("active", x === b);
       $("#map-hint").style.display = state.mapMode === "3d" ? "" : "none";
@@ -431,8 +435,8 @@ function drawMap() {
       lo = Math.min(...vals); hi = Math.max(...vals);
       colorFn = (v) => speedColor(v, lo, hi);
       $("#legend-scale").innerHTML =
-        `<span class="swatch" style="background:hsl(220,80%,55%)"></span> ${lo.toFixed(0)} ` +
-        `→ <span class="swatch" style="background:hsl(0,80%,55%)"></span> ${hi.toFixed(0)} km/h`;
+        `<span class="swatch" style="background:hsl(220,80%,55%)"></span> ${speedFromKmh(lo).toFixed(0)} ` +
+        `→ <span class="swatch" style="background:hsl(0,80%,55%)"></span> ${speedFromKmh(hi).toFixed(0)} ${speedUnit()}`;
     } else {
       vals = A.channels.slip_front.map((f, i) => Math.max(f, A.channels.slip_rear[i]));
       colorFn = slipColor;
@@ -498,7 +502,7 @@ function drawMap() {
       <div><div class="label">Lap A</div><div class="value">${fmtLap(lapMeta?.lap_time)}</div></div>
       <div><div class="label">Lap B</div><div class="value">${fmtLap(state.laps.find((l) => l.id === state.lapB)?.lap_time)}</div></div>
       <div><div class="label">Samples</div><div class="value">${A.n_frames}</div></div>
-      <div><div class="label">Driven</div><div class="value">${(drivenM / 1000).toFixed(2)} km</div></div>
+      <div><div class="label">Driven</div><div class="value">${distFromM(drivenM).toFixed(2)} ${distUnit()}</div></div>
       <div><div class="label">Elevation range</div><div class="value">${yRange > 0.3 ? yRange.toFixed(0) + " m" : "flat"}</div></div>
       <div><div class="label">Contacts</div><div class="value">${(A.collisions?.length || 0) ? `<span style="color:#ef4444">${A.collisions.length}</span>` : "0"}</div></div>
     </div>`;
@@ -530,8 +534,10 @@ function drawMap() {
       ctx.restore();
     }
   };
-  drawHits(B, "#7f5b5b", 6);
-  drawHits(A, "#ef4444", 7);
+  if (getSettings().contactLayer) {
+    drawHits(B, "#7f5b5b", 6);
+    drawHits(A, "#ef4444", 7);
+  }
 
   // cache the finished frame + projection for the chart-cursor marker
   mapCursor.proj = P;
@@ -622,9 +628,10 @@ function drawCharts() {
       [{ label: "Δs", stroke: "#22d3ee", fill: "rgba(34,211,238,0.08)", _vals: dt }], 170);
   }
 
-  makeChart(div(), "Speed (km/h)", x, [
-    { label: "A", stroke: "#22d3ee", _vals: onA("speed_kmh") },
-    ...(B ? [{ label: "B", stroke: "#5b6675", _vals: onBcache.speed_kmh }] : []),
+  const toSpeed = (arr) => arr.map(speedFromKmh);
+  makeChart(div(), `Speed (${speedUnit()})`, x, [
+    { label: "A", stroke: "#22d3ee", _vals: toSpeed(onA("speed_kmh")) },
+    ...(B ? [{ label: "B", stroke: "#5b6675", _vals: toSpeed(onBcache.speed_kmh) }] : []),
   ]);
 
   makeChart(div(), "Throttle / Brake (%)", x, [
@@ -648,5 +655,7 @@ function drawCharts() {
 }
 
 window.addEventListener("resize", () => { drawMap(); drawCharts(); });
+// live-apply unit / layer changes from the settings panel
+onSettingsChange(() => { drawMap(); drawCharts(); });
 loadSessions();
 setInterval(loadSessions, 15000); // pick up newly finished sessions
