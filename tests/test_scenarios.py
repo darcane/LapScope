@@ -155,6 +155,25 @@ def test_world_time_attack_three_geometric_laps(tmp_path):
     assert len(all_laps) == 3  # no phantom post-finish lap
 
 
+def test_wta_cut_dead_at_line(tmp_path):
+    """--wta 3 --cut: the stream dies right at the final geometric crossing
+    (inside the crossing circle, never exited); the pending crossing is
+    finalized at session end and the last lap flagged cutoff."""
+    def scenario(sim):
+        sim.wta(3, cut=True)  # no race_off: the stream just stops
+
+    store = run(scenario, tmp_path)
+    ss = sessions(store)
+
+    assert len(ss) == 1
+    all_laps = store.session_laps(ss[0]["id"])
+    timed = [lap for lap in all_laps if lap["lap_time"] is not None]
+    assert len(timed) == 3
+    assert len(all_laps) == 3  # no phantom open lap left behind
+    assert "cutoff" in flags_of(timed[-1])  # time inferred at the cut
+    assert flags_of(timed[0]) == "" and flags_of(timed[1]) == ""
+
+
 def test_jumps_do_not_break_a_point_to_point_run(tmp_path):
     """--sprint 75 --jumps: cross-country-style elevation spikes still record
     a single clean run (3D-map scaling is a frontend concern)."""

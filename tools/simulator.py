@@ -306,13 +306,16 @@ class Sim:
             return
         self._finish_freeze(t, 0, 0.0, 0.0)
 
-    def wta(self, laps: int) -> None:
+    def wta(self, laps: int, cut: bool = False) -> None:
         """World Time Attack (mirrors a real capture): every lap field stays
         0 for the whole event; the race clock counts from event load through
         a teleport to the track and a grid hold with DistanceTraveled pinned
         at 0; at the finish the game auto-stops the car and hard-resets
-        DistanceTraveled while the clock keeps counting."""
-        print(f"wta ({laps} laps): no lap fields at all - geometric detection")
+        DistanceTraveled while the clock keeps counting. cut=True models the
+        stream dying right at the final crossing instead: a few frames inside
+        the crossing circle, then silence - no auto-stop, no reset."""
+        print(f"wta ({laps} laps): no lap fields at all - geometric detection"
+              f"{' [stream cuts at the line]' if cut else ''}")
         dead = dict(lap_no=0, cur_lap=0.0, last=0.0, best=0.0)
         self.f["race_position"] = 0  # verified on the real capture
         t = 0.0
@@ -340,6 +343,16 @@ class Sim:
                 lap_start = t
                 self.pace = random.uniform(0.955, 1.0)
             self._send(race_time=t, **dead)
+        if cut:
+            # stream dies right at the line: a few more frames inside the
+            # crossing circle (the closest approach is recorded but the circle
+            # is never exited), then silence - no auto-stop, no distance reset
+            print(f"  crossed the final line at rt={t:.1f}s - stream cuts dead")
+            for _ in range(int(0.25 / self.dt)):
+                self._pace_tick()
+                t += self.dt
+                self._send(race_time=t, **dead)
+            return
         while self.v > 0.5:  # auto-stop after the line
             t += self.dt
             self.v = max(0.0, self.v - 6.0 * self.dt)
@@ -463,9 +476,9 @@ def main() -> None:
                          " counts, LapNumber stays 0, DistanceTraveled-reset finish"
                          " - matches the verified capture)")
     ap.add_argument("--cut", action="store_true",
-                    help="with --sprint or --dirt: cut the stream dead at the"
-                         " finish line (touge/circuit-style) instead of the"
-                         " frozen clock / odometer-reset handback")
+                    help="with --sprint, --dirt or --wta: cut the stream dead"
+                         " at the finish line (touge/circuit-style) instead of"
+                         " the frozen clock / odometer-reset handback")
     ap.add_argument("--wta", type=int, default=0, metavar="LAPS",
                     help="run a World Time Attack: all lap fields dead, laps"
                          " only detectable geometrically")
@@ -482,7 +495,7 @@ def main() -> None:
     if args.freeroam > 0:
         sim.freeroam(args.freeroam)
     if args.wta > 0:
-        sim.wta(args.wta)
+        sim.wta(args.wta, cut=args.cut)
     elif args.dirt > 0:
         sim.dirt_sprint(args.dirt, cut=args.cut)
     elif args.sprint > 0:
@@ -494,7 +507,7 @@ def main() -> None:
         for i in range(args.events):
             sim.event(args.duration / args.events, f"event {i + 1}/{args.events}",
                       dirty=args.dirty)
-    if not ((args.sprint > 0 or args.dirt > 0) and args.cut):
+    if not ((args.sprint > 0 or args.dirt > 0 or args.wta > 0) and args.cut):
         sim.race_off()  # a cut stream ends in silence, not race-off frames
     print(f"Done: {sim.sent} packets.")
 

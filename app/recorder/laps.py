@@ -69,7 +69,9 @@ launch point (where DistanceTraveled starts growing) is the anchor, and a
 lap completes at the closest approach to the anchor after driving away,
 provided the car is traveling roughly the same direction it launched in
 and has covered enough distance. The DistanceTraveled collapse is the
-run-finished signal.
+run-finished signal. A crossing normally finalizes when the car exits the
+crossing circle; if the stream dies inside it instead, the pending closest
+approach is finalized at session end and the lap flagged "cutoff".
 
 Sessions that end without a single completed lap or run (free-roam
 cruising, menu blips, abandoned events) are discarded entirely. Every
@@ -194,7 +196,8 @@ class SessionTracker:
                 elif t - self._race_off_since >= RACE_OFF_GRACE:
                     self._end_session(self._race_off_since)
             return {"session_id": self.session_id, "delta": None,
-                    "session_best": self.best_lap_time, "race_mode": False}
+                    "session_best": self.best_lap_time, "lap_elapsed": None,
+                    "race_mode": False}
 
         self._race_off_since = None
 
@@ -320,6 +323,11 @@ class SessionTracker:
 
     def _end_session(self, end_t: float) -> None:
         self.flush()
+        if self._lap_id is not None:
+            # a geometric crossing normally finalizes when the car exits the
+            # crossing circle; if the stream died inside it, the recorded
+            # closest approach is still pending - complete that lap now
+            self._finalize_wta_crossing(None)
         if self._lap_id is not None:
             is_run = True  # a point-to-point run (fingerprint the whole course)
             lap_time = self._point_to_point_run_time()
@@ -634,6 +642,7 @@ class SessionTracker:
             log.info("Session %d: event finish detected (last lap %.3fs)",
                      self.session_id, last)
             self._complete_current_lap(t, last, self._lap_number)
+            self._event_finished = True  # race_mode drops right at the line
             self._lap_id = None  # nothing to reopen: the event is over
         elif (self._lap_id is not None
               and self._prev_cur_lap is not None and self._prev_cur_lap <= 0.0
@@ -648,6 +657,7 @@ class SessionTracker:
             self._lap_start_dist = dist
             self._lap_start_pos = (frame["pos_x"], frame["pos_z"])
             self._cur_d, self._cur_t = [], []
+            self._lap_flags = set()  # the lap starts here; earlier flags aren't its
             self._lap_max_elapsed = 0.0
             self._lap_open_rt = rt
             self.store.restart_lap(self._lap_id, t, dist)
@@ -695,6 +705,7 @@ class SessionTracker:
                 self._lap_start_dist = dist
                 self._lap_start_pos = self._wta_anchor
                 self._cur_d, self._cur_t = [], []
+                self._lap_flags = set()  # pre-launch junk frames must not dirty lap 1
                 self._lap_max_elapsed = 0.0
                 self._lap_open_rt = rt
                 self.store.restart_lap(self._lap_id, t, dist)
@@ -726,8 +737,14 @@ class SessionTracker:
             self._finalize_wta_crossing(frame)
             self._wta_inside = False
 
-    def _finalize_wta_crossing(self, frame: dict) -> None:
-        """Close the lap at the recorded closest approach to the anchor."""
+    def _finalize_wta_crossing(self, frame: dict | None) -> None:
+        """Close the lap at the recorded closest approach to the anchor.
+
+        frame None = the session is ending with the crossing still pending
+        (the stream died inside the crossing circle before exiting it, which
+        is what normally finalizes a crossing): the lap is completed without
+        reopening a new one, flagged cutoff - the car might have passed
+        closer to the anchor had the stream continued."""
         if self._wta_best is None:
             return
         d, bt, brt, bdist, bx, bz = self._wta_best
@@ -735,10 +752,16 @@ class SessionTracker:
         lap_time = brt - (self._lap_open_rt if self._lap_open_rt is not None else brt)
         if lap_time <= 1.0:
             return
+        if frame is None:
+            self._lap_flags.add("cutoff")
         log.info("Session %d: geometric lap %d done: %.3fs (crossed %.1f m"
-                 " from the launch point)", self.session_id,
-                 self._completed_laps + 1, lap_time, d)
+                 " from the launch point%s)", self.session_id,
+                 self._completed_laps + 1, lap_time, d,
+                 ", finalized at stream end" if frame is None else "")
         self._complete_current_lap(bt, lap_time, self._lap_number)
+        if frame is None:
+            self._lap_id = None  # session is ending: nothing to reopen
+            return
         self._open_lap(bt, self._lap_number, bdist, frame,
                        stored_ln=self._completed_laps)
         # the reopen used the current frame; rebase it to the crossing itself

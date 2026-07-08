@@ -165,7 +165,10 @@ All the rules exist because some real behavior broke a naive version:
   to the anchor after being ≥120 m away, traveling within ~75° of the launch
   heading, having covered ≥500 dist-units. The run finish is `DistanceTraveled`
   hard-resetting (~18000 → 0) while the clock keeps counting; the post-finish
-  coast "lap" is deleted. A single-frame position jump >250 m (fast travel)
+  coast "lap" is deleted. A crossing normally finalizes when the car *exits*
+  the crossing circle; a stream that dies inside it instead has the pending
+  closest approach finalized at session end, flagged `cutoff` (simulate with
+  `--wta 3 --cut`). A single-frame position jump >250 m (fast travel)
   disarms the geometric detection — you never teleport mid-run, so it's a
   free-roam giveaway. Remaining caveat: a fresh-boot free-roam session starting
   at `DistanceTraveled` 0 that loops back over its start point *without*
@@ -173,7 +176,8 @@ All the rules exist because some real behavior broke a naive version:
 - `SessionTracker.race_mode` (in the per-frame extras merged into every
   WebSocket frame, alongside `session_id`/`delta`/`lap_elapsed`): True while a
   timed event is running — `RacePosition > 0`, live lap fields, or the geometric
-  launch anchor armed; False in free roam and once the event finishes. The
+  launch anchor armed; False in free roam and once the event finishes (every
+  finish signal drops it, including the LastLap-change finish). The
   dashboard gates the lap timer, the RACE MODE / FREE ROAM chip, and the live
   track map on it. Verified transitions on real captures: race = on from the
   first grid frame; WTA = off during event-load/grid-hold, on at launch, off at
@@ -192,7 +196,9 @@ All the rules exist because some real behavior broke a naive version:
   roughly half of that race's spikes were landings, not the AI bumps they looked
   like), and light Rivals wall-scrapes stay below the threshold (false negatives;
   there is no lap-invalidated packet field to cross-check against). Improving
-  both is tracked in TODO.md ("Contact & lap-invalidation detection").
+  both is tracked in TODO.md ("Contact & lap-invalidation detection"). Flags
+  reset when a lap re-anchors (the WTA launch, a mid-session lap-timer start):
+  pre-launch junk frames must not dirty lap 1.
 - Routes are fingerprinted (start pos within 80 m + length within 5%) and named
   once by the user; names apply to every session on the route.
 - Sessions with zero completed laps/runs are discarded at close and again at
@@ -259,5 +265,6 @@ a row here, a test, and usually a simulator flag.
 | Touge (cut at line) | `--dirt 40 --cut` | single run ≈40 s flagged `cutoff` (CurrentLap counts, stream cut dead at speed), route assigned |
 | Sprint, stream cut at line | `--sprint 60 --cut` | session kept, single run ≈60 s flagged `cutoff`, route assigned |
 | World Time Attack | `--wta 3` | launch + 3 geometric laps + distance-reset finish, no post-finish phantom lap |
+| WTA, stream cut at the line | `--wta 3 --cut` | 3 geometric laps, last flagged `cutoff` (pending crossing finalized at session end), no phantom lap |
 | Jumps in 3D | `--sprint 75 --jumps` (or any + `--jumps`) | 3D map scale sane, spikes capped |
 | Race-mode gating | `--freeroam 35 --race 3` | chip FREE ROAM then RACE MODE; timer dashed in free roam; live map draws the race only |

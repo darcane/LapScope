@@ -46,7 +46,9 @@ class TelemetryProtocol(asyncio.DatagramProtocol):
             extras = self.tracker.on_frame(now, data, frame)
         except Exception:
             log.exception("Recorder failed on frame; telemetry stream continues")
-            extras = {"session_id": None, "delta": None}
+            # keep the documented frame shape (ARCHITECTURE.md, WS contract)
+            extras = {"session_id": None, "delta": None, "session_best": None,
+                      "lap_elapsed": None, "race_mode": False}
         frame.update(extras)
         frame["_t"] = now
         hub.publish(frame)

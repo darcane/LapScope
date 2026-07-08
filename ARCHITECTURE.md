@@ -99,7 +99,9 @@ listener: `session_id`, `delta` (vs session-best), `session_best`,
   sprints (a looping sprint would falsely trip geometric lap detection).
   `--dirt` models the verified real point-to-point race (CurrentLap counts,
   `DistanceTraveled`-reset finish after a results-cinematic stream gap);
-  `--dirt … --cut` models the touge variant (stream cut dead at the line).
+  `--dirt … --cut` models the touge variant (stream cut dead at the line);
+  `--wta … --cut` dies inside the crossing circle at the final line (the
+  pending geometric crossing is finalized at session end, flagged `cutoff`).
 - [tools/inspect_session.py](tools/inspect_session.py) — dumps every
   segmentation-relevant signal transition of a stored session straight from
   the DB (`--list` to enumerate). The capture-diagnosis workflow is in the
@@ -112,6 +114,7 @@ listener: `session_id`, `delta` (vs session-best), `session_best`,
 | [tests/harness.py](tests/harness.py) | `FakeSocket` parses each packet the simulator "sends" and feeds it straight into a real `SessionTracker` + temp-file `Store`; the simulator's clock is stubbed (`_FastClock`) so a 3-minute scenario runs in milliseconds. `run(scenario, tmp_path, …)` plays a scenario and returns the closed store; `sessions()` / `completed_laps()` / `flags_of()` are assertion helpers. |
 | [tests/test_packet.py](tests/test_packet.py) | Packet invariants: `_STRUCT.size == PACKET_SIZE`, `FIELDS`↔`_STRUCT` value-count lockstep, scalar + wheel-array round trip. |
 | [tests/test_scenarios.py](tests/test_scenarios.py) | The AGENTS.md event-detection matrix as headless assertions (free-roam discard, dirty flags, race finish, sprint/dirt/touge point-to-point, WTA geometric laps, jumps). |
+| [tests/test_tracker.py](tests/test_tracker.py) | Direct-drive tracker regressions the scenarios can't stage: flag hygiene across lap re-anchors, `race_mode` dropping at a LastLap-change finish, the listener's crash-fallback frame shape. |
 | [conftest.py](conftest.py), [pyproject.toml](pyproject.toml) | Put the repo root + `tests/` on `sys.path`; `pytest` testpaths and `ruff` lint config (defaults: pyflakes F + E4/E7/E9, line length 100). |
 
 Run `pytest -q` and `ruff check .` from the repo root (tooling in
