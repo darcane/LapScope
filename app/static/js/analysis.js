@@ -166,9 +166,9 @@ async function renameSession(session) {
   const name = await uiPrompt("Rename session", {
     value: session.name || "",
     placeholder: displayName(session),
-    message: "Shown in the session list on the left.",
+    message: "Shown in the session list on the left. Leave empty to reset.",
   });
-  if (name === null || !name.trim()) return;
+  if (name === null) return;  // cancelled; "" clears back to the fallback name
   await fetch(`/api/sessions/${session.id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -199,9 +199,9 @@ async function renameRoute(session) {
 async function renameCar(session) {
   const name = await uiPrompt("Name car", {
     value: session.car_name || "",
-    message: "Applies everywhere this car appears.",
+    message: "Applies everywhere this car appears. Leave empty to reset to the built-in name.",
   });
-  if (name === null || !name.trim()) return;
+  if (name === null) return;  // cancelled; "" reverts to the bundled name
   await fetch(`/api/cars/${session.car_ordinal}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },

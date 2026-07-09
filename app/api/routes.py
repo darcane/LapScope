@@ -122,8 +122,8 @@ def patch_session(session_id: int, body: SessionPatch, request: Request):
     store = request.app.state.store
     if store.get_session(session_id) is None:
         raise HTTPException(404, "session not found")
-    if body.name is not None and body.name.strip():
-        store.rename_session(session_id, body.name.strip()[:80])
+    if body.name is not None:  # "" clears back to the route/date fallback
+        store.rename_session(session_id, body.name.strip()[:80] or None)
     if body.conditions is not None:  # "" clears the tag back to not-set
         if body.conditions and body.conditions not in CONDITIONS:
             raise HTTPException(400, f"conditions must be one of {sorted(CONDITIONS)}")
@@ -139,12 +139,14 @@ def patch_session(session_id: int, body: SessionPatch, request: Request):
 async def reprocess(session_id: int, request: Request):
     """Rebuild the session's laps from its stored frames with the current
     detection logic. async on purpose: the replay writes laps through the
-    Store's event-loop connection."""
+    Store's event-loop connection — which also means it blocks the loop for
+    the whole replay, so it must not run while ANY session is recording
+    (a long replay would freeze live telemetry and the dashboard mid-race)."""
     store = request.app.state.store
     if store.get_session(session_id) is None:
         raise HTTPException(404, "session not found")
-    if request.app.state.tracker.session_id == session_id:
-        raise HTTPException(409, "session is currently recording")
+    if request.app.state.tracker.session_id is not None:
+        raise HTTPException(409, "a session is recording; retry after it ends")
     return {"ok": True, "laps": reprocess_session(store, session_id)}
 
 
@@ -181,9 +183,11 @@ def car_name(ordinal: int, request: Request):
 
 @router.patch("/cars/{ordinal}")
 def set_car_name(ordinal: int, body: NameBody, request: Request):
-    if not body.name.strip():
-        raise HTTPException(400, "name must not be empty")
-    request.app.state.store.set_car_name(ordinal, body.name.strip()[:80])
+    name = body.name.strip()
+    if name:
+        request.app.state.store.set_car_name(ordinal, name[:80])
+    else:  # "" reverts to the bundled name (or "Car #<ordinal>")
+        request.app.state.store.clear_car_name(ordinal)
     return {"ok": True}
 
 

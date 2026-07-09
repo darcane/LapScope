@@ -64,12 +64,12 @@ each runs on every startup inside try/except (existing-column errors swallowed).
 | `GET /status` | Packet counters, last-packet age/size, active session, session best, `version` (`app.__version__`), and `udp_error` (non-null when the UDP port could not be bound). First stop when "nothing works". |
 | `GET /version` | `{"version": app.__version__}` — the running build. The frontend compares it (client-side) against the latest GitHub Release for the update notice; `"0.0.0"` (dev/source run) suppresses the check. |
 | `GET /sessions` | List with route/car-name joins, lap counts, best lap. |
-| `PATCH /sessions/{id}` | `name`, `conditions` (`dry/wet/snow`, `""` clears), `track_type` (`road/street/touge/dirt/cross/drag/wtc`, `""` clears). |
-| `POST /sessions/{id}/reprocess` | Rebuild laps from stored frames (async def — event-loop writes). 409 while recording. |
+| `PATCH /sessions/{id}` | `name` (`""` clears → display falls back to route/date), `conditions` (`dry/wet/snow`, `""` clears), `track_type` (`road/street/touge/dirt/cross/drag/wtc`, `""` clears). |
+| `POST /sessions/{id}/reprocess` | Rebuild laps from stored frames (async def — event-loop writes). 409 while **any** session records: the synchronous replay would stall the event loop and freeze live telemetry. |
 | `DELETE /sessions/{id}` | Cascades frames+laps. 409 while recording. |
 | `GET /sessions/{id}/laps` | Session + laps with `is_best` / `gap_to_best`. |
 | `GET /laps/{id}/data?channels=&max_points=` | Distance-indexed channel arrays; drops rewound-over samples; decimates to `max_points`. Channel names = `CHANNELS` keys in routes.py. `lap_time` falls back to time-since-lap-start when the packet lap clock never ran (WTA / bare sprints keep `CurrentLap` at 0), so the A/B Δ-time chart works for those events. |
-| `PATCH /routes/{id}`, `GET/PATCH /cars/{ordinal}` | Rename route / car override. |
+| `PATCH /routes/{id}`, `GET/PATCH /cars/{ordinal}` | Rename route / car override (car `name: ""` reverts the override to the bundled name). |
 
 ## WebSocket `/ws/live` frame
 

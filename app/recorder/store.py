@@ -243,7 +243,7 @@ class Store:
                                (session_id,)).fetchone()
         return dict(row) if row else None
 
-    def rename_session(self, session_id: int, name: str) -> None:
+    def rename_session(self, session_id: int, name: str | None) -> None:
         with self.reader() as conn:
             conn.execute("UPDATE sessions SET name = ? WHERE id = ?", (name, session_id))
             conn.commit()
@@ -273,6 +273,11 @@ class Store:
                 " ON CONFLICT(ordinal) DO UPDATE SET name = excluded.name",
                 (ordinal, name),
             )
+            conn.commit()
+
+    def clear_car_name(self, ordinal: int) -> None:
+        with self.reader() as conn:
+            conn.execute("DELETE FROM car_names WHERE ordinal = ?", (ordinal,))
             conn.commit()
 
     def get_car_override(self, ordinal: int) -> str | None:

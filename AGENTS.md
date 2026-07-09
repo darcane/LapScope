@@ -185,7 +185,9 @@ All the rules exist because some real behavior broke a naive version:
 - `POST /api/sessions/{id}/reprocess` (UI: Reprocess button) replays stored
   frames through a fresh `SessionTracker` via `_ReplayStore` (laps/routes real,
   session row untouched, discard suppressed) — recovers laps recorded before a
-  detection fix. Must stay `async def` (writes on the event-loop connection).
+  detection fix. Must stay `async def` (writes on the event-loop connection),
+  which also means the replay blocks the loop — it 409s while **any** session
+  is recording, or a long replay would freeze live telemetry mid-race.
 - `sessions.kept = 1` exempts a session from the startup no-laps cleanup
   (LS_KEEP_DISCARDED captures and reprocessed sessions set it).
 - Dirty-lap inference: rewind = lap clock below its high-water mark while
