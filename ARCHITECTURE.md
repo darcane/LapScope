@@ -144,7 +144,10 @@ assert them here.
 - Entry point [run_desktop.py](run_desktop.py): defaults `DATA_DIR` to
   `%LOCALAPPDATA%\LapScope`, runs uvicorn on `127.0.0.1:8000`, and opens the
   browser. It imports the `app.main:app` object by reference (not the string
-  form) so PyInstaller statically follows the whole `app` package.
+  form) so PyInstaller statically follows the whole `app` package. A busy
+  HTTP port is pre-checked with an actionable message + pause-before-exit
+  (a second double-clicked exe must not crash-exit with an unreadable
+  console flash — mirrors the UDP-port handling in `app/main.py`).
 - [LapScope.spec](LapScope.spec): PyInstaller **onedir** build. Bundles the full
   `app/static/` tree via `Tree(...)` (HTML/CSS/JS **plus** the binary
   `fonts/*.woff2`, `css/uplot.min.css`, `js/vendor/uplot.iife.min.js`) to

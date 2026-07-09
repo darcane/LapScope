@@ -1,14 +1,18 @@
 /* Live dashboard: WebSocket feed -> canvas gauges at display refresh rate. */
 
-const rpmG = initCanvas("rpm", 290, 250);
-const fricG = initCanvas("friction", 250, 240);
-const gripG = initCanvas("grip", 230, 240);
-let stripG = initCanvas("strip", document.getElementById("strip").parentElement.clientWidth - 34, 280);
-let liveMapG = initCanvas("livemap", document.getElementById("livemap").parentElement.clientWidth - 34, 280);
-window.addEventListener("resize", () => {
+let rpmG, fricG, gripG, stripG, liveMapG;
+function initCanvases() {
+  // re-run in full on resize: browser zoom / a different-DPI monitor changes
+  // devicePixelRatio, and every canvas needs the new backing scale, not just
+  // the two whose CSS width follows the layout
+  rpmG = initCanvas("rpm", 290, 250);
+  fricG = initCanvas("friction", 250, 240);
+  gripG = initCanvas("grip", 230, 240);
   stripG = initCanvas("strip", document.getElementById("strip").parentElement.clientWidth - 34, 280);
   liveMapG = initCanvas("livemap", document.getElementById("livemap").parentElement.clientWidth - 34, 280);
-});
+}
+initCanvases();
+window.addEventListener("resize", initCanvases);
 
 const STRIP_CAP = 12 * 60; // ~12 s at 60 Hz
 const state = {
@@ -28,8 +32,8 @@ const LIVEMAP_CAP = 4000;
 // mirrors IMPACT_ACCEL in app/recorder/laps.py (keep the two in lockstep).
 const IMPACT_ACCEL = 45;
 const liveMap = {
-  pts: [],         // [x, z] world points; null = teleport break
-  last: null,      // last stored point (skips the nulls)
+  pts: [],         // [x, z] world points
+  last: null,      // last stored point
   minDist: 3,      // m between stored points; doubles when thinned
   session: null,
   minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity,
@@ -92,7 +96,7 @@ function feedLiveMap(f) {
   liveMap.minX = Math.min(liveMap.minX, x); liveMap.maxX = Math.max(liveMap.maxX, x);
   liveMap.minZ = Math.min(liveMap.minZ, z); liveMap.maxZ = Math.max(liveMap.maxZ, z);
   if (liveMap.pts.length > LIVEMAP_CAP) { // free roam can sprawl: thin + relax
-    liveMap.pts = liveMap.pts.filter((p, i) => p === null || i % 2 === 0);
+    liveMap.pts = liveMap.pts.filter((_, i) => i % 2 === 0);
     liveMap.minDist *= 2;
   }
 }

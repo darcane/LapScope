@@ -153,9 +153,22 @@ async function pickLap(lapId, slot) {
     state[dataKey] = null;
   } else {
     state[key] = lapId;
+    state[dataKey] = null;
     renderLapRows();
-    state[dataKey] = await (await fetch(
-      `/api/laps/${lapId}/data?channels=${LAP_CHANNELS}&max_points=1500`)).json();
+    try {
+      const res = await fetch(
+        `/api/laps/${lapId}/data?channels=${LAP_CHANNELS}&max_points=1500`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      // rapid clicks race their fetches: only the pick that still owns the
+      // slot may write it - a stale response must not overwrite a newer one
+      if (state[key] !== lapId) return;
+      state[dataKey] = data;
+    } catch (err) {
+      if (state[key] !== lapId) return; // stale failure; the newer pick renders
+      state[key] = null;                // untag so the row doesn't lie
+      uiAlert("Couldn't load lap data", String(err.message || err));
+    }
   }
   renderLapRows();
   drawMap();
@@ -329,6 +342,10 @@ function drawMap() {
   const A = state.dataA, B = state.dataB;
   const three = state.mapMode === "3d";
   canvas.style.cursor = three ? "grab" : "default";
+  if (!A) { // the side stats and color legend describe lap A - don't let
+    $("#map-side").innerHTML = "";      // them show a lap that was untagged
+    $("#legend-scale").innerHTML = "";
+  }
   if (!A && !B) return;
 
   // world extent (elevation exaggeration is derived from it)

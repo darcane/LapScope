@@ -2,16 +2,18 @@
    tire grip diagram, input strip chart. All draw* functions are pure
    renders of the state passed in. */
 
-const DPR = window.devicePixelRatio || 1;
-
 function initCanvas(id, cssW, cssH) {
   const c = document.getElementById(id);
-  c.width = cssW * DPR;
-  c.height = cssH * DPR;
+  // read per call, not once at module load: browser zoom / moving to a
+  // different-DPI monitor changes devicePixelRatio, and the resize re-init
+  // must pick up the new value or every canvas renders blurry
+  const dpr = window.devicePixelRatio || 1;
+  c.width = cssW * dpr;
+  c.height = cssH * dpr;
   c.style.width = cssW + "px";
   c.style.height = cssH + "px";
   const ctx = c.getContext("2d");
-  ctx.scale(DPR, DPR);
+  ctx.scale(dpr, dpr);
   return { ctx, w: cssW, h: cssH };
 }
 
@@ -220,9 +222,9 @@ function roundRect(ctx, x, y, w, h, r) {
 }
 
 /* Live track map: the path driven so far this event, plus the car.
-   pts: [[worldX, worldZ], ...] with null entries as teleport breaks;
-   ext: {minX, maxX, minZ, maxZ}; car: {x, z, hx, hz} or null (hx/hz =
-   world heading unit vector, from yaw). */
+   pts: [[worldX, worldZ], ...] (teleports/new sessions reset the whole
+   path upstream); ext: {minX, maxX, minZ, maxZ}; car: {x, z, hx, hz} or
+   null (hx/hz = world heading unit vector, from yaw). */
 function drawLiveMap(g, pts, ext, car) {
   const { ctx, w, h } = g;
   ctx.clearRect(0, 0, w, h);
@@ -246,12 +248,8 @@ function drawLiveMap(g, pts, ext, car) {
   ctx.lineWidth = 2;
   ctx.lineJoin = "round";
   ctx.beginPath();
-  let move = true;
-  for (const p of pts) {
-    if (p === null) { move = true; continue; }
-    move ? ctx.moveTo(X(p[0]), Y(p[1])) : ctx.lineTo(X(p[0]), Y(p[1]));
-    move = false;
-  }
+  ctx.moveTo(X(pts[0][0]), Y(pts[0][1]));
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(X(pts[i][0]), Y(pts[i][1]));
   ctx.stroke();
 
   // where the recording began

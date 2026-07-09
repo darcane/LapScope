@@ -9,6 +9,7 @@ opens the dashboard in the default browser. Running from source works too:
 from __future__ import annotations
 
 import os
+import socket
 import threading
 import webbrowser
 
@@ -20,6 +21,18 @@ def _default_data_dir() -> str:
     """Per-user data dir: %LOCALAPPDATA%\\LapScope on Windows, ~/.lapscope elsewhere."""
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     return os.path.join(base, "LapScope")
+
+
+def _http_port_in_use() -> bool:
+    """Pre-check the HTTP port the way app/main.py guards the UDP port: if
+    uvicorn's bind fails it SystemExits, which slams the console shut on a
+    double-clicked exe before the user can read anything."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((HTTP_HOST, HTTP_PORT))
+        except OSError:
+            return True
+    return False
 
 
 def main() -> None:
@@ -36,6 +49,14 @@ def main() -> None:
     from app.main import app
 
     url = f"http://{HTTP_HOST}:{HTTP_PORT}"
+    if _http_port_in_use():
+        print(f"LapScope v{__version__}: HTTP port {HTTP_PORT} is already in use - "
+              "another program (or a second LapScope window) has it.")
+        print(f"If LapScope is already running, its dashboard is at {url} - "
+              "close this window and use that one.")
+        input("Press Enter to close this window...")
+        return
+
     threading.Timer(1.5, lambda: webbrowser.open(url)).start()
 
     print(f"LapScope v{__version__} starting - dashboard at {url}")
