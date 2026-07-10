@@ -138,6 +138,9 @@ class Sim:
     pace = 1.0
     lon_a = 0.0
     impact_frames = 0
+    air_frames = 0     # jump flight in progress (all wheels unloaded)
+    land_frames = 0    # touchdown jolt frames right after a flight
+    _prev_sp = None
 
     def _send(self, race_time: float, lap_no: int, cur_lap: float,
               last: float, best: float) -> None:
@@ -156,8 +159,36 @@ class Sim:
         if self.impact_frames > 0:  # wall contact: brief violent lateral spike
             self.impact_frames -= 1
             lat_a += 60.0
+        # jumps: crossing a bump crest launches the car (like real
+        # cross-country, all wheels at full droop with zero tire force), and
+        # touchdown slams the suspension with a ground-plane jolt well past
+        # the recorder's contact threshold - which it must classify as a
+        # landing, not contact
+        airborne, vert_a = False, 0.2
+        if JUMPS:
+            sp = self.s % PERIMETER
+            if self.air_frames == 0 and self.land_frames == 0 and self._prev_sp is not None:
+                # crest crossed this frame (wrap = sp collapsed by ~a lap;
+                # a rewind scrub moves backwards in small steps and must not
+                # launch the car)
+                wrapped = self._prev_sp - sp > PERIMETER / 2
+                for c, _w, _h in JUMP_BUMPS:
+                    if ((self._prev_sp < c <= sp)
+                            or (wrapped and (self._prev_sp < c or c <= sp))):
+                        self.air_frames = int(round(0.4 / self.dt))
+            self._prev_sp = sp
+            if self.air_frames > 0:
+                self.air_frames -= 1
+                airborne = True
+                lat_a, vert_a = 0.0, -12.0  # free fall, no tire grip
+                if self.air_frames == 0:
+                    self.land_frames = 2
+            elif self.land_frames > 0:
+                self.land_frames -= 1
+                lat_a += 75.0  # touchdown jolt in the ground plane
+                vert_a = 160.0
         grip_used = math.hypot(lat_a / GRIP_LAT, self.lon_a / BRAKE_MAX)
-        slip = max(0.0, grip_used + random.uniform(-0.05, 0.05))
+        slip = 0.0 if airborne else max(0.0, grip_used + random.uniform(-0.05, 0.05))
 
         gear = next((i + 1 for i, top in enumerate(GEAR_TOPS) if self.v <= top), 6)
         lo = GEAR_TOPS[gear - 2] if gear >= 2 else 0.0
@@ -173,19 +204,20 @@ class Sim:
         f.update(
             timestamp_ms=int((time.monotonic() - self.t0) * 1000) & 0xFFFFFFFF,
             current_engine_rpm=rpm,
-            accel_x=lat_a, accel_y=0.2, accel_z=self.lon_a,
+            accel_x=lat_a, accel_y=vert_a, accel_z=self.lon_a,
             # like the real game: Velocity is car-local (~(0, 0, speed)),
             # and the car moves along (sin yaw, cos yaw) in world X/Z -
             # here movement is (cos heading, sin heading), so yaw = pi/2 - heading
             vel_x=0.0, vel_z=self.v,
             ang_vel_y=self.v * curv, yaw=math.pi / 2 - heading,
-            norm_susp_travel=[min(1.0, 0.45 + 0.3 * abs(lat_a) / GRIP_LAT + 0.1 * random.random())] * 4,
+            norm_susp_travel=[0.0] * 4 if airborne else
+                [min(1.0, 0.45 + 0.3 * abs(lat_a) / GRIP_LAT + 0.1 * random.random())] * 4,
             tire_slip_ratio=[slip * 0.6] * 4,
             wheel_rotation_speed=[self.v / 0.33] * 4,
             wheel_in_puddle=puddle,
             tire_slip_angle=[slip * front_bias, slip * front_bias, slip * 0.9, slip * 0.9],
             tire_combined_slip=[slip * front_bias, slip * front_bias, slip * 0.92, slip * 0.92],
-            susp_travel_meters=[0.06] * 4,
+            susp_travel_meters=[-0.08] * 4 if airborne else [0.06] * 4,
             pos_x=x, pos_y=track_elevation(self.s), pos_z=z,
             speed=self.v, power=torque * rpm * math.tau / 60, torque=torque,
             tire_temp=[160 + 90 * slip + random.uniform(-3, 3) for _ in range(4)],
@@ -376,6 +408,10 @@ class Sim:
             timestamp_ms=int((time.monotonic() - self.t0) * 1000) & 0xFFFFFFFF,
             current_engine_rpm=IDLE_RPM, accel_x=0.0, accel_z=0.0,
             vel_x=0.0, vel_z=0.0, ang_vel_y=0.0,
+            # a parked car sits ON its suspension - never zero like empty
+            # fields, or it would read as airborne to the landing classifier
+            norm_susp_travel=[0.45] * 4, tire_combined_slip=[0.0] * 4,
+            susp_travel_meters=[0.06] * 4,
             pos_x=x, pos_y=105.0, pos_z=z,
             speed=0.0, power=0.0, torque=0.0, boost=0.0,
             distance_traveled=0.0, best_lap=0.0, last_lap=0.0,

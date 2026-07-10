@@ -515,33 +515,40 @@ function drawMap() {
 
     const side = $("#map-side");
     const lapMeta = state.laps.find((l) => l.id === state.lapA);
+    // landings (spikes on jump touchdowns) are shown but not counted as contact
+    const contacts = (A.collisions || []).filter((h) => !h.landing).length;
+    const landings = (A.collisions?.length || 0) - contacts;
     side.innerHTML = `<div class="lap-grid" style="text-align:left">
       <div><div class="label">Lap A</div><div class="value">${fmtLap(lapMeta?.lap_time)}</div></div>
       <div><div class="label">Lap B</div><div class="value">${fmtLap(state.laps.find((l) => l.id === state.lapB)?.lap_time)}</div></div>
       <div><div class="label">Samples</div><div class="value">${A.n_frames}</div></div>
       <div><div class="label">Driven</div><div class="value">${distFromM(drivenM).toFixed(2)} ${distUnit()}</div></div>
       <div><div class="label">Elevation range</div><div class="value">${yRange > 0.3 ? yRange.toFixed(0) + " m" : "flat"}</div></div>
-      <div><div class="label">Contacts</div><div class="value">${(A.collisions?.length || 0) ? `<span style="color:#ef4444">${A.collisions.length}</span>` : "0"}</div></div>
+      <div><div class="label">Contacts</div><div class="value">${contacts ? `<span style="color:#ef4444">${contacts}</span>` : "0"}${landings ? `<span style="color:#f59e0b;font-size:0.9rem" title="${landings} hard jump landing${landings > 1 ? "s" : ""} — not contact"> +${landings} 🛬</span>` : ""}</div></div>
     </div>`;
   }
 
   // collision points (contact spikes) as red bursts, over the ribbon so
   // they read against any speed/slip color. B's are dimmer, like its line.
-  const drawHits = (d, fill, r) => {
+  // Jump landings (h.landing, classified server-side) draw amber and smaller:
+  // worth seeing where a jump bottomed out, but they aren't contact.
+  const drawHits = (d, fill, landFill, r) => {
     if (!d || !d.collisions) return;
-    for (const h of d.collisions) {
+    for (const h of [...d.collisions].sort((a, b) => (b.landing ? 1 : 0) - (a.landing ? 1 : 0))) {
       const [X, Y] = P(h.x, h.y ?? 0, h.z, false);
+      const color = h.landing ? landFill : fill;
+      const rad = h.landing ? r * 0.75 : r;
       ctx.save();
       ctx.strokeStyle = "#fff";
       ctx.lineWidth = 1.5;
-      ctx.fillStyle = fill;
-      ctx.shadowColor = fill;
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
       ctx.shadowBlur = 8;
       // 4-point spark
       ctx.beginPath();
       for (let k = 0; k < 8; k++) {
         const a = (k * Math.PI) / 4;
-        const rr = k % 2 ? r * 0.4 : r;
+        const rr = k % 2 ? rad * 0.4 : rad;
         const px = X + Math.cos(a) * rr, py = Y + Math.sin(a) * rr;
         k === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
       }
@@ -552,8 +559,8 @@ function drawMap() {
     }
   };
   if (getSettings().contactLayer) {
-    drawHits(B, "#7f5b5b", 6);
-    drawHits(A, "#ef4444", 7);
+    drawHits(B, "#7f5b5b", "#7f6f4b", 6);
+    drawHits(A, "#ef4444", "#f59e0b", 7);
   }
 
   // cache the finished frame + projection for the chart-cursor marker

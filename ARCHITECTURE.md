@@ -194,10 +194,13 @@ assert them here.
   `CLASS_COLORS` (common.js).
 - Teleport threshold 250 m: `WTA_TELEPORT_JUMP` (laps.py) = live-map jump reset
   (dashboard.js) = `POS_JUMP` (inspect_session.py).
-- Contact spike threshold: `IMPACT_ACCEL` (laps.py) drives both the per-lap
-  `contact` flag and the map collision markers — the `/laps/{id}/data`
-  endpoint imports it; `dashboard.js` duplicates it as `IMPACT_ACCEL` for the
-  live map (keep the two in lockstep).
+- Contact spike threshold + landing discrimination: `IMPACT_ACCEL`,
+  `AIRBORNE_SUSP_MAX`, `AIRBORNE_SLIP_MAX`, `AIRBORNE_MIN_S` and
+  `LANDING_GRACE_S` (laps.py) drive the per-lap `contact` flag and the map
+  collision markers (spikes while airborne / just after touchdown are jump
+  landings, not contact) — the `/laps/{id}/data` endpoint imports them and
+  tags each collision `landing: true/false`; `dashboard.js` duplicates all
+  five constants for the live map (keep the two in lockstep).
 - `RT_FREEZE_SECONDS` (laps.py) = the same constant in inspect_session.py.
 - Packet layout: `_STRUCT` and `FIELDS` in packet.py must stay in lockstep
   (asserted by the module self-test).

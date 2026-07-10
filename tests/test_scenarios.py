@@ -176,7 +176,9 @@ def test_wta_cut_dead_at_line(tmp_path):
 
 def test_jumps_do_not_break_a_point_to_point_run(tmp_path):
     """--sprint 75 --jumps: cross-country-style elevation spikes still record
-    a single clean run (3D-map scaling is a frontend concern)."""
+    a single clean run (3D-map scaling is a frontend concern). The jumps go
+    airborne and land with spikes past IMPACT_ACCEL - the landing classifier
+    must keep the run free of the contact flag."""
     def scenario(sim):
         sim.sprint(75)
         sim.race_off()
@@ -185,4 +187,27 @@ def test_jumps_do_not_break_a_point_to_point_run(tmp_path):
     ss = sessions(store)
 
     assert len(ss) == 1
-    assert len(completed_laps(store, ss[0]["id"])) == 1
+    laps = completed_laps(store, ss[0]["id"])
+    assert len(laps) == 1
+    assert "contact" not in flags_of(laps[0])
+
+
+def test_jump_landings_clean_but_wall_contact_still_flags(tmp_path):
+    """--duration 180 --dirty --jumps: every lap flies two bumps and lands
+    hard (ground-plane spikes past the contact threshold) - those must NOT
+    flag contact; the wall hit injected on lap 2 still must."""
+    def scenario(sim):
+        sim.event(180, "dirty with jumps", dirty=True)
+        sim.race_off()
+
+    store = run(scenario, tmp_path, jumps=True)
+    ss = sessions(store)
+
+    assert len(ss) == 1
+    by_number = {lap["lap_number"]: flags_of(lap)
+                 for lap in completed_laps(store, ss[0]["id"])}
+    assert len(by_number) >= 3
+    assert "contact" in by_number.get(1, "")  # the real wall hit still flags
+    for n, fl in by_number.items():
+        if n != 1:  # every other lap only landed jumps - clean
+            assert "contact" not in fl, f"lap {n} flagged by a jump landing: {fl}"

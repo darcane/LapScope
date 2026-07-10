@@ -193,14 +193,26 @@ All the rules exist because some real behavior broke a naive version:
 - Dirty-lap inference: rewind = lap clock below its high-water mark while
   distance doesn't grow (per-frame comparison misses gradual scrubs — that bug
   shipped once); contact = ground-plane |accel| ≥ 45 m/s². Stored as
-  `laps.flags` ("rewind,contact"). **Known contact-flag limits (real
-  cross-country, session 55):** hard jump-landings trip it (false positives —
-  roughly half of that race's spikes were landings, not the AI bumps they looked
-  like), and light Rivals wall-scrapes stay below the threshold (false negatives;
-  there is no lap-invalidated packet field to cross-check against). Improving
-  both is tracked in TODO.md ("Contact & lap-invalidation detection"). Flags
-  reset when a lap re-anchors (the WTA launch, a mid-session lap-timer start):
-  pre-launch junk frames must not dirty lap 1.
+  `laps.flags` ("rewind,contact"). **Jump landings are excused:** a spike while
+  airborne (all four `NormalizedSuspensionTravel` < 0.15 **and** all four
+  `TireCombinedSlip` < 0.05 for ≥ 0.12 s — in flight wheels hang at full droop
+  with zero tire force) or within 0.35 s of touchdown is a landing, not contact
+  (`AIRBORNE_*` / `LANDING_GRACE_S` in laps.py, mirrored in dashboard.js).
+  Calibrated on real cross-country (session 55: 5 of 12 spikes were landings —
+  touchdown compresses the suspension 1–2 frames *before* the spike, and
+  suspension drifts up to ~0.11 mid-flight, hence the loose thresholds and the
+  grace window; verified to change nothing on circuit sessions 5/6/35).
+  `/laps/{id}/data` tags collision bursts `landing: true/false` the same way —
+  the analysis map draws landings amber, the Contacts stat counts only real
+  ones. **Known remaining limit:** light Rivals wall-scrapes stay below the
+  threshold (false negatives; there is no lap-invalidated packet field to
+  cross-check against) — tracked in TODO.md ("Contact & lap-invalidation
+  detection"). A wall hit inside the 0.35 s post-landing grace is also excused
+  (accepted trade-off). Flags reset when a lap re-anchors (the WTA launch, a
+  mid-session lap-timer start): pre-launch junk frames must not dirty lap 1.
+  Test-fixture gotcha: `empty_fields()` zeroes suspension and slip, which
+  reads as *airborne* — hand-built test frames must set grounded values or
+  every contact spike gets excused (Driver in test_tracker.py does).
 - Routes are fingerprinted (start pos within 80 m + length within 5%) and named
   once by the user; names apply to every session on the route.
 - Sessions with zero completed laps/runs are discarded at close and again at
@@ -268,5 +280,6 @@ a row here, a test, and usually a simulator flag.
 | Sprint, stream cut at line | `--sprint 60 --cut` | session kept, single run ≈60 s flagged `cutoff`, route assigned |
 | World Time Attack | `--wta 3` | launch + 3 geometric laps + distance-reset finish, no post-finish phantom lap |
 | WTA, stream cut at the line | `--wta 3 --cut` | 3 geometric laps, last flagged `cutoff` (pending crossing finalized at session end), no phantom lap |
-| Jumps in 3D | `--sprint 75 --jumps` (or any + `--jumps`) | 3D map scale sane, spikes capped |
+| Jumps in 3D | `--sprint 75 --jumps` (or any + `--jumps`) | 3D map scale sane, spikes capped, run NOT flagged `contact` (landings excused) |
+| Landing vs contact | `--duration 180 --dirty --jumps` | lap 2 `contact` (wall hit), all other laps clean despite hard jump landings; `/laps/{id}/data` tags landing bursts `landing: true` (amber on the map) |
 | Race-mode gating | `--freeroam 35 --race 3` | chip FREE ROAM then RACE MODE; timer dashed in free roam; live map draws the race only |

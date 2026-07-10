@@ -127,15 +127,14 @@ the build. Playground Games ships new cars → new ordinals, so it goes stale.
 ## Contact & lap-invalidation detection (accuracy)
 
 The `contact` 💥 flag is a ground-plane accel spike (`IMPACT_ACCEL` = 45 m/s²).
-Real cross-country data (session 55) shows it is both too eager and too blind:
+Real cross-country data (session 55) showed it was both too eager and too blind:
 
-- **False positives: hard jump-landings flagged as contact.** Cross-country is
-  full of big jumps; landing hard trips the ground-plane threshold even though
-  it isn't a wall/car hit. On session 55 roughly half of ~12 contact markers
-  were landings, not the AI bumps they looked like. Idea: detect the airborne
-  phase preceding a spike (all wheels unloaded / suspension at full droop / no
-  tire load for several frames) and classify the following spike as a landing,
-  not contact.
+- ✅ **False positives: hard jump-landings flagged as contact.** Fixed: a spike
+  while airborne (all wheels at full droop + zero tire force for ≥ 0.12 s) or
+  within 0.35 s of touchdown is classified as a landing — no `contact` flag,
+  amber (not red) marker on the analysis map, excluded from the Contacts count.
+  Calibrated on session 55 (5 of its 12 spikes were landings) and verified to
+  leave circuit sessions untouched; old recordings pick it up via Reprocess.
 - **Manual session editing.** Let the user curate a recording — dismiss/ignore
   specific contact markers on the map, re-tag, or trim — for when the auto
   detector is wrong. Pairs with the analysis-map layer toggles in the settings

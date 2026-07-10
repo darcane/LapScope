@@ -28,9 +28,15 @@ const shiftLights = document.querySelectorAll("#shift-lights i");
 /* live track map: path of the current session, thinned adaptively so long
    drives stay cheap to redraw at display refresh rate */
 const LIVEMAP_CAP = 4000;
-// ground-plane acceleration (m/s^2) that counts as a contact/collision;
-// mirrors IMPACT_ACCEL in app/recorder/laps.py (keep the two in lockstep).
+// ground-plane acceleration (m/s^2) that counts as a contact/collision, plus
+// the airborne/jump-landing discrimination (a spike while airborne or right
+// after touchdown is a landing, not contact); mirrors IMPACT_ACCEL /
+// AIRBORNE_* / LANDING_GRACE_S in app/recorder/laps.py (keep in lockstep).
 const IMPACT_ACCEL = 45;
+const AIRBORNE_SUSP_MAX = 0.15;
+const AIRBORNE_SLIP_MAX = 0.05;
+const AIRBORNE_MIN_S = 0.12;
+const LANDING_GRACE_S = 0.35;
 const liveMap = {
   pts: [],         // [x, z] world points
   last: null,      // last stored point
@@ -39,6 +45,8 @@ const liveMap = {
   minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity,
   hits: [],        // [x, z] world points where a contact spike fired
   overImpact: false, // above the threshold last frame (edge-detect one hit/impact)
+  airSince: null,  // when the current all-wheels-unloaded stretch began
+  graceUntil: 0,   // spikes before this time are jump landings, not contact
 };
 
 function resetLiveMap(sessionId) {
@@ -50,6 +58,8 @@ function resetLiveMap(sessionId) {
   liveMap.maxX = liveMap.maxZ = -Infinity;
   liveMap.hits = [];
   liveMap.overImpact = false;
+  liveMap.airSince = null;
+  liveMap.graceUntil = 0;
 }
 
 // One marker per impact: register on the rising edge only, so grinding a wall
@@ -64,10 +74,24 @@ function mapActive(f) {
 function feedCollision(f) {
   if (f.session_id == null || !mapActive(f) || f.session_id !== liveMap.session) {
     liveMap.overImpact = false;
+    liveMap.airSince = null;
     return;
   }
+  const t = f._t;
+  const airborne = f.norm_susp_travel.every((s) => s < AIRBORNE_SUSP_MAX)
+    && f.tire_combined_slip.every((s) => s < AIRBORNE_SLIP_MAX);
+  if (airborne) {
+    if (liveMap.airSince == null) liveMap.airSince = t;
+  } else {
+    if (liveMap.airSince != null && t - liveMap.airSince >= AIRBORNE_MIN_S)
+      liveMap.graceUntil = t + LANDING_GRACE_S;
+    liveMap.airSince = null;
+  }
+  const flying = liveMap.airSince != null && t - liveMap.airSince >= AIRBORNE_MIN_S;
   if (Math.hypot(f.accel_x, f.accel_z) >= IMPACT_ACCEL) {
-    if (!liveMap.overImpact) liveMap.hits.push([f.pos_x, f.pos_z]);
+    // jump landings (spike while airborne / just after touchdown) draw no spark
+    if (!liveMap.overImpact && !(flying || t < liveMap.graceUntil))
+      liveMap.hits.push([f.pos_x, f.pos_z]);
     liveMap.overImpact = true;
   } else {
     liveMap.overImpact = false;

@@ -56,6 +56,30 @@ def test_lap_time_channel_kept_when_lap_clock_alive(tmp_path):
     assert any(v > 0.5 for v in data["channels"]["lap_time"])
 
 
+def test_collisions_tag_landings_but_keep_wall_hits(tmp_path):
+    """/laps/{id}/data classifies each collision burst: jump landings carry
+    landing=true (drawn amber, not counted as contact), wall hits
+    landing=false. --dirty --jumps has both on lap 2 and only landings on
+    the other laps."""
+    from app.api.routes import lap_data
+
+    def scenario(sim):
+        sim.event(180, "dirty with jumps", dirty=True)
+        sim.race_off()
+
+    store = run(scenario, tmp_path, jumps=True)
+    laps = completed_laps(store, sessions(store)[0]["id"])
+    by_number = {lap["lap_number"]: lap for lap in laps}
+
+    wall_lap = lap_data(by_number[1]["id"], _request_for(store), "speed_kmh", 500)
+    kinds = {h["landing"] for h in wall_lap["collisions"]}
+    assert kinds == {True, False}  # the wall hit and two jump landings
+
+    clean_lap = lap_data(by_number[0]["id"], _request_for(store), "speed_kmh", 500)
+    assert clean_lap["collisions"]  # the jumps did register...
+    assert all(h["landing"] for h in clean_lap["collisions"])  # ...as landings
+
+
 def test_session_name_patch_sets_and_clears(tmp_path):
     """``name: ""`` must clear the custom name back to NULL so display_name
     falls back to route/date, and a PATCH without name must leave it alone.

@@ -86,7 +86,9 @@ The packet carries no "lap invalidated" flag, so lap dirtiness is inferred:
   does that - time only runs forward), corroborated by DistanceTraveled
   not increasing;
 - contact: a ground-plane acceleration spike far beyond what tires can
-  generate (a wall or solid obstacle).
+  generate (a wall or solid obstacle). A spike while airborne or right
+  after touchdown is the landing of a jump, not contact - cross-country
+  is full of those - so it is logged but never flags the lap.
 Flags are stored per lap ("rewind,contact") and shown in the lap table.
 
 All methods run on the asyncio event-loop thread.
@@ -108,6 +110,21 @@ PUDDLE_DEPTH_MIN = 0.03       # any wheel deeper than this counts as a wet frame
 WET_FRAME_FRACTION = 0.02     # fraction of wet frames to auto-tag "wet"
 REWIND_TIME_JUMP = 0.5        # lap clock going back by this much = rewind
 IMPACT_ACCEL = 45.0           # m/s^2 in the ground plane (~4.6 g) = contact
+
+# Airborne / jump-landing discrimination (verified on real cross-country,
+# session 55: 5 of its 12 contact spikes were hard jump-landings). In flight
+# every wheel hangs at full droop with zero tire force; on the ground even a
+# coasting car shows load on some wheel. Touchdown compresses the suspension a
+# frame or two BEFORE the accel spike crosses IMPACT_ACCEL, so a spike counts
+# as the landing for a short grace window after the flight ends, not only
+# while airborne. Mirrored in dashboard.js for the live map (keep in lockstep).
+AIRBORNE_SUSP_MAX = 0.15      # all NormalizedSuspensionTravel below this
+                              # (0 = full stretch; ~0.1 drift seen pre-landing)
+AIRBORNE_SLIP_MAX = 0.05      # and all TireCombinedSlip below this = no tire
+                              # touches the ground (driving shows >= ~0.1)
+AIRBORNE_MIN_S = 0.12         # unloaded this long = a real flight, not a crest
+LANDING_GRACE_S = 0.35        # spikes this soon after touchdown = the landing
+                              # (real gaps measured at 0.02-0.07 s)
 RT_FREEZE_SECONDS = 1.5       # frozen race clock for this long = event finished
 FINISH_MIN_RT = 5.0           # ignore freezes before the clock really ran
 PTP_MIN_RUN_TIME = 10.0       # shortest believable point-to-point run
@@ -179,6 +196,9 @@ class SessionTracker:
         self._wta_best: tuple | None = None  # (d, t, rt, dist, x, z) closest pass
         self._wta_prev_pos: tuple[float, float] | None = None
         self._puddle_frames = 0
+        self._air_since: float | None = None   # start of the current flight
+        self._landing_grace_until = 0.0        # spikes before this t = landing
+        self._over_impact = False              # inside a spike burst (log once)
         self._route_assigned = False
         self._session_start_t = 0.0
         self._diag_first_dist: float | None = None
@@ -233,12 +253,30 @@ class SessionTracker:
             self._gridded = True
         if any(d > PUDDLE_DEPTH_MIN for d in frame["wheel_in_puddle"]):
             self._puddle_frames += 1
-        if math.hypot(frame["accel_x"], frame["accel_z"]) >= IMPACT_ACCEL:
-            if "contact" not in self._lap_flags:
-                log.info("Session %s: contact spike (%.0f m/s^2), flagging lap",
-                         self.session_id,
-                         math.hypot(frame["accel_x"], frame["accel_z"]))
-            self._lap_flags.add("contact")
+        airborne = (all(s < AIRBORNE_SUSP_MAX for s in frame["norm_susp_travel"])
+                    and all(s < AIRBORNE_SLIP_MAX for s in frame["tire_combined_slip"]))
+        if airborne:
+            if self._air_since is None:
+                self._air_since = t
+        else:
+            if self._air_since is not None and t - self._air_since >= AIRBORNE_MIN_S:
+                self._landing_grace_until = t + LANDING_GRACE_S
+            self._air_since = None
+        flying = self._air_since is not None and t - self._air_since >= AIRBORNE_MIN_S
+        g = math.hypot(frame["accel_x"], frame["accel_z"])
+        if g >= IMPACT_ACCEL:
+            if flying or t < self._landing_grace_until:
+                if not self._over_impact:
+                    log.info("Session %s: jump landing (%.0f m/s^2) - not contact",
+                             self.session_id, g)
+            else:
+                if "contact" not in self._lap_flags:
+                    log.info("Session %s: contact spike (%.0f m/s^2), flagging lap",
+                             self.session_id, g)
+                self._lap_flags.add("contact")
+            self._over_impact = True
+        else:
+            self._over_impact = False
         delta = self._lap_logic(t, frame)
         if t - self._last_flush >= FLUSH_INTERVAL:
             self.flush()
@@ -313,6 +351,9 @@ class SessionTracker:
         self._wta_best = None
         self._wta_prev_pos = None
         self._puddle_frames = 0
+        self._air_since = None
+        self._landing_grace_until = 0.0
+        self._over_impact = False
         self._route_assigned = False
         self._session_start_t = t
         self._diag_first_dist = frame["distance_traveled"]
@@ -419,6 +460,9 @@ class SessionTracker:
         self._wta_inside = False
         self._wta_best = None
         self._wta_prev_pos = None
+        self._air_since = None
+        self._landing_grace_until = 0.0
+        self._over_impact = False
         self._lap_flags = set()
 
     def _point_to_point_run_time(self) -> float | None:

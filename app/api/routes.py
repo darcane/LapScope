@@ -12,7 +12,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from .. import __version__
-from ..recorder.laps import IMPACT_ACCEL
+from ..recorder.laps import (AIRBORNE_MIN_S, AIRBORNE_SLIP_MAX,
+                             AIRBORNE_SUSP_MAX, IMPACT_ACCEL, LANDING_GRACE_S)
 from ..recorder.reprocess import reprocess_session
 from ..telemetry.packet import parse
 
@@ -244,24 +245,44 @@ def lap_data(
     # consecutive over-threshold frames into one event and keep its peak. Run
     # on the full-resolution kept trace so a one-frame spike is never decimated
     # away. World coords are returned so the map projects them like any point.
+    # Spikes while airborne or right after touchdown are jump landings, not
+    # contact (same classification as the recorder) - tagged, not dropped, so
+    # the map can still show where a jump bottomed out.
     collisions: list[dict] = []
     peak: tuple | None = None  # (g, d, frame) of the current impact burst
-    for t, d, p in kept:
-        g = math.hypot(p["accel_x"], p["accel_z"])
-        if g >= IMPACT_ACCEL:
-            if peak is None or g > peak[0]:
-                peak = (g, d, p)
-        elif peak is not None:
-            g0, d0, p0 = peak
-            collisions.append({"x": round(p0["pos_x"], 2), "y": round(p0["pos_y"], 2),
-                               "z": round(p0["pos_z"], 2), "dist": round(d0 - start_dist, 2),
-                               "g": round(g0 / 9.80665, 2)})
-            peak = None
-    if peak is not None:  # impact ran to the last kept frame
+    burst_landing = True       # all frames of the burst classified as landing
+    air_since: float | None = None
+    grace_until = 0.0
+
+    def emit(peak: tuple, landing: bool) -> None:
         g0, d0, p0 = peak
         collisions.append({"x": round(p0["pos_x"], 2), "y": round(p0["pos_y"], 2),
                            "z": round(p0["pos_z"], 2), "dist": round(d0 - start_dist, 2),
-                           "g": round(g0 / 9.80665, 2)})
+                           "g": round(g0 / 9.80665, 2), "landing": landing})
+
+    for t, d, p in kept:
+        airborne = (all(s < AIRBORNE_SUSP_MAX for s in p["norm_susp_travel"])
+                    and all(s < AIRBORNE_SLIP_MAX for s in p["tire_combined_slip"]))
+        if airborne:
+            if air_since is None:
+                air_since = t
+        else:
+            if air_since is not None and t - air_since >= AIRBORNE_MIN_S:
+                grace_until = t + LANDING_GRACE_S
+            air_since = None
+        flying = air_since is not None and t - air_since >= AIRBORNE_MIN_S
+        g = math.hypot(p["accel_x"], p["accel_z"])
+        if g >= IMPACT_ACCEL:
+            if peak is None:
+                peak, burst_landing = (g, d, p), True
+            elif g > peak[0]:
+                peak = (g, d, p)
+            burst_landing = burst_landing and (flying or t < grace_until)
+        elif peak is not None:
+            emit(peak, burst_landing)
+            peak = None
+    if peak is not None:  # impact ran to the last kept frame
+        emit(peak, burst_landing)
 
     stride = max(1, len(kept) // max_points)
     dist: list[float] = []

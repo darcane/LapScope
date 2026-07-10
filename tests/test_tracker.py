@@ -24,7 +24,11 @@ class Driver:
         self.tracker = SessionTracker(self.store)
         self.f = empty_fields()
         self.f.update(is_race_on=1, car_ordinal=1, car_class=6, car_pi=900,
-                      drivetrain_type=2)
+                      drivetrain_type=2,
+                      # wheels on the ground: all-zero suspension + slip (the
+                      # empty_fields default) reads as airborne to the landing
+                      # classifier, which would excuse every contact spike
+                      norm_susp_travel=[0.5] * 4, tire_combined_slip=[0.3] * 4)
         self.t = 0.0
 
     def send(self, **kw) -> dict:
@@ -96,6 +100,63 @@ def test_mid_session_reanchor_clears_flags(tmp_path):
     assert len(timed) == 1
     assert timed[0]["lap_time"] == 10.0
     assert "contact" not in (timed[0]["flags"] or "")
+
+
+GROUND = dict(norm_susp_travel=[0.5] * 4, tire_combined_slip=[0.3] * 4, accel_x=0.0)
+AIR = dict(norm_susp_travel=[0.0] * 4, tire_combined_slip=[0.0] * 4, accel_x=0.0)
+
+
+def drive(d: Driver, n: int, **kw) -> None:
+    """n frames of steady driving: lap clock and odometer advance."""
+    for _ in range(n):
+        d.send(current_lap=d.f["current_lap"] + 1 / 60,
+               distance_traveled=d.f["distance_traveled"] + 1.0,
+               speed=60.0, **kw)
+
+
+def lap_flags_after(d: Driver) -> str:
+    """Cross the line to complete lap 1, then return its flags."""
+    d.send(lap_number=1, current_lap=0.0, last_lap=6.0, speed=60.0, **GROUND)
+    drive(d, 60, **GROUND)
+    timed = [lap for lap in d.finish() if lap["lap_time"] is not None]
+    assert len(timed) >= 1
+    return timed[0]["flags"] or ""
+
+
+def test_landing_spike_after_flight_is_not_contact(tmp_path):
+    """A contact-threshold spike right after a real flight (all wheels
+    unloaded, no tire force, >= AIRBORNE_MIN_S) is the landing of a jump -
+    the lap stays clean. Matches real cross-country captures (session 55):
+    touchdown compresses the suspension a frame or two before the spike."""
+    d = Driver(tmp_path)
+    drive(d, 120, **GROUND)                          # 2 s on the ground
+    drive(d, 30, **AIR)                              # 0.5 s flight
+    drive(d, 2, **{**GROUND, "accel_x": 110.0})      # touchdown spike, loaded
+    drive(d, 120, **GROUND)
+    assert "contact" not in lap_flags_after(d)
+
+
+def test_short_hop_spike_still_flags_contact(tmp_path):
+    """Wheels unloaded for only a few frames (a crest, not a flight) does not
+    excuse a spike: still contact."""
+    d = Driver(tmp_path)
+    drive(d, 120, **GROUND)
+    drive(d, 4, **AIR)                               # 0.07 s < AIRBORNE_MIN_S
+    drive(d, 2, **{**GROUND, "accel_x": 110.0})
+    drive(d, 120, **GROUND)
+    assert "contact" in lap_flags_after(d)
+
+
+def test_spike_after_landing_grace_still_flags_contact(tmp_path):
+    """A spike well after touchdown (past LANDING_GRACE_S) is real contact -
+    e.g. landing a jump, then hitting a rock two seconds later."""
+    d = Driver(tmp_path)
+    drive(d, 120, **GROUND)
+    drive(d, 30, **AIR)                              # a real flight...
+    drive(d, 60, **GROUND)                           # ...landed 1 s ago
+    drive(d, 2, **{**GROUND, "accel_x": 110.0})
+    drive(d, 120, **GROUND)
+    assert "contact" in lap_flags_after(d)
 
 
 def test_race_mode_drops_at_lastlap_finish(tmp_path):
