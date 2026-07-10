@@ -84,6 +84,8 @@ jobs:
           (Get-FileHash $zip -Algorithm SHA256).Hash + "  " + $zip | Out-File -Encoding ascii checksums.txt
           Get-Content checksums.txt
 
+      # Static header only (install + verify instructions). The per-release
+      # changelog is appended automatically by generate_release_notes below.
       - name: Compose release notes
         shell: pwsh
         run: |
@@ -124,3 +126,7 @@ jobs:
             LapScope-${{ github.ref_name }}-win64.zip
             checksums.txt
           body_path: release_notes.md
+          # Appends GitHub's auto-generated "What's Changed" (merged PRs since
+          # the previous tag + full-changelog link) below the static body above,
+          # so each release actually describes what changed in it.
+          generate_release_notes: true
