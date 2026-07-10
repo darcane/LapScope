@@ -80,6 +80,43 @@ def test_collisions_tag_landings_but_keep_wall_hits(tmp_path):
     assert all(h["landing"] for h in clean_lap["collisions"])  # ...as landings
 
 
+def test_lap_data_reports_jump_segments(tmp_path):
+    """/laps/{id}/data returns each flight as a takeoff -> touchdown segment:
+    the simulator's --jumps course launches the car twice per lap, and its
+    touchdown jolt (well past IMPACT_ACCEL) must mark the segment hard."""
+    from app.api.routes import lap_data
+
+    def scenario(sim):
+        sim.event(120, "jumps")
+        sim.race_off()
+
+    store = run(scenario, tmp_path, jumps=True)
+    lap = completed_laps(store, sessions(store)[0]["id"])[0]
+    data = lap_data(lap["id"], _request_for(store), "speed_kmh", 500)
+
+    assert len(data["jumps"]) == 2  # two bumps on the loop
+    for j in data["jumps"]:
+        assert j["dist1"] > j["dist0"] >= 0   # lands after it takes off
+        assert j["air_s"] >= 0.12             # a real flight, not a crest
+        assert j["hard"] and j["g"] > 4.0     # the touchdown jolt registered
+    # the hard landings are still classified as landings, never contact
+    assert data["collisions"] and all(h["landing"] for h in data["collisions"])
+
+
+def test_lap_data_no_jumps_on_a_flat_lap(tmp_path):
+    """A plain circuit lap never leaves the ground: jumps must be empty."""
+    from app.api.routes import lap_data
+
+    def scenario(sim):
+        sim.event(120, "flat")
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    lap = completed_laps(store, sessions(store)[0]["id"])[0]
+    data = lap_data(lap["id"], _request_for(store), "speed_kmh", 500)
+    assert data["jumps"] == []
+
+
 def test_session_name_patch_sets_and_clears(tmp_path):
     """``name: ""`` must clear the custom name back to NULL so display_name
     falls back to route/date, and a PATCH without name must leave it alone.

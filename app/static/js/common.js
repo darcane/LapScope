@@ -1,4 +1,52 @@
-/* Shared UI helpers: Forza-colored class badges and track-condition ribbons. */
+/* Shared UI helpers: Forza-colored class badges, track-condition ribbons,
+   and the jump glyph both track maps (live + analysis) draw with. */
+
+/* ---------- jump glyph ----------
+   A jump is drawn as its flight: a dashed line from takeoff (open circle) to
+   touchdown (solid arrowhead pointing along the flight). A hard landing gets
+   a glow + white impact ring. Deliberately nothing like the 4-point contact
+   spark: dashes + an arrow read as "airborne, going that way" at a glance. */
+function drawJump(ctx, x0, y0, x1, y1, { color = "#f59e0b", hard = false, scale = 1 } = {}) {
+  const len = Math.hypot(x1 - x0, y1 - y0);
+  // a straight-down drop projects to a point: keep a readable arrow anyway
+  const ang = len > 0.5 ? Math.atan2(y1 - y0, x1 - x0) : -Math.PI / 2;
+  const r = 3.2 * scale;   // takeoff circle
+  const ah = 7 * scale;    // arrowhead length
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 1.8 * scale;
+  if (hard) {
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 9;
+  }
+  if (len > r + ah) {  // flight path, clipped so it doesn't pierce the end glyphs
+    ctx.setLineDash([5 * scale, 4 * scale]);
+    ctx.beginPath();
+    ctx.moveTo(x0 + Math.cos(ang) * (r + 1), y0 + Math.sin(ang) * (r + 1));
+    ctx.lineTo(x1 - Math.cos(ang) * ah * 0.7, y1 - Math.sin(ang) * ah * 0.7);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.beginPath();  // takeoff
+  ctx.arc(x0, y0, r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();  // touchdown arrowhead
+  ctx.moveTo(x1 + Math.cos(ang) * ah * 0.55, y1 + Math.sin(ang) * ah * 0.55);
+  ctx.lineTo(x1 + Math.cos(ang + 2.5) * ah * 0.8, y1 + Math.sin(ang + 2.5) * ah * 0.8);
+  ctx.lineTo(x1 + Math.cos(ang - 2.5) * ah * 0.8, y1 + Math.sin(ang - 2.5) * ah * 0.8);
+  ctx.closePath();
+  ctx.fill();
+  if (hard) {  // impact ring where the car slammed down
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(x1, y1, ah * 0.95, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
 
 /* FH6 CarClass indices; 6 = R (new class, 901-998 PI), 7 = X (999 only) */
 const CLASS_LETTERS = ["D", "C", "B", "A", "S1", "S2", "R", "X"];

@@ -248,10 +248,18 @@ def lap_data(
     # Spikes while airborne or right after touchdown are jump landings, not
     # contact (same classification as the recorder) - tagged, not dropped, so
     # the map can still show where a jump bottomed out.
+    #
+    # Jump segments: the same airborne classifier also yields explicit flights
+    # (every wheel unloaded for >= AIRBORNE_MIN_S). Each is returned as a
+    # takeoff -> touchdown segment so the map can draw where the car left the
+    # ground and where it came down; a landing-classified spike marks the
+    # segment "hard" with its peak g.
     collisions: list[dict] = []
+    jumps: list[dict] = []
     peak: tuple | None = None  # (g, d, frame) of the current impact burst
     burst_landing = True       # all frames of the burst classified as landing
     air_since: float | None = None
+    air_start: tuple | None = None  # (t, d, frame) of the first airborne frame
     grace_until = 0.0
 
     def emit(peak: tuple, landing: bool) -> None:
@@ -259,6 +267,17 @@ def lap_data(
         collisions.append({"x": round(p0["pos_x"], 2), "y": round(p0["pos_y"], 2),
                            "z": round(p0["pos_z"], 2), "dist": round(d0 - start_dist, 2),
                            "g": round(g0 / 9.80665, 2), "landing": landing})
+        if landing and jumps:
+            jumps[-1]["hard"] = True
+            jumps[-1]["g"] = max(jumps[-1]["g"] or 0.0, round(g0 / 9.80665, 2))
+
+    def emit_jump(start: tuple, land: tuple) -> None:
+        (t0, d0, p0), (t1, d1, p1) = start, land
+        jumps.append({"x0": round(p0["pos_x"], 2), "y0": round(p0["pos_y"], 2),
+                      "z0": round(p0["pos_z"], 2), "dist0": round(d0 - start_dist, 2),
+                      "x1": round(p1["pos_x"], 2), "y1": round(p1["pos_y"], 2),
+                      "z1": round(p1["pos_z"], 2), "dist1": round(d1 - start_dist, 2),
+                      "air_s": round(t1 - t0, 2), "hard": False, "g": None})
 
     for t, d, p in kept:
         airborne = (all(s < AIRBORNE_SUSP_MAX for s in p["norm_susp_travel"])
@@ -266,9 +285,11 @@ def lap_data(
         if airborne:
             if air_since is None:
                 air_since = t
+                air_start = (t, d, p)
         else:
             if air_since is not None and t - air_since >= AIRBORNE_MIN_S:
                 grace_until = t + LANDING_GRACE_S
+                emit_jump(air_start, (t, d, p))  # this frame is the touchdown
             air_since = None
         flying = air_since is not None and t - air_since >= AIRBORNE_MIN_S
         g = math.hypot(p["accel_x"], p["accel_z"])
@@ -281,6 +302,8 @@ def lap_data(
         elif peak is not None:
             emit(peak, burst_landing)
             peak = None
+    if air_since is not None and kept and kept[-1][0] - air_since >= AIRBORNE_MIN_S:
+        emit_jump(air_start, kept[-1])  # lap trace ended mid-flight
     if peak is not None:  # impact ran to the last kept frame
         emit(peak, burst_landing)
 
@@ -305,4 +328,4 @@ def lap_data(
         out["lap_time"] = list(t_rel)
 
     return {"lap": lap, "n_frames": len(rows), "dist": dist, "t": t_rel,
-            "channels": out, "collisions": collisions}
+            "channels": out, "collisions": collisions, "jumps": jumps}

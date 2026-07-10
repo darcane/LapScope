@@ -10,6 +10,7 @@ const state = {
   colorMode: getSettings().defaultColor,
   mapMode: getSettings().defaultMapMode,
   charts: [],
+  zoomRange: null,  // [distLo, distHi] while the charts are drag-zoomed
 };
 
 /* dirty-lap markers inferred by the recorder (the game sends no official flag) */
@@ -171,6 +172,7 @@ async function pickLap(lapId, slot) {
     }
   }
   renderLapRows();
+  state.zoomRange = null;  // new lap data: the old zoom window means nothing
   drawMap();
   drawCharts();
 }
@@ -461,17 +463,60 @@ function drawMap() {
         `<span class="swatch" style="background:hsl(120,75%,55%)"></span> grip ` +
         `→ <span class="swatch" style="background:hsl(0,75%,55%)"></span> sliding`;
     }
+    // chart drag-zoom window -> the matching index range on lap A's trace
+    // (dist is the charts' shared x-array, ascending by construction)
+    let zi = null;
+    if (state.zoomRange && A.dist && A.dist.length) {
+      const [lo, hi] = state.zoomRange;
+      let i0 = 0, i1 = A.dist.length - 1;
+      while (i0 < i1 && A.dist[i0] < lo) i0++;
+      while (i1 > i0 && A.dist[i1] > hi) i1--;
+      if (i0 < i1) zi = [i0, i1];
+    }
+    if (zi) {  // halo under the zoomed stretch so it pops against any colors
+      ctx.save();
+      ctx.strokeStyle = "rgba(34,211,238,0.30)";
+      ctx.lineWidth = 11;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      for (let i = zi[0]; i <= zi[1]; i++) {
+        const [X, Y] = at(A, i, false);
+        i === zi[0] ? ctx.moveTo(X, Y) : ctx.lineTo(X, Y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
     ctx.lineWidth = 3;
     ctx.lineCap = "round";
     let prev = at(A, 0, false);
     for (let i = 1; i < A.channels.pos_x.length; i++) {
       const cur = at(A, i, false);
+      // everything outside the zoom window fades so the span reads instantly
+      ctx.globalAlpha = zi && (i <= zi[0] || i > zi[1]) ? 0.22 : 1;
       ctx.strokeStyle = colorFn(vals[i]);
       ctx.beginPath();
       ctx.moveTo(prev[0], prev[1]);
       ctx.lineTo(cur[0], cur[1]);
       ctx.stroke();
       prev = cur;
+    }
+    ctx.globalAlpha = 1;
+    if (zi) {  // span endpoints: filled = where the window starts, hollow = ends
+      for (const [idx, fill, ring] of [[zi[0], "#22d3ee", "#fff"], [zi[1], "#0b1520", "#22d3ee"]]) {
+        const [X, Y] = at(A, idx, false);
+        ctx.save();
+        ctx.shadowColor = "#22d3ee";
+        ctx.shadowBlur = 8;
+        ctx.fillStyle = fill;
+        ctx.strokeStyle = ring;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(X, Y, 5.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
     }
     const [sx, sy] = at(A, 0, false);
     ctx.fillStyle = "#34d399";
@@ -517,38 +562,48 @@ function drawMap() {
     const lapMeta = state.laps.find((l) => l.id === state.lapA);
     // landings (spikes on jump touchdowns) are shown but not counted as contact
     const contacts = (A.collisions || []).filter((h) => !h.landing).length;
-    const landings = (A.collisions?.length || 0) - contacts;
+    const jumps = A.jumps || [];
+    const hard = jumps.filter((j) => j.hard).length;
     side.innerHTML = `<div class="lap-grid" style="text-align:left">
       <div><div class="label">Lap A</div><div class="value">${fmtLap(lapMeta?.lap_time)}</div></div>
       <div><div class="label">Lap B</div><div class="value">${fmtLap(state.laps.find((l) => l.id === state.lapB)?.lap_time)}</div></div>
       <div><div class="label">Samples</div><div class="value">${A.n_frames}</div></div>
       <div><div class="label">Driven</div><div class="value">${distFromM(drivenM).toFixed(2)} ${distUnit()}</div></div>
       <div><div class="label">Elevation range</div><div class="value">${yRange > 0.3 ? yRange.toFixed(0) + " m" : "flat"}</div></div>
-      <div><div class="label">Contacts</div><div class="value">${contacts ? `<span style="color:#ef4444">${contacts}</span>` : "0"}${landings ? `<span style="color:#f59e0b;font-size:0.9rem" title="${landings} hard jump landing${landings > 1 ? "s" : ""} — not contact"> +${landings} 🛬</span>` : ""}</div></div>
+      <div><div class="label">Contacts</div><div class="value">${contacts ? `<span style="color:#ef4444">${contacts}</span>` : "0"}</div></div>
+      ${jumps.length ? `<div><div class="label">Jumps</div><div class="value">${jumps.length}${hard ? `<span style="color:#f59e0b;font-size:0.9rem" title="${hard} hard landing${hard > 1 ? "s" : ""} — not contact"> (${hard} 🛬)</span>` : ""}</div></div>` : ""}
     </div>`;
   }
 
-  // collision points (contact spikes) as red bursts, over the ribbon so
-  // they read against any speed/slip color. B's are dimmer, like its line.
-  // Jump landings (h.landing, classified server-side) draw amber and smaller:
-  // worth seeing where a jump bottomed out, but they aren't contact.
-  const drawHits = (d, fill, landFill, r) => {
+  // jump flights (takeoff -> touchdown, detected server-side) with the shared
+  // glyph, then collision points (contact spikes) as red bursts - both over
+  // the ribbon so they read against any speed/slip color. B's are dimmer,
+  // like its line. Landing spikes are part of the jump glyph (hard = glow +
+  // impact ring), no longer their own spark - they aren't contact.
+  const drawJumps = (d, color) => {
+    if (!d || !d.jumps) return;
+    for (const j of d.jumps) {
+      const [X0, Y0] = P(j.x0, j.y0 ?? 0, j.z0, false);
+      const [X1, Y1] = P(j.x1, j.y1 ?? 0, j.z1, false);
+      drawJump(ctx, X0, Y0, X1, Y1, { color, hard: j.hard });
+    }
+  };
+  const drawHits = (d, fill, r) => {
     if (!d || !d.collisions) return;
-    for (const h of [...d.collisions].sort((a, b) => (b.landing ? 1 : 0) - (a.landing ? 1 : 0))) {
+    for (const h of d.collisions) {
+      if (h.landing) continue;  // drawn as its jump's touchdown, not a spark
       const [X, Y] = P(h.x, h.y ?? 0, h.z, false);
-      const color = h.landing ? landFill : fill;
-      const rad = h.landing ? r * 0.75 : r;
       ctx.save();
       ctx.strokeStyle = "#fff";
       ctx.lineWidth = 1.5;
-      ctx.fillStyle = color;
-      ctx.shadowColor = color;
+      ctx.fillStyle = fill;
+      ctx.shadowColor = fill;
       ctx.shadowBlur = 8;
       // 4-point spark
       ctx.beginPath();
       for (let k = 0; k < 8; k++) {
         const a = (k * Math.PI) / 4;
-        const rr = k % 2 ? rad * 0.4 : rad;
+        const rr = k % 2 ? r * 0.4 : r;
         const px = X + Math.cos(a) * rr, py = Y + Math.sin(a) * rr;
         k === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
       }
@@ -559,8 +614,10 @@ function drawMap() {
     }
   };
   if (getSettings().contactLayer) {
-    drawHits(B, "#7f5b5b", "#7f6f4b", 6);
-    drawHits(A, "#ef4444", "#f59e0b", 7);
+    drawJumps(B, "#7f6f4b");
+    drawJumps(A, "#f59e0b");
+    drawHits(B, "#7f5b5b", 6);
+    drawHits(A, "#ef4444", 7);
   }
 
   // cache the finished frame + projection for the chart-cursor marker
@@ -590,13 +647,35 @@ function interp(xs, ys, xq) {
 
 const AXIS = { stroke: "#7b8794", grid: { stroke: "#242e3b" }, ticks: { stroke: "#242e3b" } };
 
+/* drag-zoom on any chart -> the same x-window on every chart, and the zoomed
+   stretch of track highlighted on the map (double-click resets both). uPlot
+   fires setScale for our own propagation too, hence the re-entry guard. */
+let zoomSyncing = false;
+function syncZoom(u) {
+  if (zoomSyncing || !state.dataA) return;
+  const x = state.dataA.dist;
+  const { min, max } = u.scales.x;
+  if (min == null || max == null || !x.length) return;
+  zoomSyncing = true;
+  for (const c of state.charts) if (c !== u) c.setScale("x", { min, max });
+  zoomSyncing = false;
+  const range = min <= x[0] && max >= x[x.length - 1] ? null : [min, max];
+  if (JSON.stringify(range) !== JSON.stringify(state.zoomRange)) {
+    state.zoomRange = range;
+    drawMap();
+  }
+}
+
 function makeChart(el, title, xVals, seriesDefs, height = 150) {
   const opts = {
     title, width: el.clientWidth, height,
     cursor: { sync: { key: "fc" } },
     // hovering any chart marks the matching spot on the track map (the
     // charts all share lap A's x-array, so the cursor idx maps 1:1)
-    hooks: { setCursor: [(u) => setMapCursor(u.cursor.idx ?? null)] },
+    hooks: {
+      setCursor: [(u) => setMapCursor(u.cursor.idx ?? null)],
+      setScale: [(u, key) => { if (key === "x") syncZoom(u); }],
+    },
     scales: { x: { time: false } },
     // x is DistanceTraveled progress: on real FH6 circuits it is a per-route
     // track-position parameter, not literal meters - ideal for aligning laps,

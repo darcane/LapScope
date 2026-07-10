@@ -44,8 +44,10 @@ const liveMap = {
   session: null,
   minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity,
   hits: [],        // [x, z] world points where a contact spike fired
+  jumps: [],       // {x0, z0, x1, z1, hard} takeoff -> touchdown segments
   overImpact: false, // above the threshold last frame (edge-detect one hit/impact)
   airSince: null,  // when the current all-wheels-unloaded stretch began
+  airStart: null,  // [x, z] where that stretch began (the takeoff point)
   graceUntil: 0,   // spikes before this time are jump landings, not contact
 };
 
@@ -57,8 +59,10 @@ function resetLiveMap(sessionId) {
   liveMap.minX = liveMap.minZ = Infinity;
   liveMap.maxX = liveMap.maxZ = -Infinity;
   liveMap.hits = [];
+  liveMap.jumps = [];
   liveMap.overImpact = false;
   liveMap.airSince = null;
+  liveMap.airStart = null;
   liveMap.graceUntil = 0;
 }
 
@@ -75,23 +79,37 @@ function feedCollision(f) {
   if (f.session_id == null || !mapActive(f) || f.session_id !== liveMap.session) {
     liveMap.overImpact = false;
     liveMap.airSince = null;
+    liveMap.airStart = null;
     return;
   }
   const t = f._t;
   const airborne = f.norm_susp_travel.every((s) => s < AIRBORNE_SUSP_MAX)
     && f.tire_combined_slip.every((s) => s < AIRBORNE_SLIP_MAX);
   if (airborne) {
-    if (liveMap.airSince == null) liveMap.airSince = t;
+    if (liveMap.airSince == null) {
+      liveMap.airSince = t;
+      liveMap.airStart = [f.pos_x, f.pos_z];
+    }
   } else {
-    if (liveMap.airSince != null && t - liveMap.airSince >= AIRBORNE_MIN_S)
+    if (liveMap.airSince != null && t - liveMap.airSince >= AIRBORNE_MIN_S) {
       liveMap.graceUntil = t + LANDING_GRACE_S;
+      // a real flight just ended: this frame is the touchdown
+      liveMap.jumps.push({ x0: liveMap.airStart[0], z0: liveMap.airStart[1],
+                           x1: f.pos_x, z1: f.pos_z, hard: false });
+    }
     liveMap.airSince = null;
   }
   const flying = liveMap.airSince != null && t - liveMap.airSince >= AIRBORNE_MIN_S;
   if (Math.hypot(f.accel_x, f.accel_z) >= IMPACT_ACCEL) {
-    // jump landings (spike while airborne / just after touchdown) draw no spark
-    if (!liveMap.overImpact && !(flying || t < liveMap.graceUntil))
-      liveMap.hits.push([f.pos_x, f.pos_z]);
+    if (!liveMap.overImpact) {
+      if (flying || t < liveMap.graceUntil) {
+        // the landing of a jump, not contact: mark its glyph hard, no spark
+        const j = liveMap.jumps[liveMap.jumps.length - 1];
+        if (j) j.hard = true;
+      } else {
+        liveMap.hits.push([f.pos_x, f.pos_z]);
+      }
+    }
     liveMap.overImpact = true;
   } else {
     liveMap.overImpact = false;
@@ -104,7 +122,19 @@ function feedLiveMap(f) {
   // map - race_mode comes from the recorder, which knows the difference.
   // The finished track stays on screen until the next event starts.
   if (f.session_id == null || !mapActive(f)) return;
-  if (f.session_id !== liveMap.session) resetLiveMap(f.session_id); // new session -> fresh track
+  if (f.session_id !== liveMap.session) {
+    // A pause longer than the recorder's grace (photo mode, a long sit in the
+    // pause menu) splits the recording into a new session id, but the race
+    // itself resumes exactly where it stopped. Keep drawing in that case:
+    // same place (within the 250 m teleport rule below) AND the race clock
+    // kept its value - a restart or a genuinely new event resets it to ~0,
+    // which is the very signal the recorder splits sessions on.
+    const resumed = liveMap.last != null
+      && Math.hypot(f.pos_x - liveMap.last[0], f.pos_z - liveMap.last[1]) < 250
+      && f.current_race_time > 5;
+    if (resumed) liveMap.session = f.session_id;
+    else resetLiveMap(f.session_id); // new event -> fresh track
+  }
   const x = f.pos_x, z = f.pos_z;
   if (liveMap.last) {
     const jump = Math.hypot(x - liveMap.last[0], z - liveMap.last[1]);

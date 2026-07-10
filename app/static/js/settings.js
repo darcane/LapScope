@@ -11,7 +11,7 @@ const SETTINGS_DEFAULTS = {
   temp: "c",            // "c" | "f"  (packet TireTemp is Fahrenheit)
   dist: "km",           // "km" | "mi"
   freeroamMap: false,   // draw the live track map in free roam, not only races
-  contactLayer: true,   // show contact-spike bursts on the analysis map
+  contactLayer: true,   // show contact sparks + jump glyphs on the analysis map
   defaultMapMode: "2d", // "2d" | "3d"  (absorbs legacy fc_mapmode)
   defaultColor: "speed", // "speed" | "slip"
 };
@@ -163,7 +163,7 @@ function openSettings() {
 
   group("Maps");
   toggle("Live map in free roam", "freeroamMap");
-  toggle("Contact markers (analysis)", "contactLayer");
+  toggle("Contact & jump markers (analysis)", "contactLayer");
   seg("Default map view", "defaultMapMode", [{ label: "2D", value: "2d" }, { label: "3D", value: "3d" }]);
   seg("Default color", "defaultColor", [{ label: "Speed", value: "speed" }, { label: "Slip", value: "slip" }]);
 

@@ -68,7 +68,7 @@ each runs on every startup inside try/except (existing-column errors swallowed).
 | `POST /sessions/{id}/reprocess` | Rebuild laps from stored frames (async def — event-loop writes). 409 while **any** session records: the synchronous replay would stall the event loop and freeze live telemetry. |
 | `DELETE /sessions/{id}` | Cascades frames+laps. 409 while recording. |
 | `GET /sessions/{id}/laps` | Session + laps with `is_best` / `gap_to_best`. |
-| `GET /laps/{id}/data?channels=&max_points=` | Distance-indexed channel arrays; drops rewound-over samples; decimates to `max_points`. Channel names = `CHANNELS` keys in routes.py. `lap_time` falls back to time-since-lap-start when the packet lap clock never ran (WTA / bare sprints keep `CurrentLap` at 0), so the A/B Δ-time chart works for those events. |
+| `GET /laps/{id}/data?channels=&max_points=` | Distance-indexed channel arrays; drops rewound-over samples; decimates to `max_points`. Channel names = `CHANNELS` keys in routes.py. `lap_time` falls back to time-since-lap-start when the packet lap clock never ran (WTA / bare sprints keep `CurrentLap` at 0), so the A/B Δ-time chart works for those events. Also returns `collisions` (contact-spike peaks, `landing: true/false`) and `jumps` (airborne segments: takeoff → touchdown world coords + `dist0/dist1`, `air_s`, `hard` + peak `g` when the landing spiked) — both computed on the full-resolution trace, never decimated away. |
 | `PATCH /routes/{id}`, `GET/PATCH /cars/{ordinal}` | Rename route / car override (car `name: ""` reverts the override to the bundled name). |
 
 ## WebSocket `/ws/live` frame
@@ -82,10 +82,10 @@ listener: `session_id`, `delta` (vs session-best), `session_best`,
 
 | File | Responsibility |
 |---|---|
-| `index.html` + `js/dashboard.js` | Live page: WebSocket → `requestAnimationFrame` render loop; live track map state (`feedLiveMap`: resets on session-id change or >250 m jump); race-mode gating of timer/chip/map; no-data overlay polling `/api/status`. |
-| `js/gauges.js` | Pure canvas renderers (RPM arc, friction circle, grip panel, input strip, live map); `initCanvas` handles DPR scaling. |
-| `analysis.html` + `js/analysis.js` | Session browser, lap table, 2D/3D track map (color by speed/slip, drag-to-rotate 3D, chart-hover → map marker), A/B comparison charts (uPlot, x = DistanceTraveled track position). |
-| `js/common.js` | Shared badges (class/PI, drivetrain, conditions, track type incl. `TRACK_META`) + themed modal dialogs (`uiPrompt`/`uiConfirm`/`uiAlert` — never use `window.prompt/confirm/alert`) + the fail-soft client-side update check (`/api/version` vs the GitHub Releases API; dismissible `.update-banner`, 24 h cached, skipped on `0.0.0`). |
+| `index.html` + `js/dashboard.js` | Live page: WebSocket → `requestAnimationFrame` render loop; live track map state (`feedLiveMap`: resets on session-id change or >250 m jump — except a pause-split resume: same place + race clock kept its value keeps the path; `feedCollision` also tracks jump flights); race-mode gating of timer/chip/map; no-data overlay polling `/api/status`. |
+| `js/gauges.js` | Pure canvas renderers (RPM arc, friction circle, grip panel, input strip, live map incl. jump glyphs); `initCanvas` handles DPR scaling. |
+| `analysis.html` + `js/analysis.js` | Session browser, lap table, 2D/3D track map (color by speed/slip, drag-to-rotate 3D, chart-hover → map marker, jump/contact layers, chart drag-zoom → highlighted span), A/B comparison charts (uPlot, x = DistanceTraveled track position; drag-zoom syncs across all charts, double-click resets). |
+| `js/common.js` | Shared badges (class/PI, drivetrain, conditions, track type incl. `TRACK_META`) + the `drawJump` canvas glyph both maps use + themed modal dialogs (`uiPrompt`/`uiConfirm`/`uiAlert` — never use `window.prompt/confirm/alert`) + the fail-soft client-side update check (`/api/version` vs the GitHub Releases API; dismissible `.update-banner`, 24 h cached, skipped on `0.0.0`). |
 | `js/settings.js` | User display preferences, `localStorage`-only (no backend — conversions are display-time, the recorder stores raw packets). One JSON key `ls_settings`; converters (`speedFromMps`/`speedFromKmh`/`speedUnit`, `tempFromF`/`tempUnit`/`fmtTireTemp`, `distFromM`/`distUnit`); `getSettings`/`saveSettings`/`onSettingsChange` pub-sub; `openSettings()` themed panel (reuses `common.js` modal chrome). Loaded after `common.js` on both pages; the ⚙ header button (`#settings-btn`) opens it. |
 | `css/style.css` | Theme = CSS custom props. `css/fonts.css` + `fonts/` = vendored Rajdhani (OFL); app must work fully offline. |
 | `js/vendor/uplot.iife.min.js` | Only dependency, vendored, analysis page only. |
@@ -200,7 +200,12 @@ assert them here.
   collision markers (spikes while airborne / just after touchdown are jump
   landings, not contact) — the `/laps/{id}/data` endpoint imports them and
   tags each collision `landing: true/false`; `dashboard.js` duplicates all
-  five constants for the live map (keep the two in lockstep).
+  five constants for the live map (keep the two in lockstep). The same
+  airborne classifier also yields explicit jump segments (takeoff →
+  touchdown): `/laps/{id}/data` returns them as `jumps`, `dashboard.js`
+  tracks them live in `feedCollision`, and both maps render them through the
+  shared `drawJump` glyph (common.js): dashed flight line, takeoff circle,
+  touchdown arrowhead, glow + impact ring on hard landings.
 - `RT_FREEZE_SECONDS` (laps.py) = the same constant in inspect_session.py.
 - Packet layout: `_STRUCT` and `FIELDS` in packet.py must stay in lockstep
   (asserted by the module self-test).

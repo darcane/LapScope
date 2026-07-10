@@ -36,11 +36,17 @@ in Rivals.
 - **Live dashboard** — speed / RPM / gear gauges, a friction circle (G-forces),
   per-tire grip (green = grip, red = sliding), an understeer/oversteer indicator,
   throttle/brake/steering traces, a lap timer with a **live delta vs. your
-  session-best lap**, and a **track map that draws itself as you drive**.
+  session-best lap**, and a **track map that draws itself as you drive** — it survives
+  a mid-race pause (photo mode included) and marks contacts and jumps as they happen.
 - **Lap analysis** — every timed drive is stored. Browse sessions, see lap times, draw
   your **racing line colored by speed or tire slip**, and **compare two laps (A vs. B)**
   with distance-aligned charts: time delta, speed, inputs, steering, and slip. The map
-  has a **2D/3D toggle** (3D uses elevation and is drag-to-rotate).
+  has a **2D/3D toggle** (3D uses elevation and is drag-to-rotate). **Drag-zoom any
+  chart** and every chart follows while the map **highlights exactly that stretch of
+  road** (double-click to reset).
+- **Jumps, drawn as jumps** — airborne stretches are detected from suspension + tire
+  load and drawn as an explicit **takeoff ○ → touchdown ▸ flight line** on both maps;
+  a hard landing gets an amber glow + impact ring instead of being mistaken for a crash.
 - **Dirty-lap flags** — the packet has no "lap invalidated" field, so LapScope infers
   it: ⏪ **rewind** (the lap clock ran backwards) and 💥 **contact** (a G-spike beyond
   what tires can generate). Rewound stretches are trimmed from the charts and map.

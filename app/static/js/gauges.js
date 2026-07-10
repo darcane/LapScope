@@ -223,8 +223,8 @@ function roundRect(ctx, x, y, w, h, r) {
 
 /* Live track map: the path driven so far this event, plus the car.
    pts: [[worldX, worldZ], ...] (teleports/new sessions reset the whole
-   path upstream); ext: {minX, maxX, minZ, maxZ}; car: {x, z, hx, hz} or
-   null (hx/hz = world heading unit vector, from yaw). */
+   path upstream); ext: {minX, maxX, minZ, maxZ, hits, jumps}; car:
+   {x, z, hx, hz} or null (hx/hz = world heading unit vector, from yaw). */
 function drawLiveMap(g, pts, ext, car) {
   const { ctx, w, h } = g;
   ctx.clearRect(0, 0, w, h);
@@ -257,6 +257,12 @@ function drawLiveMap(g, pts, ext, car) {
   ctx.beginPath();
   ctx.arc(X(pts[0][0]), Y(pts[0][1]), 4, 0, Math.PI * 2);
   ctx.fill();
+
+  // jump flights (takeoff -> touchdown) with the shared glyph from common.js
+  if (ext.jumps) {
+    for (const j of ext.jumps)
+      drawJump(ctx, X(j.x0), Y(j.z0), X(j.x1), Y(j.z1), { hard: j.hard });
+  }
 
   // collision points (contact spikes) as red sparks, under the car marker
   if (ext.hits && ext.hits.length) {
