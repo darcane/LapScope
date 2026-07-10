@@ -11,13 +11,26 @@ and the hard-won behavioral facts that must not be re-derived or regressed.
    responsibilities, data flow, DB schema, API surface, WebSocket contract,
    concurrency rules, simulator flags, and the cross-file invariants that must
    stay in sync. Consult it before touching anything structural.
-3. **[README.md](README.md)** — user-facing: setup, in-game settings,
-   troubleshooting flows (no packets, unrecognized event types).
-4. **[TODO.md](TODO.md)** — open backlog and in-flight investigations.
+3. **[README.md](README.md)** — user-facing: setup, in-game settings, quick
+   troubleshooting. Kept deliberately basic — deep material goes on the wiki.
+4. **Wiki** (source: [docs/wiki/](docs/wiki/)) — user-facing deep dives:
+   Troubleshooting, Capturing-an-Unrecognized-Event, FH6-Data-Out-Packet,
+   Event-Detection (+ `_Sidebar`/`_Footer`). Mirrored to the GitHub wiki by
+   [.github/workflows/wiki.yml](.github/workflows/wiki.yml) on every merge to
+   `main`; `docs/wiki/` is the **source of truth — never edit the wiki on
+   GitHub**, the next sync overwrites it. Pages link each other wiki-style
+   (`[text](Page-Name)`, no `.md` — resolves only on the published wiki) and
+   link repo files/images by absolute URL
+   (`https://github.com/darcane/LapScope/blob/main/…`,
+   `https://raw.githubusercontent.com/darcane/LapScope/main/…`).
+5. **[TODO.md](TODO.md)** — open backlog and in-flight investigations.
 
-Keep all four current: a detection change usually touches this file's model
-section, a new endpoint/table belongs in ARCHITECTURE.md, a new user-visible
-feature in the README, and finished TODO items get pruned.
+Keep all five current: a detection change usually touches this file's model
+section **and** the wiki's Event-Detection page; a new endpoint/table belongs
+in ARCHITECTURE.md; a new user-visible feature in the README; a change to
+packet understanding, troubleshooting steps, or the capture workflow updates
+the matching `docs/wiki/` page **in the same PR**; finished TODO items get
+pruned.
 
 ## What this is
 

@@ -75,6 +75,11 @@ the packet's elevation and is drag-to-rotate; the ✦ markers are detected conta
 
 ![Track map in 3D, drag-to-rotate](docs/media/track-map-3d.png)
 
+**Jumps, drawn as jumps** — takeoff ○, dashed flight line, touchdown ▸, an amber
+glow + impact ring on hard landings; the red ✦ is a real contact:
+
+![Jump glyphs on the 3D track map](docs/media/track-map-3d-jumps.png)
+
 **Lap list with dirty-lap flags** (💥 contact, ⏪ rewind) and A/B compare tags:
 
 ![Lap list with dirty-lap flags](docs/media/session-list.png)
@@ -83,6 +88,8 @@ the packet's elevation and is drag-to-rotate; the ✦ markers are detected conta
 conditions ribbons, plus the auto-named route:
 
 ![Session list with ribbons](docs/media/session-sidebar.png)
+
+**Settings** — units and map preferences, saved in your browser:
 
 ![Settings panel](docs/media/settings.png)
 
@@ -131,7 +138,8 @@ Then just drive. Telemetry is only sent while you're driving (not in menus). You
 ## Try it without the game
 
 No FH6 handy? A built-in simulator replays realistic telemetry so you can see the whole
-app work end to end:
+app work end to end. It needs a source checkout (`git clone`) and Python — it's a
+single stdlib script — and works against the exe or Docker alike:
 
 ```bash
 python tools/simulator.py                                   # ~3.5 laps, 1 event
@@ -154,9 +162,11 @@ can be blocked from sending to `127.0.0.1`:
    `192.168.1.20`), keeping port `9999`.
 3. Check the server actually sees packets at **http://localhost:8000/api/status**.
 
-The full flow — UWP loopback exemptions, the Docker IPv6-proxy port bug, and diagnosing
-an **event type that isn't being recorded** (with `LS_KEEP_DISCARDED` and
-`tools/inspect_session.py`) — lives in the **[Wiki](../../wiki)**.
+The full flow — UWP loopback exemptions, the Docker IPv6-proxy port bug, busy ports,
+wrong-size packets — lives in **[Troubleshooting](../../wiki/Troubleshooting)** on the
+Wiki. Diagnosing an **event type that isn't being recorded** (with `LS_KEEP_DISCARDED`
+and `tools/inspect_session.py`) has its own page:
+**[Capturing an Unrecognized Event](../../wiki/Capturing-an-Unrecognized-Event)**.
 
 ## Configuration
 
@@ -183,9 +193,11 @@ reference: [FH6 Data Out documentation](https://support.forza.net/hc/en-us/artic
 
 The interesting part is that FH6 gives *no* explicit event boundaries, no lap-invalidated
 flag, and no route names, and `DistanceTraveled` isn't even in meters on real circuits —
-so LapScope infers all of it from packet behavior. The deep dive (packet internals,
-event-detection model, the hard-won FH6 quirks) is in the **[Wiki](../../wiki)** and
-[AGENTS.md](AGENTS.md).
+so LapScope infers all of it from packet behavior. The deep dives live on the Wiki:
+**[FH6 Data Out Packet](../../wiki/FH6-Data-Out-Packet)** (the 324-byte layout and its
+quirks) and **[Event Detection](../../wiki/Event-Detection)** (how sessions, laps,
+finishes, and dirty-lap flags are inferred, with the real captures that proved each
+rule) — plus [AGENTS.md](AGENTS.md) for the dev-facing summary.
 
 ## Contributing
 

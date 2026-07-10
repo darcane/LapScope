@@ -1,0 +1,45 @@
+# Mirrors docs/wiki/ to the GitHub wiki (github.com/<repo>/wiki).
+#
+# docs/wiki/ in this repo is the SOURCE OF TRUTH for the wiki: pages are
+# authored there, reviewed through normal PRs, and published here on merge.
+# Never edit the wiki directly on GitHub - this mirror deletes/overwrites
+# anything that isn't in docs/wiki/. Convention details: AGENTS.md.
+#
+# Auth: the default GITHUB_TOKEN (contents: write) can push to the .wiki.git
+# repo. If that push ever starts failing with a 403, create a PAT with repo
+# scope, store it as a WIKI_TOKEN secret, and swap it into the clone URL.
+# The wiki must exist (have >=1 page created via the UI) before the first run.
+
+name: Publish wiki
+
+on:
+  push:
+    branches: [main]
+    paths: ["docs/wiki/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mirror docs/wiki -> GitHub wiki
+        run: |
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git" /tmp/wiki
+          rsync -a --delete --exclude '.git' docs/wiki/ /tmp/wiki/
+          cd /tmp/wiki
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Wiki already up to date."
+            exit 0
+          fi
+          git commit -m "Sync from docs/wiki @ ${GITHUB_SHA}"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

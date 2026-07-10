@@ -28,8 +28,13 @@ Read these before making non-trivial changes:
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — what lives where: file
   responsibilities, data flow, DB schema, API surface, and the cross-file
   invariants that must stay in sync.
-- **[README.md](README.md)** — user-facing setup, in-game settings, and
+- **[README.md](README.md)** — user-facing setup, in-game settings, and quick
   troubleshooting.
+- **The [Wiki](../../wiki)** — user-facing deep dives (troubleshooting, the
+  capture workflow, packet internals, event detection). Authored in
+  [docs/wiki/](docs/wiki/) and mirrored to the GitHub wiki on merge —
+  `docs/wiki/` is the source of truth, so wiki changes go through normal PRs;
+  never edit the wiki directly on GitHub.
 
 ## Development setup
 
@@ -59,9 +64,13 @@ lands on it except a green, reviewed PR.
 1. **Cut a branch off `main`.** Name it `feat/<short-desc>` for features or
    `fix/<short-desc>` for fixes.
 2. **Make your change**, keeping the docs in step:
-   - a detection change usually touches the AGENTS.md model section,
+   - a detection change usually touches the AGENTS.md model section **and** the
+     wiki's Event-Detection page,
    - a new endpoint/table belongs in ARCHITECTURE.md,
-   - a new user-visible feature belongs in the README.
+   - a new user-visible feature belongs in the README,
+   - changed packet facts, troubleshooting steps, or capture workflow update
+     the matching page under `docs/wiki/` (published to the GitHub wiki on
+     merge).
 3. **Add or update tests.** New detection behavior needs a scenario in
    `tools/simulator.py` and a matching headless assertion in
    `tests/test_scenarios.py`.

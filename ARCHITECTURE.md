@@ -138,6 +138,10 @@ assert them here.
   ([requirements.txt](requirements.txt)).
 - [.claude/launch.json](.claude/launch.json): preview server runs
   `docker compose up` and owns the process.
+- [.github/workflows/wiki.yml](.github/workflows/wiki.yml): mirrors
+  [docs/wiki/](docs/wiki/) to the GitHub wiki on every merge to `main` that
+  touches it (plus manual dispatch). `docs/wiki/` is the source of truth —
+  direct wiki edits get overwritten by the next sync.
 
 ### Windows exe (plug-and-play build for normal users)
 

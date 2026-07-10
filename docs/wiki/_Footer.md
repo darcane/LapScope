@@ -1,0 +1,1 @@
+These pages are mirrored from [`docs/wiki/`](https://github.com/darcane/LapScope/tree/main/docs/wiki) in the main repo — please don't edit the wiki directly (changes would be overwritten by the next sync); open a PR against `docs/wiki/` instead. · LapScope is an unofficial, fan-made tool and is not affiliated with or endorsed by Playground Games, Turn 10, or Microsoft.

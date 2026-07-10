@@ -24,7 +24,8 @@ body:
            offer) the `data/telemetry.db` — the raw frames let us reproduce and
            add a test.
 
-        More on the workflow: the README "Troubleshooting" section and the Wiki.
+        Full walkthrough (incl. setting the flag for the exe and reading the
+        output): [Capturing an Unrecognized Event](https://github.com/darcane/LapScope/wiki/Capturing-an-Unrecognized-Event).
   - type: dropdown
     id: event-type
     attributes:

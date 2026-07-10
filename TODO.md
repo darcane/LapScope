@@ -119,10 +119,17 @@ the build. Playground Games ships new cars → new ordinals, so it goes stale.
 
 ## Docs
 
-- **Wiki** for advanced material (packet internals, event-detection deep dive,
-  capture-diagnosis workflow, the FH6 behavioral facts). README links to it.
-- Keep README basic: what it is, features, install, in-game setup, a little
-  troubleshooting.
+- ✅ **Wiki** shipped, authored in-repo: pages live in [docs/wiki/](docs/wiki/)
+  (Home, Troubleshooting, Capturing-an-Unrecognized-Event, FH6-Data-Out-Packet,
+  Event-Detection, plus `_Sidebar`/`_Footer`) and are mirrored to the GitHub
+  wiki by [.github/workflows/wiki.yml](.github/workflows/wiki.yml) on every
+  merge to main. `docs/wiki/` is the source of truth — never edit the wiki
+  directly. Convention recorded in AGENTS.md (documentation map) and
+  CONTRIBUTING.md; the unrecognized-event issue template deep-links the
+  capture page.
+- ✅ README kept basic and polished: troubleshooting/how-it-works now deep-link
+  the specific wiki pages, the jump-glyph screenshot and a Settings caption
+  were added, and the simulator section notes it needs a source checkout.
 
 ## Contact & lap-invalidation detection (accuracy)
 
