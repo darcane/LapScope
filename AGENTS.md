@@ -23,14 +23,17 @@ and the hard-won behavioral facts that must not be re-derived or regressed.
    link repo files/images by absolute URL
    (`https://github.com/darcane/LapScope/blob/main/…`,
    `https://raw.githubusercontent.com/darcane/LapScope/main/…`).
-5. **[TODO.md](TODO.md)** — open backlog and in-flight investigations.
+5. **[GitHub Issues](https://github.com/darcane/LapScope/issues)** — the open
+   backlog: bugs, feature ideas, and in-flight investigations. (The old
+   `TODO.md` is retired; everything it tracked lives in the issue tracker now.)
 
 Keep all five current: a detection change usually touches this file's model
 section **and** the wiki's Event-Detection page; a new endpoint/table belongs
 in ARCHITECTURE.md; a new user-visible feature in the README; a change to
 packet understanding, troubleshooting steps, or the capture workflow updates
-the matching `docs/wiki/` page **in the same PR**; finished TODO items get
-pruned.
+the matching `docs/wiki/` page **in the same PR**; an issue gets closed when
+its work lands, and new bugs/ideas discovered along the way get filed as
+issues — never appended to a file.
 
 ## What this is
 
@@ -52,12 +55,11 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
 
 - **After each iteration of changes, create a local git commit.** **Never push
   to a remote** — the owner handles pushing themselves.
-- **Work item → branch → PR.** Pick an item from [TODO.md](TODO.md) (once the
-  repo is on GitHub, from issues instead), cut a `feat/…` or `fix/…` branch off
-  `main`, commit there, and land it via a pull request with CI green — not by
-  committing straight to `main`. `main` is the protected, release branch.
-  Until the GitHub remote exists this is local-only (branch + commits, owner
-  pushes/opens the PR).
+- **Work item → branch → PR.** Pick an item from the
+  [issue tracker](https://github.com/darcane/LapScope/issues), cut a `feat/…`
+  or `fix/…` branch off `main`, commit there, and land it via a pull request
+  with CI green — not by committing straight to `main`. `main` is the
+  protected, release branch. The owner pushes and opens the PR.
 - **Static files are baked into the image.** Any change under `app/` requires
   `docker compose build` + restart. There is no bind mount for code.
 - The Claude Code preview config (`.claude/launch.json`) runs `docker compose up`
@@ -219,8 +221,8 @@ All the rules exist because some real behavior broke a naive version:
   the analysis map draws landings amber, the Contacts stat counts only real
   ones. **Known remaining limit:** light Rivals wall-scrapes stay below the
   threshold (false negatives; there is no lap-invalidated packet field to
-  cross-check against) — tracked in TODO.md ("Contact & lap-invalidation
-  detection"). A wall hit inside the 0.35 s post-landing grace is also excused
+  cross-check against) — tracked in
+  [issue #27](https://github.com/darcane/LapScope/issues/27). A wall hit inside the 0.35 s post-landing grace is also excused
   (accepted trade-off). Flags reset when a lap re-anchors (the WTA launch, a
   mid-session lap-timer start): pre-launch junk frames must not dirty lap 1.
   Test-fixture gotcha: `empty_fields()` zeroes suspension and slip, which

@@ -157,7 +157,7 @@ circuit sessions.
 but its lateral force is far below the contact threshold — and there is no
 packet field to cross-check against. Light scrapes are therefore missed (and a
 wall hit inside the 0.35 s post-landing grace is excused). Accepted trade-offs,
-tracked in [TODO.md](https://github.com/darcane/LapScope/blob/main/TODO.md).
+tracked in [issue #27](https://github.com/darcane/LapScope/issues/27).
 
 Flags reset when a lap re-anchors (a WTA launch, a mid-session lap-timer
 start), so pre-launch junk frames never dirty lap 1.

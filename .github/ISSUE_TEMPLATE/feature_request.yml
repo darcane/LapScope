@@ -6,8 +6,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the idea! Please check [existing issues](../issues) and
-        [TODO.md](../blob/main/TODO.md) first — it may already be planned.
+        Thanks for the idea! Please check [existing issues](../issues) first —
+        it may already be planned.
   - type: textarea
     id: problem
     attributes:
@@ -32,5 +32,5 @@ body:
     attributes:
       label: Confirmation
       options:
-        - label: I searched existing issues and TODO.md and this isn't a duplicate.
+        - label: I searched existing issues and this isn't a duplicate.
           required: true
