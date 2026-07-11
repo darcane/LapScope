@@ -105,7 +105,11 @@ async function selectSession(id) {
   $("#cond-select").value = s.conditions || "";
   $("#cond-select").onchange = async (e) => { await patch({ conditions: e.target.value }); loadSessions(); };
   $("#track-select").value = s.track_type || "";
-  $("#track-select").onchange = async (e) => { await patch({ track_type: e.target.value }); loadSessions(); };
+  $("#track-select").onchange = async (e) => {
+    await patch({ track_type: e.target.value });
+    await maybeRetagRoute(s, e.target.value);
+    loadSessions();
+  };
   $("#btn-rename").onclick = () => renameSession(s);
   $("#btn-route").onclick = () => renameRoute(s);
   $("#btn-car").onclick = () => renameCar(s);
@@ -222,6 +226,26 @@ async function renameRoute(session) {
     body: JSON.stringify({ name: name.trim() }),
   });
   selectSession(session.id);
+}
+
+/* a route's surface doesn't change: offer to apply a manually chosen track
+   type to every session recorded on the same (fingerprint-recognized) route */
+async function maybeRetagRoute(session, type) {
+  if (!type || !session.route_id) return;
+  const all = await (await fetch("/api/sessions")).json();
+  const others = all.filter((x) => x.route_id === session.route_id && x.id !== session.id);
+  if (!others.length) return;
+  const [icon, label] = TRACK_META[type];
+  const route = session.route_name || "this route";
+  const ok = await uiConfirm(`Tag every session on ${route} as ${icon} ${label}?`,
+    `${others.length} other session${others.length > 1 ? "s" : ""} recorded on the same route`
+    + " will be retagged too (future sessions inherit it automatically).");
+  if (!ok) return;
+  await fetch(`/api/routes/${session.route_id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ track_type: type }),
+  });
 }
 
 async function renameCar(session) {

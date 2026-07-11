@@ -81,6 +81,18 @@ LS_KEEP_DISCARDED=1 keeps such sessions (raw frames included) instead of
 deleting them - drive the unrecognized event once with the flag on and the
 data needed to add support for it is preserved.
 
+Sessions that complete laps also get a track-type suggestion at close
+(road/dirt/cross/wtc), written with COALESCE so a user tag always wins: a
+route that already carries a type passes it on (routes don't change
+surface, and it propagates manual corrections); otherwise geometric (WTA)
+laps mean wtc, and the surface is read from suspension roughness + jump
+rate - NOT tire slip, which tracks driver aggression, not surface (hard
+tarmac laps out-slip clean dirt runs on real captures). Frames far off the
+course line (|NormalizedDrivingLine| saturated at 127) contribute no
+surface evidence, so deliberately off-roading a tarmac event can't fake a
+dirt tag. street/touge/drag are indistinguishable from telemetry and never
+suggested; when the evidence is thin or ambiguous, no tag at all.
+
 The packet carries no "lap invalidated" flag, so lap dirtiness is inferred:
 - rewind: the lap clock ran backwards mid-lap (reversing on track never
   does that - time only runs forward), corroborated by DistanceTraveled
@@ -142,9 +154,54 @@ WTA_TELEPORT_JUMP = 250.0     # single-frame position jump = fast travel (free r
 POINT_FINISH_DIST = 200.0     # DistanceTraveled must land this close to 0 for a
                               # reset to count as a point-to-point finish
 
+# Track-type auto-suggestion: thresholds calibrated on the stored real
+# captures (2026-07-12 sweep, same dump/hand-label method as the landing
+# classifier). Labeled dirt sessions showed 10-16 % rough frames at 1.0-2.5
+# jumps/min; tarmac (road/street/touge) 0-1.3 % at 0-0.5; cross-country
+# 4.9-13 jumps/min; drag near-zero cornering. TireCombinedSlip does NOT
+# separate surfaces - it tracks driver aggression, not the ground.
+TRACK_DRIVE_SPEED_MIN = 8.0    # m/s: below this the frame isn't "driving"
+TRACK_OFF_LINE = 127           # |NormalizedDrivingLine| saturates at 127 far
+                               # off the course - such frames are no surface
+                               # evidence (off-roading must not fake "dirt")
+TRACK_ROUGH_DT_MAX = 0.25      # s: consecutive-frame gap limit for the rate
+TRACK_ROUGH_RATE = 2.8         # susp travel fraction/s that reads "rough"
+TRACK_DIRT_ROUGH_FRAC = 0.10   # rough-frame share >= this, and ...
+TRACK_DIRT_JPM = 0.7           # ... jumps per driving minute >= this = dirt
+TRACK_CROSS_JPM = 3.5          # jumps/min >= this = cross-country
+TRACK_ROAD_ROUGH_FRAC = 0.03   # rough share <= this (and few jumps) = tarmac
+TRACK_CORNER_STEER = 30        # |Steer| beyond this counts as cornering
+TRACK_CORNER_FRAC_MIN = 0.10   # under this share of cornering frames = a
+                               # drag-like straight strip: suggest nothing
+TRACK_MIN_DRIVE_S = 30.0       # too little driving to judge a surface
+
 # keep sessions that would otherwise be discarded (no completed laps) - for
 # capturing event types the segmentation doesn't recognize yet
 KEEP_DISCARDED = os.environ.get("LS_KEEP_DISCARDED", "0").lower() not in ("", "0", "false")
+
+
+def suggest_track_type(*, geometric_laps: int, drive_s: float, drive_n: int,
+                       corner_n: int, rough_n: int, rough_hi: int,
+                       jumps: int) -> str | None:
+    """Track type suggested by a session's accumulated evidence, or None when
+    not confident. Geometric (WTA) laps trump surface: crossing back to the
+    launch anchor is near-certain wtc, whatever the ground. Every returned
+    value must be a member of TRACK_TYPES (api/routes.py) - locked by test."""
+    if geometric_laps > 0:
+        return "wtc"
+    if drive_s < TRACK_MIN_DRIVE_S or not drive_n or not rough_n:
+        return None
+    if corner_n / drive_n < TRACK_CORNER_FRAC_MIN:
+        return None  # a straight strip: drag, most likely - don't guess
+    jpm = jumps / (drive_s / 60.0)
+    rough = rough_hi / rough_n
+    if jpm >= TRACK_CROSS_JPM:
+        return "cross"
+    if rough >= TRACK_DIRT_ROUGH_FRAC and jpm >= TRACK_DIRT_JPM:
+        return "dirt"
+    if rough <= TRACK_ROAD_ROUGH_FRAC and jpm < TRACK_DIRT_JPM:
+        return "road"
+    return None  # the gap zone between surfaces: leave untagged
 
 
 class SessionTracker:
@@ -200,6 +257,18 @@ class SessionTracker:
         self._landing_grace_until = 0.0        # spikes before this t = landing
         self._over_impact = False              # inside a spike burst (log once)
         self._route_assigned = False
+        self._route_id: int | None = None
+        self._geometric_laps = 0
+        # track-type evidence (driving frames on the course proper)
+        self._prev_on_line = True
+        self._air_on_line = True   # was the car on-course when it took off?
+        self._trk_prev: tuple[float, list[float]] | None = None  # (t, susp)
+        self._trk_drive_s = 0.0
+        self._trk_drive_n = 0
+        self._trk_corner_n = 0
+        self._trk_rough_n = 0
+        self._trk_rough_hi = 0
+        self._trk_jumps = 0
         self._session_start_t = 0.0
         self._diag_first_dist: float | None = None
         self._diag_max_ln = 0
@@ -255,13 +324,36 @@ class SessionTracker:
             self._puddle_frames += 1
         airborne = (all(s < AIRBORNE_SUSP_MAX for s in frame["norm_susp_travel"])
                     and all(s < AIRBORNE_SLIP_MAX for s in frame["tire_combined_slip"]))
+        on_line = abs(frame["normalized_driving_line"]) < TRACK_OFF_LINE
         if airborne:
             if self._air_since is None:
                 self._air_since = t
+                self._air_on_line = self._prev_on_line
         else:
             if self._air_since is not None and t - self._air_since >= AIRBORNE_MIN_S:
                 self._landing_grace_until = t + LANDING_GRACE_S
+                if self._air_on_line:  # flights taken off-course don't count
+                    self._trk_jumps += 1
             self._air_since = None
+        self._prev_on_line = on_line
+        # surface evidence for the track-type suggestion: driving frames on
+        # the course proper (see the module docstring for the off-line gate)
+        if frame["speed"] >= TRACK_DRIVE_SPEED_MIN and not airborne and on_line:
+            self._trk_drive_n += 1
+            if abs(frame["steer"]) > TRACK_CORNER_STEER:
+                self._trk_corner_n += 1
+            if self._trk_prev is not None:
+                dt = t - self._trk_prev[0]
+                if 0.0 < dt < TRACK_ROUGH_DT_MAX:
+                    self._trk_drive_s += dt
+                    rate = sum(abs(a - b) for a, b in zip(
+                        frame["norm_susp_travel"], self._trk_prev[1])) / 4.0 / dt
+                    self._trk_rough_n += 1
+                    if rate > TRACK_ROUGH_RATE:
+                        self._trk_rough_hi += 1
+            self._trk_prev = (t, frame["norm_susp_travel"])
+        else:
+            self._trk_prev = None
         flying = self._air_since is not None and t - self._air_since >= AIRBORNE_MIN_S
         g = math.hypot(frame["accel_x"], frame["accel_z"])
         if g >= IMPACT_ACCEL:
@@ -355,6 +447,17 @@ class SessionTracker:
         self._landing_grace_until = 0.0
         self._over_impact = False
         self._route_assigned = False
+        self._route_id = None
+        self._geometric_laps = 0
+        self._prev_on_line = True
+        self._air_on_line = True
+        self._trk_prev = None
+        self._trk_drive_s = 0.0
+        self._trk_drive_n = 0
+        self._trk_corner_n = 0
+        self._trk_rough_n = 0
+        self._trk_rough_hi = 0
+        self._trk_jumps = 0
         self._session_start_t = t
         self._diag_first_dist = frame["distance_traveled"]
         self._diag_max_ln = frame["lap_number"]
@@ -395,6 +498,7 @@ class SessionTracker:
                     rid = self.store.match_or_create_route(
                         self._lap_start_pos[0], self._lap_start_pos[1], length)
                     self.store.set_session_route(self.session_id, rid)
+                    self._route_id = rid
             self.store.complete_lap(self._lap_id, end_t, lap_time, self._flags())
             if lap_time is not None:
                 self._completed_laps += 1
@@ -427,10 +531,14 @@ class SessionTracker:
         else:
             wet = (self._frame_count > 0
                    and self._puddle_frames / self._frame_count > WET_FRAME_FRACTION)
+            track = self._suggest_track()
             self.store.end_session(self.session_id, end_t, self._frame_count,
-                                   conditions="wet" if wet else None)
-            log.info("Session %d ended (%d frames, %d laps%s)", self.session_id,
-                     self._frame_count, self._completed_laps, ", wet" if wet else "")
+                                   conditions="wet" if wet else None,
+                                   track_type=track)
+            log.info("Session %d ended (%d frames, %d laps%s%s)", self.session_id,
+                     self._frame_count, self._completed_laps,
+                     ", wet" if wet else "",
+                     f", track={track} (auto)" if track else "")
         self.session_id = None
         self._race_off_since = None
         self._lap_number = None
@@ -463,7 +571,33 @@ class SessionTracker:
         self._air_since = None
         self._landing_grace_until = 0.0
         self._over_impact = False
+        self._route_id = None
+        self._geometric_laps = 0
+        self._prev_on_line = True
+        self._air_on_line = True
+        self._trk_prev = None
+        self._trk_drive_s = 0.0
+        self._trk_drive_n = 0
+        self._trk_corner_n = 0
+        self._trk_rough_n = 0
+        self._trk_rough_hi = 0
+        self._trk_jumps = 0
         self._lap_flags = set()
+
+    def _suggest_track(self) -> str | None:
+        """Track type to auto-fill at session close: the route's existing tag
+        first (routes don't change surface, and this propagates the user's
+        own corrections), the telemetry classification otherwise. The store
+        writes it with COALESCE, so it never overwrites a user tag."""
+        if self._route_id is not None:
+            inherited = self.store.route_track_type(self._route_id, self.session_id)
+            if inherited:
+                return inherited
+        return suggest_track_type(
+            geometric_laps=self._geometric_laps, drive_s=self._trk_drive_s,
+            drive_n=self._trk_drive_n, corner_n=self._trk_corner_n,
+            rough_n=self._trk_rough_n, rough_hi=self._trk_rough_hi,
+            jumps=self._trk_jumps)
 
     def _point_to_point_run_time(self) -> float | None:
         """Run time for an open lap in a session that ended without ever
@@ -495,6 +629,7 @@ class SessionTracker:
                     self._lap_start_pos[0], self._lap_start_pos[1], length)
                 self.store.set_session_route(self.session_id, rid)
                 self._route_assigned = True
+                self._route_id = rid
         self._lap_id = None
 
     def _ptp_run_time_at_cutoff(self) -> float | None:
@@ -802,6 +937,7 @@ class SessionTracker:
                  " from the launch point%s)", self.session_id,
                  self._completed_laps + 1, lap_time, d,
                  ", finalized at stream end" if frame is None else "")
+        self._geometric_laps += 1  # loop closure to the anchor: reads as wtc
         self._complete_current_lap(bt, lap_time, self._lap_number)
         if frame is None:
             self._lap_id = None  # session is ending: nothing to reopen
@@ -858,6 +994,7 @@ class SessionTracker:
             self._lap_start_pos[0], self._lap_start_pos[1], self._cur_d[-1])
         self.store.set_session_route(self.session_id, route_id)
         self._route_assigned = True
+        self._route_id = route_id
 
     def _delta(self, lap_dist: float, cur: float) -> float | None:
         if not self._ref_d or cur <= 0 or lap_dist <= 0:

@@ -142,6 +142,67 @@ def test_session_name_patch_sets_and_clears(tmp_path):
     assert store.get_session(sid)["name"] is None
 
 
+def test_track_type_patch_overrides_auto_and_clears(tmp_path):
+    """The dropdown always wins over the auto-suggested type (the suggestion
+    is written with COALESCE at session close, a PATCH overwrites), and ""
+    clears back to untagged."""
+    from app.api.routes import SessionPatch, patch_session
+
+    def scenario(sim):
+        sim.event(120, "event")
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    sid = sessions(store)[0]["id"]
+    assert store.get_session(sid)["track_type"] == "road"  # auto-filled
+    req = _request_for(store)
+
+    patch_session(sid, SessionPatch(track_type="street"), req)
+    assert store.get_session(sid)["track_type"] == "street"
+
+    patch_session(sid, SessionPatch(track_type=""), req)
+    assert store.get_session(sid)["track_type"] is None
+
+
+def test_route_patch_retags_every_session_on_the_route(tmp_path):
+    """PATCH /routes/{id} with track_type retags all sessions of that route
+    (the "apply to all sessions on this route?" prompt), rejects unknown
+    types and routes, and renaming still works through the same endpoint."""
+    from app.api.routes import RoutePatch, patch_route
+
+    def scenario(sim):
+        for i in range(2):
+            sim.event(75, f"event {i + 1}")
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    ss = sessions(store)
+    rid = ss[0]["route_id"]
+    assert len(ss) == 2 and all(s["track_type"] == "road" for s in ss)
+    req = _request_for(store)
+
+    patch_route(rid, RoutePatch(track_type="touge"), req)
+    assert all(s["track_type"] == "touge" for s in sessions(store))
+
+    patch_route(rid, RoutePatch(name="Bandai Azuma"), req)
+    assert sessions(store)[0]["route_name"] == "Bandai Azuma"
+
+    with pytest.raises(HTTPException) as exc:
+        patch_route(rid, RoutePatch(track_type="gravel"), req)
+    assert exc.value.status_code == 400
+
+    with pytest.raises(HTTPException) as exc:
+        patch_route(rid + 99, RoutePatch(track_type="road"), req)
+    assert exc.value.status_code == 404
+
+
+def test_suggestions_are_valid_track_types():
+    """Cross-file invariant: everything the classifier can suggest must be a
+    member of the API's TRACK_TYPES (= TRACK_META = #track-select)."""
+    from app.api.routes import TRACK_TYPES
+    assert {"road", "dirt", "cross", "wtc"} <= TRACK_TYPES
+
+
 def test_reprocess_blocked_while_any_session_records(tmp_path):
     """The replay runs synchronously on the event loop, so reprocess must 409
     while ANY session is recording - not only when the target session is the

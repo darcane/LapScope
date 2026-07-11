@@ -20,7 +20,10 @@ log = logging.getLogger("lapscope.recorder")
 class _ReplayStore:
     """Store facade for replays: laps and routes are written for real, but
     the session row itself is left alone - no create/end/discard, and the
-    frames are not rewritten."""
+    frames are not rewritten. The one exception: auto-detected tags (wet,
+    suggested track type) do apply, so a reprocess back-fills sessions
+    recorded before the detection existed - their COALESCE writes never
+    overwrite a tag the user set."""
 
     def __init__(self, store, session_id: int) -> None:
         self._store = store
@@ -38,8 +41,10 @@ class _ReplayStore:
         pass
 
     def end_session(self, session_id: int, ended_at: float, frame_count: int,
-                    conditions: str | None = None) -> None:
-        pass
+                    conditions: str | None = None,
+                    track_type: str | None = None) -> None:
+        if conditions or track_type:  # timing/frame_count stay untouched
+            self._store.auto_tag_session(self._sid, conditions, track_type)
 
     def discard_session(self, session_id: int) -> None:
         pass  # never delete the real session from a replay

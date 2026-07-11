@@ -109,6 +109,16 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
 - `DrivetrainType`: 0=FWD 1=RWD 2=AWD. `CarClass`: index into D,C,B,A,S1,S2,R,X
   (R is new in FH6: 901–998 PI; X is 999 only — verified on a real 998 car).
 - Wheel arrays are ordered FL, FR, RL, RR. `TireTemp` is Fahrenheit.
+- **`TireCombinedSlip` does NOT discriminate surface** (swept across all
+  stored captures, 2026-07-12): it tracks driver aggression — hard tarmac
+  laps sustain *more* slip than clean dirt runs. Surface detection uses
+  suspension roughness + jump rate instead.
+- **`NormalizedDrivingLine` saturates at ±127 far off the course**; during
+  events it sits mid-range 73–97 % of frames on every surface (dirt courses
+  have a driving line too). Used as the on-course gate for surface evidence.
+  `NormalizedAIBrakeDifference` is ~0 on most frames — no useful signal.
+  Free-roam behavior of both is **unverified** (free-roam sessions are
+  discarded, so no stored captures to check against).
 - The game binds its own socket on ports **5200–5300** — never use them.
 - Xbox-app (UWP) builds may block loopback; fallbacks documented in README.
 
@@ -243,9 +253,30 @@ All the rules exist because some real behavior broke a naive version:
   (`Store._next_session_id`), never SQLite's rowid: discards delete the max
   rowid, which plain `INTEGER PRIMARY KEY` would reuse — and the live map
   resets on session-id *change*, so a reused id left stale points on screen.
-- Track types are a manual tag; the allowed set lives in **three places that
-  must stay in sync**: `TRACK_TYPES` (api/routes.py), `TRACK_META` (common.js),
-  and the `#track-select` options (analysis.html).
+- **Track types are auto-suggested at session close** (issue #28), written
+  with COALESCE so a user tag always wins; the dropdown stays the override.
+  Precedence: (1) another session on the same route carries a tag → inherit
+  it (routes don't change surface; this propagates manual corrections);
+  (2) geometric laps → `wtc` (loop closure to the launch anchor is
+  near-certain WTA); (3) surface: ≥10 % rough suspension frames
+  (travel rate > 2.8/s) at ≥0.7 jumps/min → `dirt`, ≥3.5 jumps/min →
+  `cross`, ≤3 % rough and <0.7 jumps/min → `road`; in-between or thin
+  evidence → no tag. Frames with `|NormalizedDrivingLine| = 127` (far off
+  course) and flights taken off-course contribute **no** surface evidence —
+  off-roading a tarmac event can't fake a dirt tag. Near-zero cornering
+  (drag strips) → no tag. street/touge read as tarmac → suggested `road`
+  (accepted; one manual correction sticks via route inheritance).
+  Thresholds calibrated on the stored real captures (2026-07-12 sweep,
+  dump/hand-label/DB-sweep like the landing classifier): 9/9 labeled
+  sessions matched, 0 hard mismatches. Reprocess back-fills old sessions
+  (`_ReplayStore.end_session` applies auto-tags only). Manually changing a
+  session's type offers to retag the whole route (`PATCH /routes/{id}`
+  `track_type`).
+- The allowed track-type set lives in **three places that must stay in
+  sync**: `TRACK_TYPES` (api/routes.py), `TRACK_META` (common.js), and the
+  `#track-select` options (analysis.html) — plus everything
+  `suggest_track_type` (laps.py) can return must be a member of
+  `TRACK_TYPES` (locked by a test).
 
 When changing `_lap_logic`, walk every branch against: circuit race with finish,
 Rivals (endless laps), free-roam cruise, free-roam time-attack, sprint, dirt
@@ -296,5 +327,10 @@ a row here, a test, and usually a simulator flag.
 | World Time Attack | `--wta 3` | launch + 3 geometric laps + distance-reset finish, no post-finish phantom lap |
 | WTA, stream cut at the line | `--wta 3 --cut` | 3 geometric laps, last flagged `cutoff` (pending crossing finalized at session end), no phantom lap |
 | Jumps in 3D | `--sprint 75 --jumps` (or any + `--jumps`) | 3D map scale sane, spikes capped, run NOT flagged `contact` (landings excused) |
+| Track type: circuit/sprint | `--race 3` / `--sprint 75` | session auto-tagged `road` (smooth suspension, no jumps) |
+| Track type: dirt | `--dirt 60` | auto-tagged `dirt` (washboard suspension, low jump rate) |
+| Track type: cross | `--dirt 60 --jumps` | auto-tagged `cross` (dirt surface + a crest every few hundred meters) |
+| Track type: WTA | `--wta 3` | auto-tagged `wtc` (geometric laps) |
+| Track type: route inheritance | two events, same route | a tag set on the route's earlier session wins over telemetry for later ones |
 | Landing vs contact | `--duration 180 --dirty --jumps` | lap 2 `contact` (wall hit), all other laps clean despite hard jump landings; `/laps/{id}/data` tags landing bursts `landing: true` (amber on the map) |
 | Race-mode gating | `--freeroam 35 --race 3` | chip FREE ROAM then RACE MODE; timer dashed in free roam; live map draws the race only |

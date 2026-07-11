@@ -83,7 +83,9 @@ function condBadge(cond) {
   return `<span class="cond-badge cond-${cond}">${icon} ${label}</span>`;
 }
 
-/* course/track type is not in the packet - manual tag like snow/dirt */
+/* course/track type is not in the packet - the recorder auto-suggests one at
+   session close (road/dirt/cross/wtc, from surface + geometry evidence) and
+   the user can always override; street/touge/drag stay manual-only */
 const TRACK_META = {
   road: ["🛣️", "Road"],
   street: ["🏙️", "Street"],

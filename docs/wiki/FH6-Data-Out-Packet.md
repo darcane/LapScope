@@ -66,6 +66,17 @@ These are the facts that shaped the app — each one broke a naive assumption:
   give a heading. **`Yaw` is world-space** — the car moves along
   `(sin yaw, cos yaw)` in world X/Z (verified against position deltas).
 - **`TireTemp` is Fahrenheit**, whatever your in-game units.
+- **`TireCombinedSlip` tracks driver aggression, not the surface.** Across the
+  stored real captures, hard-driven tarmac laps sustain *more* combined slip
+  than clean dirt runs — so surface detection (the auto-suggested track type)
+  reads suspension roughness and jump rate instead.
+- **`NormalizedDrivingLine` saturates at ±127 far off the course.** During
+  events it sits mid-range 73–97 % of frames on every surface (dirt courses
+  have a driving line too); the saturated frames are the off-course moments.
+  LapScope uses that as an on-course gate: off-line frames contribute no
+  surface evidence, so off-roading a tarmac event can't fake a dirt tag.
+  (`NormalizedAIBrakeDifference` was checked too — ~0 on most frames, no
+  useful signal.)
 - `DrivetrainType`: 0 = FWD, 1 = RWD, 2 = AWD.
 - `CarClass` indexes into **D, C, B, A, S1, S2, R, X** — the **R class is new
   in FH6** (901–998 PI; X is 999 only, verified on a real 998 car).

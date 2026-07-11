@@ -168,6 +168,37 @@ The game never sends route names, so circuits are **fingerprinted**: same
 start position within 80 m + lap length within 5 % = same route. Name a route
 once and every past and future session on it picks the name up.
 
+## Track type: auto-suggested, always yours to override
+
+The track-type tag (🛣️ road, 🏙️ street, ⛰️ touge, 🟫 dirt, 🏞️ cross-country,
+🏁 drag, ⏱️ WTC) is pre-filled at session close when the evidence is clear —
+it stays a manual tag with a smart default, and your dropdown choice always
+wins. The suggestion comes from, strongest first:
+
+1. **The route's existing tag.** A route's surface doesn't change, so any tag
+   already carried by another session on the same fingerprinted route is
+   reused — including your own corrections. Changing a session's type also
+   offers to retag every session on its route in one click.
+2. **Geometric laps → WTC.** Laps found by loop closure back to the launch
+   anchor (see above) only happen in World Time Attack.
+3. **Surface evidence → dirt / cross-country / road.** Calibrated on real
+   captures: dirt courses shake the suspension hard (10–16 % "rough" frames
+   vs. under 3 % on any tarmac course) at a low jump rate; cross-country
+   flies a crest every few hundred meters (≥ ~5 jumps/min); smooth suspension
+   with no jumps is tarmac → road. Notably, **tire slip does not work** for
+   this — it tracks driver aggression, not the ground (hard tarmac laps
+   out-slip clean dirt runs).
+
+Frames far off the course (`NormalizedDrivingLine` saturated at ±127) are
+excluded from the surface evidence, so deliberately off-roading a tarmac
+event can't fake a dirt tag. Street and touge read as tarmac (suggested
+road — correct once, the route remembers); drag strips have almost no
+cornering and are deliberately left untagged. When the evidence is thin or
+sits between classes, no tag is suggested at all.
+
+Reprocessing an old session back-fills its suggestion the same way — without
+ever overwriting a tag you set yourself.
+
 ## Reprocess: inference fixes apply retroactively
 
 Recordings are lossless raw packets, so the **Reprocess** button replays a

@@ -158,12 +158,27 @@ class NameBody(BaseModel):
     name: str
 
 
+class RoutePatch(BaseModel):
+    name: str | None = None
+    track_type: str | None = None
+
+
 @router.patch("/routes/{route_id}")
-def rename_route(route_id: int, body: NameBody, request: Request):
-    if not body.name.strip():
-        raise HTTPException(400, "name must not be empty")
-    if not request.app.state.store.rename_route(route_id, body.name.strip()[:80]):
+def patch_route(route_id: int, body: RoutePatch, request: Request):
+    """Rename a route and/or retag every session recorded on it in one go
+    (the analysis page offers the retag when a session's type is changed -
+    a route's surface doesn't change, so the tag belongs to all of them)."""
+    store = request.app.state.store
+    if not store.route_exists(route_id):
         raise HTTPException(404, "route not found")
+    if body.name is not None:
+        if not body.name.strip():
+            raise HTTPException(400, "name must not be empty")
+        store.rename_route(route_id, body.name.strip()[:80])
+    if body.track_type is not None:  # "" clears the tag on every session
+        if body.track_type and body.track_type not in TRACK_TYPES:
+            raise HTTPException(400, f"track_type must be one of {sorted(TRACK_TYPES)}")
+        store.set_route_sessions_track_type(route_id, body.track_type or None)
     return {"ok": True}
 
 

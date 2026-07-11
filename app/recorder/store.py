@@ -134,13 +134,42 @@ class Store:
         return sid
 
     def end_session(self, session_id: int, ended_at: float, frame_count: int,
-                    conditions: str | None = None) -> None:
+                    conditions: str | None = None,
+                    track_type: str | None = None) -> None:
+        # COALESCE: auto-detected tags (wet, suggested track type) never
+        # overwrite a value the user already set
         self.db.execute(
             "UPDATE sessions SET ended_at = ?, frame_count = ?,"
-            " conditions = COALESCE(conditions, ?) WHERE id = ?",
-            (ended_at, frame_count, conditions, session_id),
+            " conditions = COALESCE(conditions, ?),"
+            " track_type = COALESCE(track_type, ?) WHERE id = ?",
+            (ended_at, frame_count, conditions, track_type, session_id),
         )
         self.db.commit()
+
+    def auto_tag_session(self, session_id: int, conditions: str | None,
+                         track_type: str | None) -> None:
+        """Fill auto-detected tags without touching anything else (replays
+        use this - the session row's timing must stay untouched); COALESCE
+        keeps whatever the user already set."""
+        self.db.execute(
+            "UPDATE sessions SET conditions = COALESCE(conditions, ?),"
+            " track_type = COALESCE(track_type, ?) WHERE id = ?",
+            (conditions, track_type, session_id),
+        )
+        self.db.commit()
+
+    def route_track_type(self, route_id: int,
+                         exclude_session_id: int | None = None) -> str | None:
+        """Latest track type any other session on this route carries (manual
+        or auto). Event-loop connection: the tracker asks at session close."""
+        row = self.db.execute(
+            "SELECT track_type FROM sessions WHERE route_id = ?"
+            " AND track_type IS NOT NULL AND id != ?"
+            " ORDER BY started_at DESC LIMIT 1",
+            (route_id,
+             exclude_session_id if exclude_session_id is not None else -1),
+        ).fetchone()
+        return row[0] if row else None
 
     def discard_session(self, session_id: int) -> None:
         """Delete a just-ended session that produced no completed laps."""
@@ -265,6 +294,24 @@ class Store:
             cur = conn.execute("UPDATE routes SET name = ? WHERE id = ?", (name, route_id))
             conn.commit()
             return cur.rowcount > 0
+
+    def route_exists(self, route_id: int) -> bool:
+        with self.reader() as conn:
+            return conn.execute("SELECT 1 FROM routes WHERE id = ?",
+                                (route_id,)).fetchone() is not None
+
+    def set_route_sessions_track_type(self, route_id: int,
+                                      track_type: str | None) -> int:
+        """Retag every session on a route at once (the analysis page's
+        "apply to all sessions on this route?" prompt). Overwrites existing
+        tags on purpose - the user just confirmed exactly that. Returns the
+        number of sessions updated."""
+        with self.reader() as conn:
+            cur = conn.execute(
+                "UPDATE sessions SET track_type = ? WHERE route_id = ?",
+                (track_type, route_id))
+            conn.commit()
+            return cur.rowcount
 
     def set_car_name(self, ordinal: int, name: str) -> None:
         with self.reader() as conn:

@@ -174,6 +174,80 @@ def test_wta_cut_dead_at_line(tmp_path):
     assert flags_of(timed[0]) == "" and flags_of(timed[1]) == ""
 
 
+def test_track_type_circuit_suggests_road(tmp_path):
+    """A tarmac circuit (smooth suspension, no jumps) is auto-tagged road at
+    session close."""
+    def scenario(sim):
+        sim.event(150, "event")
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    assert sessions(store)[0]["track_type"] == "road"
+
+
+def test_track_type_sprint_suggests_road(tmp_path):
+    """--sprint 75: a tarmac point-to-point run reads road too."""
+    def scenario(sim):
+        sim.sprint(75)
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    assert sessions(store)[0]["track_type"] == "road"
+
+
+def test_track_type_dirt_sprint_suggests_dirt(tmp_path):
+    """--dirt 60: washboard suspension at a low jump rate = dirt."""
+    def scenario(sim):
+        sim.dirt_sprint(60)
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    assert sessions(store)[0]["track_type"] == "dirt"
+
+
+def test_track_type_cross_country(tmp_path):
+    """--dirt 60 --jumps: the same dirt surface flying a crest every few
+    hundred meters = cross-country."""
+    def scenario(sim):
+        sim.dirt_sprint(60)
+        sim.race_off()
+
+    store = run(scenario, tmp_path, jumps=True)
+    assert sessions(store)[0]["track_type"] == "cross"
+
+
+def test_track_type_wta_suggests_wtc(tmp_path):
+    """--wta 3: geometric laps (loop closure back to the launch anchor) =
+    wtc, whatever the surface evidence says."""
+    def scenario(sim):
+        sim.wta(3)
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    assert sessions(store)[0]["track_type"] == "wtc"
+
+
+def test_track_type_route_inheritance_beats_telemetry(tmp_path):
+    """A tag already on the route wins over the telemetry verdict: correct a
+    course once (e.g. to touge) and every later session on it inherits."""
+    def scenario(sim):
+        sim.event(75, "event")
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    first = sessions(store)[0]
+    assert first["track_type"] == "road"                # the telemetry verdict
+    store.set_session_track_type(first["id"], "touge")  # the user corrects it
+
+    store = run(scenario, tmp_path)                     # same DB -> same route
+    ss = sessions(store)
+    assert len(ss) == 2
+    # ids are monotonic; started_at can tie under the harness's restarted clock
+    newest = max(ss, key=lambda s: s["id"])
+    assert newest["id"] != first["id"]
+    assert newest["track_type"] == "touge"              # inherited, not re-derived
+
+
 def test_jumps_do_not_break_a_point_to_point_run(tmp_path):
     """--sprint 75 --jumps: cross-country-style elevation spikes still record
     a single clean run (3D-map scaling is a frontend concern). The jumps go

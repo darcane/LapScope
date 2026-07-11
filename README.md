@@ -56,7 +56,9 @@ in Rivals.
   Free-roam cruising is discarded automatically, so the list stays clean.
 - **Session metadata** — Forza-colored class/PI ribbons (incl. the new **R class**),
   drivetrain badges, car names (bundled community ordinal list + your overrides),
-  auto-detected wet conditions, and a track-type tag.
+  auto-detected wet conditions, and a track-type tag that fills itself in
+  (road/dirt/cross-country/WTC read from the telemetry, your override always wins —
+  and can be applied to a whole route in one click).
 - **Routes** — the game never sends route names, so circuits are fingerprinted from lap
   geometry. Name a route once and every past and future session on it picks it up.
 - **Settings** — a ⚙ **Settings** panel (top-right on both pages) to switch units —

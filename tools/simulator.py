@@ -83,6 +83,12 @@ def sprint_curv(s: float) -> float:
 
 JUMPS = False  # set by --jumps: sharp elevation spikes like cross-country jumps
 JUMP_BUMPS = ((300.0, 25.0, 11.0), (1500.0, 30.0, 16.0))  # center, width, height
+# open (point-to-point) courses place crests far denser than the loop's two
+# bumps: a cross-country sprint flies every few hundred meters, and the
+# recorder's track-type suggestion reads exactly that jump rate
+OPEN_JUMP_PERIOD = 600.0
+OPEN_JUMP_BUMP = (300.0, 25.0, 11.0)
+DIRT_AIR_SPACING = 30.0  # s between the small whoop flights of a dirt course
 
 
 def track_elevation(s: float) -> float:
@@ -141,6 +147,10 @@ class Sim:
     air_frames = 0     # jump flight in progress (all wheels unloaded)
     land_frames = 0    # touchdown jolt frames right after a flight
     _prev_sp = None
+    surface = "tarmac"       # dirt_sprint switches to "dirt": washboard
+                             # suspension + whoop flights (what the recorder's
+                             # track-type suggestion reads as a dirt course)
+    _next_whoop = None       # race clock of the next dirt whoop flight
 
     def _send(self, race_time: float, lap_no: int, cur_lap: float,
               last: float, best: float) -> None:
@@ -166,27 +176,39 @@ class Sim:
         # landing, not contact
         airborne, vert_a = False, 0.2
         if JUMPS:
-            sp = self.s % PERIMETER
+            period = OPEN_JUMP_PERIOD if self.open_course else PERIMETER
+            bumps = (OPEN_JUMP_BUMP,) if self.open_course else JUMP_BUMPS
+            sp = self.s % period
             if self.air_frames == 0 and self.land_frames == 0 and self._prev_sp is not None:
-                # crest crossed this frame (wrap = sp collapsed by ~a lap;
+                # crest crossed this frame (wrap = sp collapsed by ~a period;
                 # a rewind scrub moves backwards in small steps and must not
                 # launch the car)
-                wrapped = self._prev_sp - sp > PERIMETER / 2
-                for c, _w, _h in JUMP_BUMPS:
+                wrapped = self._prev_sp - sp > period / 2
+                for c, _w, _h in bumps:
                     if ((self._prev_sp < c <= sp)
                             or (wrapped and (self._prev_sp < c or c <= sp))):
                         self.air_frames = int(round(0.4 / self.dt))
             self._prev_sp = sp
-            if self.air_frames > 0:
-                self.air_frames -= 1
-                airborne = True
-                lat_a, vert_a = 0.0, -12.0  # free fall, no tire grip
-                if self.air_frames == 0:
-                    self.land_frames = 2
-            elif self.land_frames > 0:
-                self.land_frames -= 1
-                lat_a += 75.0  # touchdown jolt in the ground plane
-                vert_a = 160.0
+        # dirt whoops: brief flights every DIRT_AIR_SPACING seconds of the
+        # run - the steady low jump rate of a real dirt trail (well under
+        # cross-country's crest-every-few-hundred-meters rate)
+        if (self.surface == "dirt" and self.air_frames == 0
+                and self.land_frames == 0):
+            if self._next_whoop is None:
+                self._next_whoop = race_time + DIRT_AIR_SPACING / 2
+            elif race_time >= self._next_whoop:
+                self.air_frames = int(round(0.25 / self.dt))
+                self._next_whoop = race_time + DIRT_AIR_SPACING
+        if self.air_frames > 0:
+            self.air_frames -= 1
+            airborne = True
+            lat_a, vert_a = 0.0, -12.0  # free fall, no tire grip
+            if self.air_frames == 0:
+                self.land_frames = 2
+        elif self.land_frames > 0:
+            self.land_frames -= 1
+            lat_a += 75.0  # touchdown jolt in the ground plane
+            vert_a = 160.0
         grip_used = math.hypot(lat_a / GRIP_LAT, self.lon_a / BRAKE_MAX)
         slip = 0.0 if airborne else max(0.0, grip_used + random.uniform(-0.05, 0.05))
 
@@ -210,15 +232,14 @@ class Sim:
             # here movement is (cos heading, sin heading), so yaw = pi/2 - heading
             vel_x=0.0, vel_z=self.v,
             ang_vel_y=self.v * curv, yaw=math.pi / 2 - heading,
-            norm_susp_travel=[0.0] * 4 if airborne else
-                [min(1.0, 0.45 + 0.3 * abs(lat_a) / GRIP_LAT + 0.1 * random.random())] * 4,
+            norm_susp_travel=self._susp(lat_a, airborne),
             tire_slip_ratio=[slip * 0.6] * 4,
             wheel_rotation_speed=[self.v / 0.33] * 4,
             wheel_in_puddle=puddle,
             tire_slip_angle=[slip * front_bias, slip * front_bias, slip * 0.9, slip * 0.9],
             tire_combined_slip=[slip * front_bias, slip * front_bias, slip * 0.92, slip * 0.92],
             susp_travel_meters=[-0.08] * 4 if airborne else [0.06] * 4,
-            pos_x=x, pos_y=track_elevation(self.s), pos_z=z,
+            pos_x=x, pos_y=self._elevation(), pos_z=z,
             speed=self.v, power=torque * rpm * math.tau / 60, torque=torque,
             tire_temp=[160 + 90 * slip + random.uniform(-3, 3) for _ in range(4)],
             boost=throttle / 255 * 14.0,
@@ -227,12 +248,38 @@ class Sim:
             current_race_time=race_time, lap_number=lap_no,
             accel=throttle, brake=brake,
             steer=int(max(-127, min(127, curv * RADIUS * 90))), gear=gear,
+            # racing on the course proper: the driving line tracks a small
+            # lateral offset (|127| would mean far off the course)
+            normalized_driving_line=int(20 * math.sin(self.s / 90.0)),
         )
         self.sock.sendto(pack(f), self.target)
         self.sent += 1
         lag = self.t0 + self.sent * self.dt - time.monotonic()
         if lag > 0:
             time.sleep(lag)
+
+    def _susp(self, lat_a: float, airborne: bool) -> list[float]:
+        """Suspension travel: full droop in flight; smooth on tarmac (real
+        tarmac captures show <3 % rough frames - white noise here would read
+        as dirt to the recorder's track-type suggestion); washboard jitter
+        on dirt (real dirt captures: 10-16 % rough frames)."""
+        if airborne:
+            return [0.0] * 4
+        base = (0.45 + 0.3 * abs(lat_a) / GRIP_LAT
+                + 0.05 * math.sin(self.s / 40.0) + 0.01 * random.random())
+        if self.surface == "dirt":
+            base += random.uniform(0.0, 0.08)
+        return [min(1.0, base)] * 4
+
+    def _elevation(self) -> float:
+        """pos_y matching where the flights launch: the loop's two bumps, or
+        the denser crests of an open course under --jumps."""
+        if JUMPS and self.open_course:
+            sp = self.s % OPEN_JUMP_PERIOD
+            c, w, h = OPEN_JUMP_BUMP
+            return (105.0 + 6.0 * math.sin(self.s / 400.0)
+                    + h * math.exp(-(((sp - c) / w) ** 2)))
+        return track_elevation(self.s)
 
     def freeroam(self, seconds: float) -> None:
         """Cruise: lap fields all zero, free-roam clock counting, no grid
@@ -441,6 +488,8 @@ class Sim:
         self.total_dist = 0.0
         self.f["race_position"] = random.randint(2, 8)
         self.open_course = True
+        self.surface = "dirt"     # washboard suspension + whoop flights
+        self._next_whoop = None
         self._oc_x, self._oc_z, self._oc_s = -STRAIGHT / 2, -RADIUS, 0.0
         self.pace = random.uniform(0.97, 1.0)
         t = 0.0

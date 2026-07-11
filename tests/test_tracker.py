@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from app.recorder.laps import SessionTracker
+from app.recorder.laps import SessionTracker, suggest_track_type
 from app.recorder.store import Store
 from app.telemetry.packet import empty_fields, pack, parse
 
@@ -181,6 +181,75 @@ def test_race_mode_drops_at_lastlap_finish(tmp_path):
 
     timed = [lap for lap in d.finish() if lap["lap_time"] is not None]
     assert [lap["lap_time"] for lap in timed] == [62.0, 61.5]
+
+
+def test_suggest_track_type_matrix():
+    """The calibrated decision tree (thresholds swept from real captures):
+    each class from its evidence, None whenever the evidence is thin,
+    drag-like, or in the gap zone between surfaces."""
+    base = dict(geometric_laps=0, drive_s=120.0, drive_n=7200, corner_n=3000,
+                rough_n=7000, rough_hi=0, jumps=0)
+    assert suggest_track_type(**base) == "road"
+    assert suggest_track_type(**{**base, "rough_hi": 1000, "jumps": 4}) == "dirt"
+    assert suggest_track_type(**{**base, "jumps": 12}) == "cross"
+    assert suggest_track_type(**{**base, "geometric_laps": 2}) == "wtc"
+    assert suggest_track_type(**{**base, "corner_n": 100}) is None   # drag-like
+    assert suggest_track_type(**{**base, "rough_hi": 400}) is None   # gap zone
+    assert suggest_track_type(**{**base, "drive_s": 20.0}) is None   # too little
+
+
+def _course_drive(d: Driver, n: int, rough: bool, on_line: bool) -> None:
+    """n frames of fast, twisty driving: smooth tarmac or washboard-rough,
+    on or off the course line (NormalizedDrivingLine saturates at 127 far
+    off course)."""
+    for i in range(n):
+        d.send(current_lap=d.f["current_lap"] + 1 / 60,
+               distance_traveled=d.f["distance_traveled"] + 1.0,
+               speed=60.0, steer=60 if i % 2 else -60,
+               normalized_driving_line=0 if on_line else 127,
+               norm_susp_travel=[0.5 + (0.06 if rough and i % 2 else 0.0)] * 4,
+               tire_combined_slip=[0.3] * 4, accel_x=0.0)
+
+
+def _fly(d: Driver, frames: int, on_line: bool) -> None:
+    """A flight (all wheels unloaded); whether it counts as a jump depends
+    on the frame it launched FROM being on the course line."""
+    for _ in range(frames):
+        d.send(current_lap=d.f["current_lap"] + 1 / 60,
+               distance_traveled=d.f["distance_traveled"] + 1.0,
+               speed=60.0, normalized_driving_line=0 if on_line else 127,
+               **AIR)
+
+
+def _finish_event_track_type(d: Driver) -> str | None:
+    """Cross the line to complete the run, close the session, and return the
+    auto-suggested track type."""
+    d.send(lap_number=1, current_lap=0.0, last_lap=50.0, speed=60.0, **GROUND)
+    d.finish()
+    return d.store.get_session(1)["track_type"]
+
+
+def test_rough_driving_with_jumps_reads_dirt(tmp_path):
+    """Washboard suspension + an occasional flight, all on the course line:
+    the session is auto-tagged dirt (control for the off-line gate below)."""
+    d = Driver(tmp_path)
+    for _ in range(2):
+        _course_drive(d, 25 * 60, rough=True, on_line=True)
+        _fly(d, 20, on_line=True)
+    assert _finish_event_track_type(d) == "dirt"
+
+
+def test_off_line_roughness_cannot_fake_dirt(tmp_path):
+    """The anti-troll gate: a tarmac event with deliberate off-road
+    excursions (driving line saturated while bouncing through the grass,
+    jumping ditches) still reads road - off-line frames and off-line
+    takeoffs contribute no surface evidence."""
+    d = Driver(tmp_path)
+    for _ in range(2):
+        _course_drive(d, 25 * 60, rough=False, on_line=True)  # tarmac proper
+        _course_drive(d, 8 * 60, rough=True, on_line=False)   # grass excursion
+        _fly(d, 20, on_line=False)                            # ditch jump
+    assert _finish_event_track_type(d) == "road"
 
 
 def test_listener_fallback_keeps_frame_contract(tmp_path):

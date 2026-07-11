@@ -24,7 +24,7 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
 | [app/telemetry/packet.py](app/telemetry/packet.py) | 324-byte Data Out struct: `parse()`, `pack()` (simulator/tests), `empty_fields()`, `FIELDS` name/count table. Self-test via `python app/telemetry/packet.py`. |
 | [app/telemetry/listener.py](app/telemetry/listener.py) | `asyncio.DatagramProtocol`: counts packets, warns once on wrong size (hex dump), parses, feeds tracker, publishes frame+extras to hub. Recorder exceptions never kill the stream. |
 | [app/telemetry/hub.py](app/telemetry/hub.py) | Fan-out to WebSocket subscriber queues (drop-oldest on slow clients) + stream stats used by `/api/status`. |
-| [app/recorder/laps.py](app/recorder/laps.py) | **The heart.** `SessionTracker`: session boundaries, lap segmentation, finish detection, geometric (WTA) laps, dirty-lap flags, wet detection, route fingerprint triggers, live delta, `race_mode`. All tunable thresholds are module constants at the top. |
+| [app/recorder/laps.py](app/recorder/laps.py) | **The heart.** `SessionTracker`: session boundaries, lap segmentation, finish detection, geometric (WTA) laps, dirty-lap flags, wet detection, route fingerprint triggers, live delta, `race_mode`, and the track-type auto-suggestion (`suggest_track_type` + per-frame surface accumulators; written at session close with COALESCE so user tags win). All tunable thresholds are module constants at the top. |
 | [app/recorder/store.py](app/recorder/store.py) | SQLite persistence: schema, `MIGRATIONS`, session/lap/route/car-name CRUD, monotonic session-id counter, `reader()` for threadpool access. |
 | [app/recorder/reprocess.py](app/recorder/reprocess.py) | Replays a session's stored raw frames through a fresh `SessionTracker` via `_ReplayStore` (laps/routes written for real; session row and frames untouched; discard suppressed). |
 | [app/api/routes.py](app/api/routes.py) | REST API (table below) + constants: `CAR_CLASSES`, `CONDITIONS`, `TRACK_TYPES`, `DRIVETRAINS`, `CHANNELS` (channel-name → frame extractor for lap data). |
@@ -70,7 +70,7 @@ each runs on every startup inside try/except (existing-column errors swallowed).
 | `DELETE /sessions/{id}` | Cascades frames+laps. 409 while recording. |
 | `GET /sessions/{id}/laps` | Session + laps with `is_best` / `gap_to_best`. |
 | `GET /laps/{id}/data?channels=&max_points=` | Distance-indexed channel arrays; drops rewound-over samples; decimates to `max_points`. Channel names = `CHANNELS` keys in routes.py. `lap_time` falls back to time-since-lap-start when the packet lap clock never ran (WTA / bare sprints keep `CurrentLap` at 0), so the A/B Δ-time chart works for those events. Also returns `collisions` (contact-spike peaks, `landing: true/false`) and `jumps` (airborne segments: takeoff → touchdown world coords + `dist0/dist1`, `air_s`, `hard` + peak `g` when the landing spiked) — both computed on the full-resolution trace, never decimated away. |
-| `PATCH /routes/{id}`, `GET/PATCH /cars/{ordinal}` | Rename route / car override (car `name: ""` reverts the override to the bundled/downloaded name). `GET` also returns `known` (ordinal resolvable without the `Car #<id>` fallback). |
+| `PATCH /routes/{id}`, `GET/PATCH /cars/{ordinal}` | Route: `name` renames, `track_type` retags **every session on the route** at once (the analysis page offers this when a session's type is changed; `""` clears them all). Car override (`name: ""` reverts to the bundled/downloaded name). `GET` also returns `known` (ordinal resolvable without the `Car #<id>` fallback). |
 | `GET /cars`, `POST /cars/refresh` | Car-list metadata (`total`, `fetched_at`) / re-download the community list (see app/cars.py row above; 502 with a readable `detail` on failure — the current list stays). Registered before `/cars/{ordinal}` so `refresh` isn't parsed as an ordinal. |
 
 ## WebSocket `/ws/live` frame
@@ -186,7 +186,9 @@ assert them here.
 ## Cross-file invariants (change one → change all)
 
 - Track-type set: `TRACK_TYPES` (api/routes.py) = `TRACK_META` (common.js)
-  = `#track-select` options (analysis.html).
+  = `#track-select` options (analysis.html); everything `suggest_track_type`
+  (laps.py) can return must be a member of `TRACK_TYPES` (locked by a test
+  in test_api.py).
 - Settings map options: the `defaultMapMode` / `defaultColor` values offered by
   the panel (`settings.js`) must match the `#map-mode` (`2d`/`3d`) and
   `#color-mode` (`speed`/`slip`) options in analysis.html; `analysis.js` seeds
