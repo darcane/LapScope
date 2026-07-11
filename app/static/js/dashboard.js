@@ -217,12 +217,21 @@ let chipOrdinal = null;
 async function updateCarChip(f) {
   if (f.car_ordinal === chipOrdinal) return;
   chipOrdinal = f.car_ordinal;
-  let name = `Car #${f.car_ordinal}`;
-  try { name = (await (await fetch(`/api/cars/${f.car_ordinal}`)).json()).name; } catch { }
+  let name = `Car #${f.car_ordinal}`, known = false;
+  try {
+    const info = await (await fetch(`/api/cars/${f.car_ordinal}`)).json();
+    name = info.name;
+    known = info.known;
+  } catch { }
   const chip = $("car-chip");
   chip.innerHTML = `${classBadge(CLASS_LETTERS[f.car_class] || "?", f.car_pi)}` +
     `${dtBadge(DRIVETRAINS[f.drivetrain_type] || "?")} <span class="car-nm"></span>`;
-  chip.querySelector(".car-nm").textContent = name;
+  const nm = chip.querySelector(".car-nm");
+  nm.textContent = name;
+  if (!known) {  // ordinal missing from the community list
+    nm.classList.add("car-unknown");
+    nm.title = "Unknown car — name or report it from the Analysis page";
+  }
   chip.style.display = "";
 }
 

@@ -92,13 +92,18 @@ Remaining / follow-ups:
 `app/car_ordinals.json` (638 entries) maps car name → ordinal and is baked into
 the build. Playground Games ships new cars → new ordinals, so it goes stale.
 
-- **Auto-refresh mechanism.** Fetch an updated community list from a canonical
-  source (a maintained file in this repo / a pinned gist) on demand or on a
-  schedule, with the bundled copy as offline fallback and user overrides winning.
-- **Surface unknown cars.** When an ordinal isn't in the list, make it obvious in
-  the UI ("Car #1234 — help us name it") and provide a one-click "report unknown
-  car" that pre-fills a GitHub issue, so the community list self-heals.
-- Interim: the maintainer triggers refreshes manually for the first months.
+- ✅ **Auto-refresh mechanism.** `app/cars.py`: the canonical list is this repo's
+  `app/car_ordinals.json` on `main` (raw URL, `LS_CAR_LIST_URL` overridable).
+  `POST /api/cars/refresh` downloads + validates it into `DATA_DIR/car_ordinals.json`
+  and hot-swaps the in-memory dict; layers are DB override > downloaded > bundled
+  (offline fallback). The browser triggers a refresh at most once a day (same
+  fail-soft pattern as the update banner) and Settings has a "Car list" row with
+  count / last-updated / Refresh-now.
+- ✅ **Surface unknown cars.** Sessions expose `car_known`; the analysis header
+  shows an "unknown car — help name it" button (sidebar car line goes amber) that
+  opens the rename prompt with a link to a pre-filled `unknown_car.yml` GitHub
+  issue; the live-dashboard chip gets an amber name + tooltip. Merged name
+  reports reach every install on its next daily refresh — no release needed.
 
 ## Testing & CI
 

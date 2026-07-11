@@ -620,6 +620,39 @@ main.grid .lap-grid { margin-bottom: auto; }
 .settings-switch.on { background: var(--accent); border-color: var(--accent); }
 .settings-switch.on::after { transform: translateX(20px); background: #001018; }
 
+.settings-carlist-status { color: var(--muted); font-size: 0.85rem; }
+.settings-refresh {
+  background: #0a0e14;
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  padding: 6px 14px;
+  cursor: pointer;
+  flex: none;
+}
+.settings-refresh:hover { border-color: var(--accent); }
+.settings-refresh:disabled { color: var(--muted); cursor: default; border-color: var(--panel-edge); }
+
+/* ---------- unknown car (ordinal missing from the community list) ---------- */
+
+.car-unknown { color: var(--warn); }
+.car-unknown-hint {
+  background: none;
+  border: 1px dashed var(--warn);
+  border-radius: 6px;
+  color: var(--warn);
+  font: inherit;
+  font-size: 0.8rem;
+  margin-left: 10px;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+.car-unknown-hint:hover { background: rgba(255, 190, 61, 0.12); }
+
 /* ---------- badges (shared) ---------- */
 
 .class-badge {

@@ -167,6 +167,50 @@ function openSettings() {
   seg("Default map view", "defaultMapMode", [{ label: "2D", value: "2d" }, { label: "3D", value: "3d" }]);
   seg("Default color", "defaultColor", [{ label: "Speed", value: "speed" }, { label: "Slip", value: "slip" }]);
 
+  // Car-name list: server-side state (not a browser preference) — shows the
+  // community list's size/age and re-downloads it on demand. The same refresh
+  // also runs automatically once a day (common.js maybeRefreshCarList).
+  group("Car list");
+  {
+    const row = document.createElement("div");
+    row.className = "settings-row";
+    const status = document.createElement("span");
+    status.className = "settings-label settings-carlist-status";
+    status.textContent = "…";
+    row.appendChild(status);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "settings-refresh";
+    btn.textContent = "Refresh now";
+    row.appendChild(btn);
+    body.appendChild(row);
+
+    const show = (info) => {
+      const when = info.fetched_at
+        ? `updated ${new Date(info.fetched_at * 1000).toLocaleDateString()}`
+        : "bundled list";
+      status.textContent = `${info.total} car names · ${when}`;
+    };
+    fetch("/api/cars").then((r) => r.json()).then(show)
+      .catch(() => { status.textContent = "car list unavailable"; });
+
+    btn.onclick = async () => {
+      btn.disabled = true;
+      status.textContent = "refreshing…";
+      try {
+        const r = await fetch("/api/cars/refresh", { method: "POST" });
+        const out = await r.json();
+        if (!r.ok) throw new Error(out.detail || "refresh failed");
+        status.textContent = `${out.total} car names · `
+          + (out.added ? `${out.added} new` : "already up to date");
+        if (out.added > 0 && typeof loadSessions === "function") loadSessions();
+      } catch (e) {
+        status.textContent = e.message || "refresh failed (offline?)";
+      }
+      btn.disabled = false;
+    };
+  }
+
   const actions = document.createElement("div");
   actions.className = "modal-actions";
   box.appendChild(actions);

@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import time
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
-from .. import __version__
+from .. import __version__, cars
+from ..cars import CAR_NAMES
 from ..recorder.laps import (AIRBORNE_MIN_S, AIRBORNE_SLIP_MAX,
                              AIRBORNE_SUSP_MAX, IMPACT_ACCEL, LANDING_GRACE_S)
 from ..recorder.reprocess import reprocess_session
@@ -26,16 +26,6 @@ CAR_CLASSES = ["D", "C", "B", "A", "S1", "S2", "R", "X"]
 CONDITIONS = {"dry", "wet", "snow"}
 TRACK_TYPES = {"road", "street", "touge", "dirt", "cross", "drag", "wtc"}
 DRIVETRAINS = ["FWD", "RWD", "AWD"]
-
-# community-maintained FH6 list, {"1987 Porsche 959": "269", ...} -> {269: name}
-_CAR_FILE = Path(__file__).parent.parent / "car_ordinals.json"
-try:
-    CAR_NAMES: dict[int, str] = {
-        int(v): k for k, v in json.loads(_CAR_FILE.read_text(encoding="utf-8")).items()
-    }
-except Exception:
-    log.warning("car_ordinals.json missing or unreadable; falling back to Car #<id>")
-    CAR_NAMES = {}
 
 # channel name -> extractor over a parsed frame; used by /laps/{id}/data
 CHANNELS = {
@@ -70,7 +60,9 @@ def _car_name(ordinal, override=None) -> str:
 
 def _session_out(row: dict) -> dict:
     row["car_class_letter"] = _class_letter(row.get("car_class"))
-    row["car_name"] = _car_name(row.get("car_ordinal"), row.pop("car_name_override", None))
+    override = row.pop("car_name_override", None)
+    row["car_name"] = _car_name(row.get("car_ordinal"), override)
+    row["car_known"] = override is not None or row.get("car_ordinal") in CAR_NAMES
     # conditions / track_type stay None until tagged (or auto-detected):
     # defaulting them to dry/road made every untagged session look tagged
     dt = row.get("drivetrain_type")
@@ -173,6 +165,26 @@ def rename_route(route_id: int, body: NameBody, request: Request):
     if not request.app.state.store.rename_route(route_id, body.name.strip()[:80]):
         raise HTTPException(404, "route not found")
     return {"ok": True}
+
+
+@router.get("/cars")
+def cars_info():
+    """Car-list metadata for the Settings panel: size + last refresh time
+    (null while still on the bundled copy)."""
+    return cars.info()
+
+
+# NOTE: registered before /cars/{ordinal} so "refresh" isn't parsed as an ordinal.
+@router.post("/cars/refresh")
+async def refresh_cars():
+    """Re-download the community car list from the repo's main branch and
+    hot-swap it in (bundled copy stays as the offline fallback, per-user DB
+    overrides always win). Blocking urllib fetch, hence the threadpool."""
+    try:
+        total, added = await run_in_threadpool(cars.refresh)
+    except cars.RefreshError as exc:
+        raise HTTPException(502, str(exc))
+    return {"ok": True, "total": total, "added": added}
 
 
 @router.get("/cars/{ordinal}")

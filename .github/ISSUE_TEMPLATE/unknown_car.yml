@@ -1,0 +1,36 @@
+name: Unknown car (name an ordinal)
+description: LapScope showed "Car #<number>" — tell us which car it is.
+title: "car: "
+labels: ["car-list"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        FH6 telemetry only carries a numeric `CarOrdinal`; the names come from
+        the community list in `app/car_ordinals.json`. When the game adds a car
+        the list doesn't know yet, LapScope shows `Car #<number>`. Fill this in
+        and the name lands in the list for **everyone** — installed copies pick
+        it up automatically within a day of the merge, no update needed.
+  - type: input
+    id: ordinal
+    attributes:
+      label: Car ordinal
+      description: The number LapScope showed, e.g. `Car #1234` → `1234`.
+      placeholder: "1234"
+    validations:
+      required: true
+  - type: input
+    id: car-name
+    attributes:
+      label: Car name
+      description: Model year + make + model, matching the in-game name.
+      placeholder: "1987 Porsche 959"
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: How do you know? (optional)
+      description: >
+        e.g. "it's the car I was driving" plus a screenshot of the in-game
+        car card. Helps a maintainer double-check before it ships to everyone.

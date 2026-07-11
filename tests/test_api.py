@@ -170,6 +170,32 @@ def test_reprocess_blocked_while_any_session_records(tmp_path):
     assert out["ok"] and out["laps"] == session["lap_count"]
 
 
+def test_sessions_expose_car_known(tmp_path, monkeypatch):
+    """car_known tells the UI to show the "unknown car — help name it"
+    affordance: false when the ordinal is missing from the community list,
+    true again once the user names it locally (DB override)."""
+    from app import cars
+    from app.api.routes import NameBody, sessions as sessions_ep, set_car_name
+
+    def scenario(sim):
+        sim.event(120, "event")
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    req = _request_for(store)
+
+    out = sessions_ep(req)[0]  # simulator drives ordinal 269 (bundled list)
+    assert out["car_known"] is True and out["car_name"] == "1987 Porsche 959"
+
+    monkeypatch.delitem(cars.CAR_NAMES, 269)  # simulate a newer-than-list car
+    out = sessions_ep(req)[0]
+    assert out["car_known"] is False and out["car_name"] == "Car #269"
+
+    set_car_name(269, NameBody(name="Porsche 959"), req)
+    out = sessions_ep(req)[0]
+    assert out["car_known"] is True and out["car_name"] == "Porsche 959"
+
+
 def test_car_override_set_and_clear(tmp_path):
     """``name: ""`` on PATCH /cars deletes the override so the bundled name
     (or "Car #<ordinal>") shows again (issue #11, optional revert path)."""

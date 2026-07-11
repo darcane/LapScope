@@ -65,6 +65,10 @@ async function loadSessions() {
       <div class="sub">${fmtDate(s.started_at)} · ${s.lap_count} laps · best ${fmtLap(s.best_lap)}</div>`;
     $(".title", card).textContent = displayName(s);
     $(".car-line", card).textContent = s.car_name;
+    if (!s.car_known) {
+      $(".car-line", card).classList.add("car-unknown");
+      $(".car-line", card).title = "Unknown car — open the session to name or report it";
+    }
     card.onclick = () => selectSession(s.id);
     el.appendChild(card);
   }
@@ -84,6 +88,15 @@ async function selectSession(id) {
   $("#session-title").textContent = displayName(s);
   $("#header-badges").innerHTML = classBadge(s.car_class_letter, s.car_pi) + dtBadge(s.drivetrain);
   $("#header-car").textContent = s.car_name + (s.route_name ? "" : "  ·  route not identified yet (complete a lap)");
+  if (!s.car_known) {
+    // community list doesn't know this ordinal yet: make it one click to fix
+    const help = document.createElement("button");
+    help.type = "button";
+    help.className = "car-unknown-hint";
+    help.textContent = "unknown car — help name it";
+    help.onclick = () => renameCar(s);
+    $("#header-car").appendChild(help);
+  }
   const patch = (body) => fetch(`/api/sessions/${s.id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -212,9 +225,23 @@ async function renameRoute(session) {
 }
 
 async function renameCar(session) {
+  let extra = null;
+  if (!session.car_known) {
+    // unknown ordinal: naming it locally helps this install, reporting it
+    // upstream puts the name in the community list for everyone
+    extra = document.createElement("p");
+    const a = document.createElement("a");
+    a.href = unknownCarIssueUrl(session.car_ordinal);
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = "report it on GitHub";
+    extra.append("This car isn't in the community list yet — also ", a,
+      " so everyone gets the name.");
+  }
   const name = await uiPrompt("Name car", {
     value: session.car_name || "",
     message: "Applies everywhere this car appears. Leave empty to reset to the built-in name.",
+    extra,
   });
   if (name === null) return;  // cancelled; "" reverts to the bundled name
   await fetch(`/api/cars/${session.car_ordinal}`, {

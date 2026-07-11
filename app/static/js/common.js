@@ -109,7 +109,7 @@ function dtBadge(dt) {
 
 /* ---------- themed modal dialogs (replace window.prompt / confirm / alert) ---------- */
 
-function showModal({ title, message = "", value = null, placeholder = "",
+function showModal({ title, message = "", extra = null, value = null, placeholder = "",
                      okText = "OK", cancelText = "Cancel",
                      danger = false, showCancel = true }) {
   return new Promise((resolve) => {
@@ -130,6 +130,8 @@ function showModal({ title, message = "", value = null, placeholder = "",
       p.textContent = message;   // plain text: user-named sessions render literally
       box.appendChild(p);
     }
+    if (extra) box.appendChild(extra);  // caller-built DOM, e.g. a link the
+                                        // text-only message can't carry
 
     let inputEl = null;
     if (value !== null) {
@@ -182,8 +184,8 @@ function showModal({ title, message = "", value = null, placeholder = "",
 }
 
 /* resolves to the entered string, or null when cancelled */
-function uiPrompt(title, { value = "", message = "", placeholder = "", okText = "Save" } = {}) {
-  return showModal({ title, message, value, placeholder, okText });
+function uiPrompt(title, { value = "", message = "", extra = null, placeholder = "", okText = "Save" } = {}) {
+  return showModal({ title, message, extra, value, placeholder, okText });
 }
 
 /* resolves to true, or null when cancelled */
@@ -276,8 +278,44 @@ async function checkForUpdate() {
   showUpdateBanner(latest);
 }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", checkForUpdate);
-} else {
-  checkForUpdate();
+/* ---------- car-list auto-refresh (fail-soft, once a day) ----------
+   The bundled car_ordinals.json goes stale as the game adds cars, so nudge
+   the backend to re-download the community list from the repo (POST
+   /api/cars/refresh; see app/cars.py). Same shape as the update check:
+   browser-triggered, at most once per day per browser, silent on failure —
+   the bundled copy keeps working offline. */
+
+/* Pre-filled "name this car" issue: the ordinal lands in the form field, the
+   merged answer lands in app/car_ordinals.json for everyone (see TODO's
+   community self-heal loop). */
+function unknownCarIssueUrl(ordinal) {
+  return `https://github.com/${UPDATE_REPO}/issues/new?template=unknown_car.yml`
+    + `&title=${encodeURIComponent(`car: ordinal ${ordinal}`)}&ordinal=${ordinal}`;
 }
+
+const CARDB_CHECK_KEY = "ls_cardb_check";      // ts of the last attempt
+const CARDB_CHECK_TTL = 24 * 60 * 60 * 1000;   // 1 day
+
+async function maybeRefreshCarList() {
+  const last = parseInt(localStorage.getItem(CARDB_CHECK_KEY) || "0", 10);
+  if (Date.now() - last < CARDB_CHECK_TTL) return;
+  localStorage.setItem(CARDB_CHECK_KEY, String(Date.now()));  // even on failure: don't hammer
+  try {
+    const r = await fetch("/api/cars/refresh", { method: "POST" });
+    if (!r.ok) return;
+    const { added } = await r.json();
+    // new names may resolve previously-unknown cars: redraw the session list
+    if (added > 0 && typeof loadSessions === "function") loadSessions();
+  } catch { /* offline / server restarting: bundled list keeps working */ }
+}
+
+function onReady(fn) {
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", fn);
+  } else {
+    fn();
+  }
+}
+
+onReady(checkForUpdate);
+onReady(maybeRefreshCarList);
