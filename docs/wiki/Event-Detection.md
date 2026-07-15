@@ -162,6 +162,22 @@ tracked in [issue #27](https://github.com/darcane/LapScope/issues/27).
 Flags reset when a lap re-anchors (a WTA launch, a mid-session lap-timer
 start), so pre-launch junk frames never dirty lap 1.
 
+## When detection is wrong: edit the recording
+
+Every rule on this page is an inference, and inferences miss. Instead of
+waiting for a tuning fix, curate the recording yourself on the analysis page:
+
+- **Right-click a contact spark on the track map → dismiss** ("not a
+  contact"). The marker stops counting, and the lap's 💥 flag lifts once no
+  real contact remains on it.
+- **✎ in the lap table** edits a lap's ⏪/💥/🏁 flags directly.
+- **🗑 in the lap table** excludes a junk lap (an out-lap, a wrong detection)
+  from the best-lap stats and session counts; ↩ restores it.
+
+Edits are stored as overrides next to the recording — the raw telemetry is
+never touched — and they survive a **Reprocess** (they're your call, not the
+detector's). **Reset edits** in the session header undoes all of them at once.
+
 ## Routes
 
 The game never sends route names, so circuits are **fingerprinted**: same
@@ -205,7 +221,8 @@ Recordings are lossless raw packets, so the **Reprocess** button replays a
 session's stored frames through a fresh tracker — every detection improvement
 on this page can be applied to recordings made before it existed. (Refused
 with a 409 while any recording is in progress, so a long replay can't freeze
-live telemetry.)
+live telemetry.) Manual edits — dismissed contacts, flag overrides, excluded
+laps — are kept across a reprocess; **Reset edits** is the way to drop them.
 
 ## Known accepted trade-offs
 

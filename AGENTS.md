@@ -213,6 +213,16 @@ All the rules exist because some real behavior broke a naive version:
   detection fix. Must stay `async def` (writes on the event-loop connection),
   which also means the replay blocks the loop — it 409s while **any** session
   is recording, or a long replay would freeze live telemetry mid-race.
+- **Manual edits are read-time overrides** (analysis page: dismiss a contact
+  marker, re-tag a lap's flags, exclude a lap from bests/counts). They live in
+  the `edits` table keyed by **frame timestamps, never lap ids** — a reprocess
+  deletes and recreates lap rows (SQLite reuses the rowids!), so id-keyed
+  edits would silently attach to the wrong laps; time-keyed ones re-apply to
+  the rebuilt laps by design (they're user intent). Raw frames and the
+  recorder's `laps.flags` are never rewritten; `Store.session_laps` merges the
+  overrides in (`flags` effective, `flags_auto` detected, `excluded`), and
+  `DELETE /api/sessions/{id}/edits` ("Reset edits") is the escape hatch back
+  to pure detection.
 - `sessions.kept = 1` exempts a session from the startup no-laps cleanup
   (LS_KEEP_DISCARDED captures and reprocessed sessions set it).
 - Dirty-lap inference: rewind = lap clock below its high-water mark while

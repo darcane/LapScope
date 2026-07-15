@@ -15,6 +15,7 @@ from ..cars import CAR_NAMES
 from ..recorder.laps import (AIRBORNE_MIN_S, AIRBORNE_SLIP_MAX,
                              AIRBORNE_SUSP_MAX, IMPACT_ACCEL, LANDING_GRACE_S)
 from ..recorder.reprocess import reprocess_session
+from ..recorder.store import lap_anchor, lap_span
 from ..telemetry.packet import parse
 
 log = logging.getLogger("lapscope.api")
@@ -134,7 +135,9 @@ async def reprocess(session_id: int, request: Request):
     detection logic. async on purpose: the replay writes laps through the
     Store's event-loop connection — which also means it blocks the loop for
     the whole replay, so it must not run while ANY session is recording
-    (a long replay would freeze live telemetry and the dashboard mid-race)."""
+    (a long replay would freeze live telemetry and the dashboard mid-race).
+    Manual edits survive on purpose (they're user intent, keyed by frame time
+    - see store.py); DELETE /sessions/{id}/edits is the way to drop them."""
     store = request.app.state.store
     if store.get_session(session_id) is None:
         raise HTTPException(404, "session not found")
@@ -226,37 +229,133 @@ def session_laps(session_id: int, request: Request):
     if session is None:
         raise HTTPException(404, "session not found")
     laps = store.session_laps(session_id)
-    best = min((lap["lap_time"] for lap in laps if lap["lap_time"]), default=None)
+    # excluded laps (manual edit) stay listed but never score: no best, no gap
+    best = min((lap["lap_time"] for lap in laps
+                if lap["lap_time"] and not lap["excluded"]), default=None)
     for lap in laps:
-        lap["is_best"] = bool(lap["lap_time"]) and lap["lap_time"] == best
-        lap["gap_to_best"] = (lap["lap_time"] - best) if lap["lap_time"] and best else None
-    return {"session": _session_out(session), "laps": laps}
+        timed = bool(lap["lap_time"]) and not lap["excluded"]
+        lap["is_best"] = timed and lap["lap_time"] == best
+        lap["gap_to_best"] = (lap["lap_time"] - best) if timed and best else None
+    session = _session_out(session)
+    # drives the "Reset edits" affordance on the analysis page
+    session["edit_count"] = len(store.session_edits(session_id))
+    return {"session": session, "laps": laps}
 
 
-@router.get("/laps/{lap_id}/data")
-def lap_data(
-    lap_id: int,
-    request: Request,
-    channels: str = Query("speed_kmh,throttle,brake"),
-    max_points: int = Query(2000, ge=50, le=20000),
-):
+LAP_FLAGS = {"rewind", "contact", "cutoff"}
+
+
+class LapPatch(BaseModel):
+    flags: str | None = None
+    excluded: bool | None = None
+
+
+@router.patch("/laps/{lap_id}")
+def patch_lap(lap_id: int, body: LapPatch, request: Request):
+    """Manual lap curation, stored as read-time edits keyed by frame time so
+    a reprocess keeps them (see the edits table in store.py). flags: the full
+    CSV the lap should carry ("" = none); a value equal to what the recorder
+    detected removes the override instead, reverting the lap to auto.
+    excluded: drop/restore the lap from bests and session counts."""
     store = request.app.state.store
     lap = store.get_lap(lap_id)
     if lap is None:
         raise HTTPException(404, "lap not found")
+    t0, t1 = lap_span(lap)
+    if body.flags is not None:
+        tokens = {f.strip() for f in body.flags.split(",") if f.strip()}
+        if not tokens <= LAP_FLAGS:
+            raise HTTPException(400, f"flags must be from {sorted(LAP_FLAGS)}")
+        value = ",".join(sorted(tokens))  # same format the recorder writes
+        store.remove_edits(lap["session_id"], "flags", t0, t1)
+        if value != (lap["flags"] or ""):
+            store.add_edit(lap["session_id"], "flags", lap_anchor(lap), value)
+    if body.excluded is not None:
+        store.remove_edits(lap["session_id"], "exclude_lap", t0, t1)
+        if body.excluded:
+            store.add_edit(lap["session_id"], "exclude_lap", lap_anchor(lap))
+    return {"ok": True}
 
-    names = [c.strip() for c in channels.split(",") if c.strip()]
-    unknown = [n for n in names if n not in CHANNELS]
-    if unknown:
-        raise HTTPException(400, f"unknown channels: {unknown}; available: {sorted(CHANNELS)}")
 
-    rows = store.lap_frames(lap)
-    start_dist = lap["start_distance"] or 0.0
+class DismissBody(BaseModel):
+    t: float
 
-    # Rewind safety: when the in-game rewind scrubs DistanceTraveled backwards,
-    # drop the samples it rewound over so only the finally-driven pass remains
-    # (otherwise charts and the map draw the same stretch twice). This also
-    # cleans up reversing after a spin.
+
+@router.post("/laps/{lap_id}/dismiss_contact")
+def dismiss_contact(lap_id: int, body: DismissBody, request: Request):
+    """"Not a contact": dismiss the collision whose peak frame time is t
+    (from the collision list of /laps/{id}/data). The marker is tagged
+    dismissed at read time; when no real (non-landing, non-dismissed)
+    contact remains on the lap, its contact flag is lifted through a flags
+    override. Flags are only ever removed here, never added."""
+    store = request.app.state.store
+    lap = store.get_lap(lap_id)
+    if lap is None:
+        raise HTTPException(404, "lap not found")
+    _, collisions, _ = _scan_lap(store.lap_frames(lap), lap["start_distance"] or 0.0)
+    if not any(abs(c["t"] - body.t) <= DISMISS_MATCH_S for c in collisions):
+        raise HTTPException(404, "no contact marker at that time")
+    store.add_edit(lap["session_id"], "dismiss_contact", body.t)
+    edits = store.session_edits(lap["session_id"])
+    _apply_dismissals(collisions, edits)
+    remaining = sum(1 for c in collisions if not c["landing"] and not c["dismissed"])
+    # effective flags: an existing user override wins over the detected CSV
+    t0, t1 = lap_span(lap)
+    flags = lap["flags"] or ""
+    for e in edits:
+        if e["kind"] == "flags" and t0 <= e["anchor_t"] <= t1:
+            flags = e["value"] or ""
+    if remaining == 0 and "contact" in flags.split(","):
+        flags = ",".join(f for f in flags.split(",") if f and f != "contact")
+        store.remove_edits(lap["session_id"], "flags", t0, t1)
+        if flags != (lap["flags"] or ""):
+            store.add_edit(lap["session_id"], "flags", lap_anchor(lap), flags)
+    return {"ok": True, "remaining_contacts": remaining, "flags": flags or None}
+
+
+@router.delete("/sessions/{session_id}/edits")
+def reset_edits(session_id: int, request: Request):
+    """The escape hatch: drop every manual edit of the session (contact
+    dismissals, flag overrides, lap exclusions) so it shows exactly what the
+    recorder detected again."""
+    store = request.app.state.store
+    if store.get_session(session_id) is None:
+        raise HTTPException(404, "session not found")
+    return {"ok": True, "removed": store.clear_edits(session_id)}
+
+
+# dismissed-contact edits match a collision by its peak frame time within
+# this tolerance: retuning the detection constants can shift a burst's peak
+# by a frame or two across a reprocess, never further (bursts are grouped)
+DISMISS_MATCH_S = 0.5
+
+
+def _scan_lap(rows: list[tuple[float, bytes]], start_dist: float):
+    """One lap's kept trace + collision/jump events, from its raw frames.
+    Shared by lap_data and the contact-dismissal endpoint so both always see
+    the exact same events. Returns (kept, collisions, jumps).
+
+    Rewind safety: when the in-game rewind scrubs DistanceTraveled backwards,
+    drop the samples it rewound over so only the finally-driven pass remains
+    (otherwise charts and the map draw the same stretch twice). This also
+    cleans up reversing after a spin.
+
+    Collision points: ground-plane acceleration spikes past the contact
+    threshold (the same test the recorder uses for the per-lap "contact"
+    flag). A single impact spans several frames over the threshold, so group
+    consecutive over-threshold frames into one event and keep its peak. Run
+    on the full-resolution kept trace so a one-frame spike is never decimated
+    away. World coords are returned so the map projects them like any point;
+    the peak's frame time t is the handle a dismissal edit anchors to.
+    Spikes while airborne or right after touchdown are jump landings, not
+    contact (same classification as the recorder) - tagged, not dropped, so
+    the map can still show where a jump bottomed out.
+
+    Jump segments: the same airborne classifier also yields explicit flights
+    (every wheel unloaded for >= AIRBORNE_MIN_S). Each is returned as a
+    takeoff -> touchdown segment so the map can draw where the car left the
+    ground and where it came down; a landing-classified spike marks the
+    segment "hard" with its peak g."""
     kept: list[tuple[float, float, dict]] = []  # (t, distance, parsed frame)
     for t, raw in rows:
         p = parse(raw)
@@ -266,33 +365,19 @@ def lap_data(
                 kept.pop()
         kept.append((t, d, p))
 
-    # Collision points: ground-plane acceleration spikes past the contact
-    # threshold (the same test the recorder uses for the per-lap "contact"
-    # flag). A single impact spans several frames over the threshold, so group
-    # consecutive over-threshold frames into one event and keep its peak. Run
-    # on the full-resolution kept trace so a one-frame spike is never decimated
-    # away. World coords are returned so the map projects them like any point.
-    # Spikes while airborne or right after touchdown are jump landings, not
-    # contact (same classification as the recorder) - tagged, not dropped, so
-    # the map can still show where a jump bottomed out.
-    #
-    # Jump segments: the same airborne classifier also yields explicit flights
-    # (every wheel unloaded for >= AIRBORNE_MIN_S). Each is returned as a
-    # takeoff -> touchdown segment so the map can draw where the car left the
-    # ground and where it came down; a landing-classified spike marks the
-    # segment "hard" with its peak g.
     collisions: list[dict] = []
     jumps: list[dict] = []
-    peak: tuple | None = None  # (g, d, frame) of the current impact burst
+    peak: tuple | None = None  # (g, t, d, frame) of the current impact burst
     burst_landing = True       # all frames of the burst classified as landing
     air_since: float | None = None
     air_start: tuple | None = None  # (t, d, frame) of the first airborne frame
     grace_until = 0.0
 
     def emit(peak: tuple, landing: bool) -> None:
-        g0, d0, p0 = peak
+        g0, t0, d0, p0 = peak
         collisions.append({"x": round(p0["pos_x"], 2), "y": round(p0["pos_y"], 2),
                            "z": round(p0["pos_z"], 2), "dist": round(d0 - start_dist, 2),
+                           "t": round(t0, 3),
                            "g": round(g0 / 9.80665, 2), "landing": landing})
         if landing and jumps:
             jumps[-1]["hard"] = True
@@ -322,9 +407,9 @@ def lap_data(
         g = math.hypot(p["accel_x"], p["accel_z"])
         if g >= IMPACT_ACCEL:
             if peak is None:
-                peak, burst_landing = (g, d, p), True
+                peak, burst_landing = (g, t, d, p), True
             elif g > peak[0]:
-                peak = (g, d, p)
+                peak = (g, t, d, p)
             burst_landing = burst_landing and (flying or t < grace_until)
         elif peak is not None:
             emit(peak, burst_landing)
@@ -334,7 +419,41 @@ def lap_data(
     if peak is not None:  # impact ran to the last kept frame
         emit(peak, burst_landing)
 
+    return kept, collisions, jumps
+
+
+def _apply_dismissals(collisions: list[dict], edits: list[dict]) -> None:
+    """Tag the collisions the user dismissed ("not a contact"). Dismissed
+    markers are returned tagged rather than dropped: the count and the map
+    skip them, but the data stays inspectable."""
+    anchors = [e["anchor_t"] for e in edits if e["kind"] == "dismiss_contact"]
+    for c in collisions:
+        c["dismissed"] = any(abs(c["t"] - a) <= DISMISS_MATCH_S for a in anchors)
+
+
+@router.get("/laps/{lap_id}/data")
+def lap_data(
+    lap_id: int,
+    request: Request,
+    channels: str = Query("speed_kmh,throttle,brake"),
+    max_points: int = Query(2000, ge=50, le=20000),
+):
+    store = request.app.state.store
+    lap = store.get_lap(lap_id)
+    if lap is None:
+        raise HTTPException(404, "lap not found")
+
+    names = [c.strip() for c in channels.split(",") if c.strip()]
+    unknown = [n for n in names if n not in CHANNELS]
+    if unknown:
+        raise HTTPException(400, f"unknown channels: {unknown}; available: {sorted(CHANNELS)}")
+
+    rows = store.lap_frames(lap)
+    kept, collisions, jumps = _scan_lap(rows, lap["start_distance"] or 0.0)
+    _apply_dismissals(collisions, store.session_edits(lap["session_id"]))
+
     stride = max(1, len(kept) // max_points)
+    start_dist = lap["start_distance"] or 0.0
     dist: list[float] = []
     t_rel: list[float] = []
     out: dict[str, list[float]] = {n: [] for n in names}

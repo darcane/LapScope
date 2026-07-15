@@ -25,7 +25,7 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
 | [app/telemetry/listener.py](app/telemetry/listener.py) | `asyncio.DatagramProtocol`: counts packets, warns once on wrong size (hex dump), parses, feeds tracker, publishes frame+extras to hub. Recorder exceptions never kill the stream. |
 | [app/telemetry/hub.py](app/telemetry/hub.py) | Fan-out to WebSocket subscriber queues (drop-oldest on slow clients) + stream stats used by `/api/status`. |
 | [app/recorder/laps.py](app/recorder/laps.py) | **The heart.** `SessionTracker`: session boundaries, lap segmentation, finish detection, geometric (WTA) laps, dirty-lap flags, wet detection, route fingerprint triggers, live delta, `race_mode`, and the track-type auto-suggestion (`suggest_track_type` + per-frame surface accumulators; written at session close with COALESCE so user tags win). All tunable thresholds are module constants at the top. |
-| [app/recorder/store.py](app/recorder/store.py) | SQLite persistence: schema, `MIGRATIONS`, session/lap/route/car-name CRUD, monotonic session-id counter, `reader()` for threadpool access. |
+| [app/recorder/store.py](app/recorder/store.py) | SQLite persistence: schema, `MIGRATIONS`, session/lap/route/car-name CRUD, manual-edit overrides (`edits` table, merged into `session_laps` at read time), monotonic session-id counter, `reader()` for threadpool access. |
 | [app/recorder/reprocess.py](app/recorder/reprocess.py) | Replays a session's stored raw frames through a fresh `SessionTracker` via `_ReplayStore` (laps/routes written for real; session row and frames untouched; discard suppressed). |
 | [app/api/routes.py](app/api/routes.py) | REST API (table below) + constants: `CAR_CLASSES`, `CONDITIONS`, `TRACK_TYPES`, `DRIVETRAINS`, `CHANNELS` (channel-name → frame extractor for lap data). |
 | [app/cars.py](app/cars.py) | Community car-name list (`CarOrdinal` → name), three layers, top wins: `car_names` DB override > downloaded `DATA_DIR/car_ordinals.json` > bundled `app/car_ordinals.json`. `refresh()` re-downloads the maintained copy from this repo's `main` (validated, atomically persisted, hot-swapped); triggered by the browser daily + Settings "Refresh now" via `POST /api/cars/refresh`. |
@@ -54,9 +54,17 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
 - `routes(id, name, start_x, start_z, lap_length)` — fingerprint: start within
   80 m + length within 5 %.
 - `car_names(ordinal, name)` — user overrides of the bundled ordinal list.
+- `edits(id, session_id→sessions CASCADE, kind, anchor_t, value, created_at)`
+  — manual session edits, applied at read time (raw frames and the recorder's
+  lap rows are never rewritten). `kind`: `dismiss_contact` (anchor = the
+  collision peak's frame time, matched ±0.5 s), `flags` (`value` = the full
+  flags CSV, `""` = none) and `exclude_lap` (both anchored at the lap-span
+  midpoint). Keyed by frame time so a reprocess — which recreates lap rows
+  under recycled rowids — keeps them.
 
 Schema changes: append `ALTER TABLE ... ADD COLUMN` to `store.MIGRATIONS`;
 each runs on every startup inside try/except (existing-column errors swallowed).
+New tables go straight into `SCHEMA` (`CREATE TABLE IF NOT EXISTS` is idempotent).
 
 ## REST API (`/api`)
 
@@ -66,10 +74,13 @@ each runs on every startup inside try/except (existing-column errors swallowed).
 | `GET /version` | `{"version": app.__version__}` — the running build. The frontend compares it (client-side) against the latest GitHub Release for the update notice; `"0.0.0"` (dev/source run) suppresses the check. |
 | `GET /sessions` | List with route/car-name joins, lap counts, best lap. |
 | `PATCH /sessions/{id}` | `name` (`""` clears → display falls back to route/date), `conditions` (`dry/wet/snow`, `""` clears), `track_type` (`road/street/touge/dirt/cross/drag/wtc`, `""` clears). |
-| `POST /sessions/{id}/reprocess` | Rebuild laps from stored frames (async def — event-loop writes). 409 while **any** session records: the synchronous replay would stall the event loop and freeze live telemetry. |
+| `POST /sessions/{id}/reprocess` | Rebuild laps from stored frames (async def — event-loop writes). 409 while **any** session records: the synchronous replay would stall the event loop and freeze live telemetry. Manual edits survive (time-keyed — see the `edits` table). |
 | `DELETE /sessions/{id}` | Cascades frames+laps. 409 while recording. |
-| `GET /sessions/{id}/laps` | Session + laps with `is_best` / `gap_to_best`. |
-| `GET /laps/{id}/data?channels=&max_points=` | Distance-indexed channel arrays; drops rewound-over samples; decimates to `max_points`. Channel names = `CHANNELS` keys in routes.py. `lap_time` falls back to time-since-lap-start when the packet lap clock never ran (WTA / bare sprints keep `CurrentLap` at 0), so the A/B Δ-time chart works for those events. Also returns `collisions` (contact-spike peaks, `landing: true/false`) and `jumps` (airborne segments: takeoff → touchdown world coords + `dist0/dist1`, `air_s`, `hard` + peak `g` when the landing spiked) — both computed on the full-resolution trace, never decimated away. |
+| `GET /sessions/{id}/laps` | Session + laps with `is_best` / `gap_to_best` (excluded laps never score). Each lap carries effective `flags`, detected `flags_auto`, `excluded`; the session carries `edit_count` (drives the Reset-edits button). |
+| `PATCH /laps/{id}` | Manual lap curation as read-time edits: `flags` (full CSV, `""` = none; a value equal to the detected flags removes the override), `excluded` (drop/restore from bests+counts). |
+| `POST /laps/{id}/dismiss_contact` | "Not a contact": body `{t}` from the collision list. 404 if no collision peak within ±0.5 s. Lifts the lap's `contact` flag once no real (non-landing, non-dismissed) contact remains — only ever removes flags. |
+| `DELETE /sessions/{id}/edits` | Reset edits: drops every manual edit of the session, back to pure detection. |
+| `GET /laps/{id}/data?channels=&max_points=` | Distance-indexed channel arrays; drops rewound-over samples; decimates to `max_points`. Channel names = `CHANNELS` keys in routes.py. `lap_time` falls back to time-since-lap-start when the packet lap clock never ran (WTA / bare sprints keep `CurrentLap` at 0), so the A/B Δ-time chart works for those events. Also returns `collisions` (contact-spike peaks, `landing: true/false`, `t` = the peak's frame time — the dismissal handle — and `dismissed: true` when a manual edit matched it) and `jumps` (airborne segments: takeoff → touchdown world coords + `dist0/dist1`, `air_s`, `hard` + peak `g` when the landing spiked) — both computed on the full-resolution trace, never decimated away. |
 | `PATCH /routes/{id}`, `GET/PATCH /cars/{ordinal}` | Route: `name` renames, `track_type` retags **every session on the route** at once (the analysis page offers this when a session's type is changed; `""` clears them all). Car override (`name: ""` reverts to the bundled/downloaded name). `GET` also returns `known` (ordinal resolvable without the `Car #<id>` fallback). |
 | `GET /cars`, `POST /cars/refresh` | Car-list metadata (`total`, `fetched_at`) / re-download the community list (see app/cars.py row above; 502 with a readable `detail` on failure — the current list stays). Registered before `/cars/{ordinal}` so `refresh` isn't parsed as an ordinal. |
 
@@ -86,7 +97,7 @@ listener: `session_id`, `delta` (vs session-best), `session_best`,
 |---|---|
 | `index.html` + `js/dashboard.js` | Live page: WebSocket → `requestAnimationFrame` render loop; live track map state (`feedLiveMap`: resets on session-id change or >250 m jump — except a pause-split resume: same place + race clock kept its value keeps the path; `feedCollision` also tracks jump flights); race-mode gating of timer/chip/map; no-data overlay polling `/api/status`. |
 | `js/gauges.js` | Pure canvas renderers (RPM arc, friction circle, grip panel, input strip, live map incl. jump glyphs); `initCanvas` handles DPR scaling. |
-| `analysis.html` + `js/analysis.js` | Session browser, lap table, 2D/3D track map (color by speed/slip, drag-to-rotate 3D, chart-hover → map marker, jump/contact layers, chart drag-zoom → highlighted span), A/B comparison charts (uPlot, x = DistanceTraveled track position; drag-zoom syncs across all charts, double-click resets). |
+| `analysis.html` + `js/analysis.js` | Session browser, lap table, 2D/3D track map (color by speed/slip, drag-to-rotate 3D, chart-hover → map marker, jump/contact layers, chart drag-zoom → highlighted span), A/B comparison charts (uPlot, x = DistanceTraveled track position; drag-zoom syncs across all charts, double-click resets). Manual editing: right-click a contact spark → dismiss, per-lap ✎ flags editor + 🗑/↩ exclude toggle in the lap table, Reset-edits header button (visible when `edit_count > 0`); `reloadSession()` refreshes after an edit without resetting the A/B picks. |
 | `js/common.js` | Shared badges (class/PI, drivetrain, conditions, track type incl. `TRACK_META`) + the `drawJump` canvas glyph both maps use + themed modal dialogs (`uiPrompt`/`uiConfirm`/`uiAlert` — never use `window.prompt/confirm/alert`) + the fail-soft client-side update check (`/api/version` vs the GitHub Releases API; dismissible `.update-banner`, 24 h cached, skipped on `0.0.0`) + the once-a-day car-list refresh trigger (`maybeRefreshCarList` → `POST /api/cars/refresh`) and `unknownCarIssueUrl` (pre-filled `unknown_car.yml` issue). |
 | `js/settings.js` | User display preferences, `localStorage`-only (no backend — conversions are display-time, the recorder stores raw packets). One JSON key `ls_settings`; converters (`speedFromMps`/`speedFromKmh`/`speedUnit`, `tempFromF`/`tempUnit`/`fmtTireTemp`, `distFromM`/`distUnit`); `getSettings`/`saveSettings`/`onSettingsChange` pub-sub; `openSettings()` themed panel (reuses `common.js` modal chrome). Loaded after `common.js` on both pages; the ⚙ header button (`#settings-btn`) opens it. |
 | `css/style.css` | Theme = CSS custom props. `css/fonts.css` + `fonts/` = vendored Rajdhani (OFL); app must work fully offline. |

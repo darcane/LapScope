@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -53,7 +54,24 @@ CREATE TABLE IF NOT EXISTS car_names (
     ordinal INTEGER PRIMARY KEY,
     name    TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS edits (
+    id         INTEGER PRIMARY KEY,
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    kind       TEXT NOT NULL,
+    anchor_t   REAL NOT NULL,
+    value      TEXT,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_edits_session ON edits(session_id);
 """
+
+# Manual session edits (analysis page), applied at read time - raw frames and
+# the recorder's lap rows are never rewritten. Keyed by frame timestamps, not
+# lap ids, so a reprocess (which deletes and recreates lap rows) keeps them:
+#   dismiss_contact  anchor_t = the collision burst's peak frame t
+#   flags            anchor_t inside a lap's [started_t, ended_t] span;
+#                    value = the full flags CSV ("" = no flags)
+#   exclude_lap      anchor_t inside a lap's span; lap drops out of bests/counts
 
 # added after v1; applied to existing databases on startup
 MIGRATIONS = (
@@ -77,6 +95,22 @@ FROM sessions s
 LEFT JOIN routes r ON r.id = s.route_id
 LEFT JOIN car_names cn ON cn.ordinal = s.car_ordinal
 """
+
+
+def lap_span(lap: dict) -> tuple[float, float]:
+    """A lap's frame-time span; an open lap (NULL ended_t - only ever the
+    last one) extends to infinity so an anchor inside it still matches."""
+    end = lap["ended_t"] if lap["ended_t"] is not None else float("1e18")
+    return lap["started_t"], end
+
+
+def lap_anchor(lap: dict) -> float:
+    """Frame-time anchor identifying a lap across reprocesses: the midpoint
+    of its span (started_t for an open lap). Midpoints avoid boundary ties
+    with adjacent laps and still land inside the corresponding lap after a
+    reprocess re-segments the session."""
+    end = lap["ended_t"] if lap["ended_t"] is not None else lap["started_t"]
+    return (lap["started_t"] + end) / 2
 
 
 class Store:
@@ -261,7 +295,12 @@ class Store:
                 " FROM sessions s"
                 " LEFT JOIN routes r ON r.id = s.route_id"
                 " LEFT JOIN car_names cn ON cn.ordinal = s.car_ordinal"
-                " LEFT JOIN laps l ON l.session_id = s.id"
+                # excluded laps (manual edit) don't count: same span-match as
+                # session_laps, in SQL
+                " LEFT JOIN laps l ON l.session_id = s.id AND NOT EXISTS"
+                "  (SELECT 1 FROM edits e WHERE e.session_id = l.session_id"
+                "   AND e.kind = 'exclude_lap' AND e.anchor_t >= l.started_t"
+                "   AND e.anchor_t <= COALESCE(l.ended_t, 1e18))"
                 " GROUP BY s.id ORDER BY s.started_at DESC"
             ).fetchall()
         return [dict(r) for r in rows]
@@ -340,11 +379,61 @@ class Store:
             conn.commit()
 
     def session_laps(self, session_id: int) -> list[dict]:
+        """Lap rows with manual edits applied at read time: `flags` is the
+        effective value (a 'flags' override wins over what the recorder
+        detected, which stays in `flags_auto`), `excluded` marks laps the
+        user dropped from bests/counts."""
         with self.reader() as conn:
             rows = conn.execute(
                 "SELECT * FROM laps WHERE session_id = ? ORDER BY started_t", (session_id,)
             ).fetchall()
+        laps = [dict(r) for r in rows]
+        edits = self.session_edits(session_id)
+        for lap in laps:
+            lap["flags_auto"] = lap["flags"]
+            lap["excluded"] = False
+            t0, t1 = lap_span(lap)
+            for e in edits:
+                if not t0 <= e["anchor_t"] <= t1:
+                    continue
+                if e["kind"] == "flags":
+                    lap["flags"] = e["value"] or None
+                elif e["kind"] == "exclude_lap":
+                    lap["excluded"] = True
+        return laps
+
+    def session_edits(self, session_id: int) -> list[dict]:
+        with self.reader() as conn:
+            rows = conn.execute(
+                "SELECT * FROM edits WHERE session_id = ? ORDER BY created_at",
+                (session_id,)).fetchall()
         return [dict(r) for r in rows]
+
+    def add_edit(self, session_id: int, kind: str, anchor_t: float,
+                 value: str | None = None) -> None:
+        with self.reader() as conn:
+            conn.execute(
+                "INSERT INTO edits (session_id, kind, anchor_t, value, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (session_id, kind, anchor_t, value, time.time()))
+            conn.commit()
+
+    def remove_edits(self, session_id: int, kind: str, t0: float, t1: float) -> int:
+        """Drop edits of one kind anchored inside [t0, t1] (a lap's span)."""
+        with self.reader() as conn:
+            cur = conn.execute(
+                "DELETE FROM edits WHERE session_id = ? AND kind = ?"
+                " AND anchor_t >= ? AND anchor_t <= ?",
+                (session_id, kind, t0, t1))
+            conn.commit()
+            return cur.rowcount
+
+    def clear_edits(self, session_id: int) -> int:
+        """The "Reset edits" escape hatch: drop every manual edit at once."""
+        with self.reader() as conn:
+            cur = conn.execute("DELETE FROM edits WHERE session_id = ?", (session_id,))
+            conn.commit()
+            return cur.rowcount
 
     def get_lap(self, lap_id: int) -> dict | None:
         with self.reader() as conn:

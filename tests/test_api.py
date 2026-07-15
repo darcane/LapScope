@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from harness import completed_laps, run, sessions
+from harness import completed_laps, flags_of, run, sessions
 from app.recorder.store import Store
 
 
@@ -273,3 +273,172 @@ def test_car_override_set_and_clear(tmp_path):
     out = car_name(999999, req)
     store.close()
     assert out["known"] is False and out["name"] == "Car #999999"
+
+
+# ------------------------- manual session edits (issue #26) -------------------------
+# Stored in the `edits` table keyed by frame time, applied at read time; raw
+# frames and the recorder's lap rows are never rewritten.
+
+
+def _dirty_store(tmp_path):
+    """3-lap race with a wall contact on lap 2 and a rewind on lap 3 (the
+    --dirty scenario asserted in test_scenarios)."""
+    def scenario(sim):
+        sim.event(180, "dirty", dirty=True)
+        sim.race_off()
+
+    return run(scenario, tmp_path)
+
+
+def test_dismiss_contact_clears_marker_and_lifts_the_flag(tmp_path):
+    """Right-click "not a contact": the marker comes back tagged dismissed
+    from /laps/{id}/data (not dropped - the data stays inspectable), and once
+    no real contact remains the lap's contact flag is lifted via a flags
+    override while flags_auto keeps what the recorder detected."""
+    from app.api.routes import DismissBody, dismiss_contact, lap_data, session_laps
+
+    store = _dirty_store(tmp_path)
+    sid = sessions(store)[0]["id"]
+    req = _request_for(store)
+    lap = next(lap for lap in completed_laps(store, sid) if "contact" in flags_of(lap))
+
+    data = lap_data(lap["id"], req, "speed_kmh", 500)
+    hits = [c for c in data["collisions"] if not c["landing"]]
+    assert hits and all(not c["dismissed"] for c in data["collisions"])
+
+    for c in hits:
+        out = dismiss_contact(lap["id"], DismissBody(t=c["t"]), req)
+    assert out["remaining_contacts"] == 0
+    assert not out["flags"] or "contact" not in out["flags"]
+
+    data = lap_data(lap["id"], req, "speed_kmh", 500)
+    assert all(c["dismissed"] for c in data["collisions"] if not c["landing"])
+
+    row = next(r for r in session_laps(sid, req)["laps"] if r["id"] == lap["id"])
+    assert "contact" not in (row["flags"] or "")
+    assert "contact" in row["flags_auto"]
+
+
+def test_dismiss_contact_rejects_a_time_with_no_marker(tmp_path):
+    """A dismissal must anchor to a real collision peak: a t that matches
+    nothing is a 404, not a silently stored dangling edit."""
+    from app.api.routes import DismissBody, dismiss_contact
+
+    store = _dirty_store(tmp_path)
+    sid = sessions(store)[0]["id"]
+    req = _request_for(store)
+    lap = next(lap for lap in completed_laps(store, sid) if "contact" in flags_of(lap))
+
+    with pytest.raises(HTTPException) as exc:
+        dismiss_contact(lap["id"], DismissBody(t=-999.0), req)
+    assert exc.value.status_code == 404
+    assert store.session_edits(sid) == []
+    assert "contact" in flags_of(store.session_laps(sid)[lap["lap_number"]])
+
+
+def test_lap_flags_override_set_revert_and_validate(tmp_path):
+    """PATCH /laps/{id} flags: "" clears every marker (effective flags None,
+    detected CSV preserved in flags_auto); writing back exactly the detected
+    value removes the override instead of storing a no-op edit; unknown
+    tokens are a 400."""
+    from app.api.routes import LapPatch, patch_lap
+
+    store = _dirty_store(tmp_path)
+    sid = sessions(store)[0]["id"]
+    req = _request_for(store)
+    lap = next(lap for lap in completed_laps(store, sid) if "rewind" in flags_of(lap))
+
+    patch_lap(lap["id"], LapPatch(flags=""), req)
+    row = next(r for r in store.session_laps(sid) if r["id"] == lap["id"])
+    assert row["flags"] is None and row["flags_auto"] == flags_of(lap)
+
+    patch_lap(lap["id"], LapPatch(flags=flags_of(lap)), req)  # = detected: revert
+    assert store.session_edits(sid) == []
+    row = next(r for r in store.session_laps(sid) if r["id"] == lap["id"])
+    assert row["flags"] == flags_of(lap)
+
+    with pytest.raises(HTTPException) as exc:
+        patch_lap(lap["id"], LapPatch(flags="rewind,banana"), req)
+    assert exc.value.status_code == 400
+
+
+def test_exclude_lap_recomputes_bests_and_counts(tmp_path):
+    """Excluding the best lap: it stays listed (excluded=true, never is_best,
+    no gap) while the next-fastest becomes the best, and the session list's
+    lap_count / best_lap aggregates drop it too. Restore brings it all back."""
+    from app.api.routes import LapPatch, patch_lap, session_laps
+
+    def scenario(sim):
+        sim.event(180, "race")
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    sid = sessions(store)[0]["id"]
+    req = _request_for(store)
+    before = session_laps(sid, req)
+    assert before["session"]["edit_count"] == 0
+    best = next(lap for lap in before["laps"] if lap["is_best"])
+    n_timed = sum(1 for lap in before["laps"] if lap["lap_time"])
+    assert n_timed >= 2
+
+    patch_lap(best["id"], LapPatch(excluded=True), req)
+    after = session_laps(sid, req)
+    assert after["session"]["edit_count"] == 1
+    row = next(r for r in after["laps"] if r["id"] == best["id"])
+    assert row["excluded"] and not row["is_best"] and row["gap_to_best"] is None
+    new_best = next(r for r in after["laps"] if r["is_best"])
+    assert new_best["id"] != best["id"]
+    listed = sessions(store)[0]
+    assert listed["lap_count"] == n_timed - 1
+    assert listed["best_lap"] == new_best["lap_time"]
+
+    patch_lap(best["id"], LapPatch(excluded=False), req)
+    assert sessions(store)[0]["lap_count"] == n_timed
+    restored = next(r for r in session_laps(sid, req)["laps"] if r["id"] == best["id"])
+    assert restored["is_best"] and not restored["excluded"]
+
+
+def test_edits_survive_reprocess_and_reset_reverts(tmp_path):
+    """The point of time-keyed edits: reprocess deletes and recreates every
+    lap row, yet dismissals, flag overrides and exclusions re-apply to the
+    rebuilt laps. DELETE /sessions/{id}/edits is the explicit way back to
+    exactly what the recorder detected."""
+    from app.api.routes import (DismissBody, LapPatch, dismiss_contact, lap_data,
+                                patch_lap, reset_edits)
+    from app.recorder.reprocess import reprocess_session
+
+    store = _dirty_store(tmp_path)
+    sid = sessions(store)[0]["id"]
+    req = _request_for(store)
+    laps = completed_laps(store, sid)
+    contact_lap = next(lap for lap in laps if "contact" in flags_of(lap))
+    rewind_lap = next(lap for lap in laps if "rewind" in flags_of(lap))
+    clean_lap = laps[0]
+
+    data = lap_data(contact_lap["id"], req, "speed_kmh", 500)
+    for c in data["collisions"]:
+        if not c["landing"]:
+            dismiss_contact(contact_lap["id"], DismissBody(t=c["t"]), req)
+    patch_lap(rewind_lap["id"], LapPatch(flags=""), req)
+    patch_lap(clean_lap["id"], LapPatch(excluded=True), req)
+
+    store2 = Store(store.db_path)  # replay writes via the event-loop connection
+    reprocess_session(store2, sid)
+    store2.close()
+
+    rows = {r["lap_number"]: r for r in store.session_laps(sid)}
+    redone = rows[contact_lap["lap_number"]]
+    # flags_auto == the replay re-detected the contact on the rebuilt row;
+    # the override (keyed by time, not by the recycled lap id) still lifts it
+    assert "contact" in redone["flags_auto"] and "contact" not in (redone["flags"] or "")
+    assert rows[rewind_lap["lap_number"]]["flags"] is None
+    assert rows[clean_lap["lap_number"]]["excluded"]
+    data = lap_data(redone["id"], req, "speed_kmh", 500)
+    assert all(c["dismissed"] for c in data["collisions"] if not c["landing"])
+
+    out = reset_edits(sid, req)
+    assert out["removed"] >= 3
+    for row in store.session_laps(sid):
+        assert row["flags"] == row["flags_auto"] and not row["excluded"]
+    data = lap_data(redone["id"], req, "speed_kmh", 500)
+    assert not any(c["dismissed"] for c in data["collisions"])

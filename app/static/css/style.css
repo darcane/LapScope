@@ -538,6 +538,18 @@ main.grid .lap-grid { margin-bottom: auto; }
   box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.12);
 }
 
+/* lap flag editor (analysis page): checkbox per dirty-lap marker */
+.flag-editor { margin: 0 0 12px; }
+.flag-editor label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 2px;
+  cursor: pointer;
+}
+.flag-editor input[type="checkbox"] { accent-color: var(--accent); }
+.modal-hint { color: var(--muted); font-size: 0.8rem; margin: 8px 0 0; }
+
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .modal-actions button {
   padding: 7px 16px;
@@ -795,6 +807,19 @@ table.laps th {
 }
 table.laps tr { border-bottom: 1px solid var(--panel-edge-soft); }
 table.laps tr.best td { color: var(--good); }
+/* manually excluded laps stay listed but visibly out of the running */
+table.laps tr.excluded td { color: var(--muted); opacity: 0.55; }
+table.laps tr.excluded .lap-time { text-decoration: line-through; }
+table.laps .lap-actions { text-align: right; white-space: nowrap; }
+table.laps .lap-act {
+  padding: 1px 7px;
+  font-size: 0.8rem;
+  background: transparent;
+  border-color: transparent;
+  opacity: 0.35;
+}
+table.laps tr:hover .lap-act { opacity: 1; }
+table.laps .lap-act:hover { border-color: var(--accent); background: var(--panel-lo); }
 table.laps .pick {
   display: inline-block;
   width: 26px;

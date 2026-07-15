@@ -53,14 +53,15 @@
       <button id="btn-rename">Rename</button>
       <button id="btn-route">Name route</button>
       <button id="btn-car">Name car</button>
-      <button id="btn-reprocess" title="Re-run lap detection over the stored telemetry">Reprocess</button>
+      <button id="btn-reprocess" title="Re-run lap detection over the stored telemetry (manual edits are kept)">Reprocess</button>
+      <button id="btn-reset-edits" style="display:none" title="Remove every manual edit — dismissed contacts, flag overrides, excluded laps">Reset edits</button>
       <button id="btn-delete" class="danger">Delete</button>
     </div>
     <div class="car-line" id="header-car"></div>
     <section class="panel">
       <h2>Laps</h2>
       <table class="laps">
-        <thead><tr><th>Compare</th><th>Lap</th><th>Time</th><th>Gap</th><th></th></tr></thead>
+        <thead><tr><th>Compare</th><th>Lap</th><th>Time</th><th>Gap</th><th></th><th></th></tr></thead>
         <tbody id="lap-rows"></tbody>
       </table>
     </section>
@@ -82,7 +83,7 @@
             <span id="legend-scale"></span>
             <span><span class="swatch" style="background:#5b6675"></span> lap B</span>
             <span><span class="swatch" style="background:#34d399"></span> start</span>
-            <span title="contact spike (wall / obstacle)"><span style="color:#ef4444">✦</span> contact</span>
+            <span title="contact spike (wall / obstacle) — right-click one to dismiss a wrong detection"><span style="color:#ef4444">✦</span> contact (right-click to dismiss)</span>
             <span title="jump: takeoff ○ to touchdown ▸ — a ring marks a hard landing"><span style="color:#f59e0b">○⇢</span> jump</span>
             <span>⌖ hover a chart to mark that spot · drag to zoom + highlight this span</span>
             <span id="map-hint" style="display:none">↔ drag the map to rotate</span>

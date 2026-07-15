@@ -114,6 +114,8 @@ async function selectSession(id) {
   $("#btn-route").onclick = () => renameRoute(s);
   $("#btn-car").onclick = () => renameCar(s);
   $("#btn-reprocess").onclick = () => reprocessSession(s);
+  $("#btn-reset-edits").style.display = s.edit_count ? "" : "none";
+  $("#btn-reset-edits").onclick = () => resetEdits(s);
   $("#btn-delete").onclick = () => deleteSession(s);
   $("#color-mode").value = state.colorMode;
   $("#color-mode").onchange = (e) => {
@@ -134,6 +136,7 @@ async function selectSession(id) {
   }
   $("#map-hint").style.display = state.mapMode === "3d" ? "" : "none";
   bindMapDrag($("#trackmap"));
+  bindMapContext($("#trackmap"));
 
   renderLapRows();
   loadSessions();
@@ -150,17 +153,104 @@ function renderLapRows() {
   for (const l of state.laps) {
     const tr = document.createElement("tr");
     if (l.is_best) tr.className = "best";
+    if (l.excluded) tr.className = "excluded";
+    // an override never changes the icons' meaning, just their source
+    const edited = (l.flags || "") !== (l.flags_auto || "");
     tr.innerHTML = `
       <td><span class="pick ${state.lapA === l.id ? "a" : ""}" data-slot="a">A</span>
           <span class="pick ${state.lapB === l.id ? "b" : ""}" data-slot="b">B</span></td>
       <td>${l.lap_number + 1}</td>
-      <td>${fmtLap(l.lap_time)}</td>
+      <td class="lap-time">${fmtLap(l.lap_time)}</td>
       <td>${l.gap_to_best != null && l.gap_to_best > 0 ? "+" + l.gap_to_best.toFixed(3) : (l.is_best ? "best" : "")}</td>
-      <td style="color:var(--muted)">${flagIcons(l.flags)}${l.lap_time ? "" : " incomplete"}</td>`;
+      <td style="color:var(--muted)">${flagIcons(l.flags)}${edited ? `<span class="lap-flag" title="flags edited by you — ✎ to change, Reset edits to undo">✎</span>` : ""}${l.lap_time ? "" : " incomplete"}${l.excluded ? " excluded" : ""}</td>
+      <td class="lap-actions">
+        <button class="lap-act act-flags" title="Edit this lap's flags">✎</button>
+        <button class="lap-act act-exclude" title="${l.excluded ? "Restore the lap into bests and counts" : "Exclude the lap from bests and counts"}">${l.excluded ? "↩" : "🗑"}</button>
+      </td>`;
     for (const pick of tr.querySelectorAll(".pick"))
       pick.onclick = () => pickLap(l.id, pick.dataset.slot);
+    $(".act-flags", tr).onclick = () => editLapFlags(l);
+    $(".act-exclude", tr).onclick = () => toggleLapExcluded(l);
     tbody.appendChild(tr);
   }
+}
+
+/* Re-fetch the session's laps + the picked laps' data after a manual edit,
+   keeping the A/B selection (unlike selectSession, which resets it). */
+async function reloadSession() {
+  const payload = await (await fetch(`/api/sessions/${state.sessionId}/laps`)).json();
+  state.laps = payload.laps;
+  const reset = $("#btn-reset-edits");
+  if (reset) reset.style.display = payload.session.edit_count ? "" : "none";
+  for (const slot of ["a", "b"]) {
+    const key = slot === "a" ? "lapA" : "lapB";
+    const dataKey = slot === "a" ? "dataA" : "dataB";
+    if (state[key] == null) continue;
+    const res = await fetch(
+      `/api/laps/${state[key]}/data?channels=${LAP_CHANNELS}&max_points=1500`);
+    if (res.ok) state[dataKey] = await res.json();
+  }
+  renderLapRows();
+  drawMap();
+  drawCharts();
+  loadSessions();  // lap counts / best on the session cards may have moved
+}
+
+const lapPatch = (lapId, body) => fetch(`/api/laps/${lapId}`, {
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+/* checkbox editor over the recorder's dirty-lap markers; stored as a
+   read-time override, so Reprocess keeps it and Reset edits undoes it */
+async function editLapFlags(lap) {
+  const extra = document.createElement("div");
+  extra.className = "flag-editor";
+  const current = new Set((lap.flags || "").split(",").filter(Boolean));
+  const boxes = {};
+  for (const [flag, [icon, desc]] of Object.entries(FLAG_META)) {
+    const label = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = current.has(flag);
+    boxes[flag] = cb;
+    label.append(cb, ` ${icon} ${flag}`);
+    label.title = desc;
+    extra.appendChild(label);
+  }
+  const detected = (lap.flags_auto || "").split(",").filter(Boolean)
+    .map((f) => (FLAG_META[f] ? `${FLAG_META[f][0]} ${f}` : f)).join(", ") || "none";
+  const hint = document.createElement("p");
+  hint.className = "modal-hint";
+  hint.textContent = `Detected by the recorder: ${detected}. Matching it removes your override.`;
+  extra.appendChild(hint);
+  const ok = await showModal({
+    title: `Lap ${lap.lap_number + 1} — flags`,
+    message: "Detection is heuristic; correct this lap's markers here. Reprocess keeps your choice.",
+    extra, okText: "Save",
+  });
+  if (!ok) return;
+  const flags = Object.keys(boxes).filter((f) => boxes[f].checked).join(",");
+  await lapPatch(lap.id, { flags });
+  reloadSession();
+}
+
+/* excluded laps stay listed (grayed) but drop out of best/gap and the
+   session card's lap count - reversible, so no confirm */
+async function toggleLapExcluded(lap) {
+  await lapPatch(lap.id, { excluded: !lap.excluded });
+  reloadSession();
+}
+
+async function resetEdits(session) {
+  const sure = await uiConfirm("Reset edits",
+    "Remove every manual edit on this session — dismissed contact markers, lap flag "
+    + "overrides, and excluded laps — and show exactly what the recorder detected?",
+    { okText: "Reset", danger: true });
+  if (!sure) return;
+  await fetch(`/api/sessions/${session.id}/edits`, { method: "DELETE" });
+  reloadSession();
 }
 
 async function pickLap(lapId, slot) {
@@ -280,7 +370,8 @@ async function reprocessSession(session) {
   const sure = await uiConfirm("Reprocess session",
     "Re-run lap detection over this session's stored telemetry? The lap list "
     + "is rebuilt with the current detection logic (recovers laps from events "
-    + "recorded before a fix, e.g. World Time Attack).",
+    + "recorded before a fix, e.g. World Time Attack). Manual edits — dismissed "
+    + "contacts, flag overrides, excluded laps — are kept.",
     { okText: "Reprocess" });
   if (!sure) return;
   const res = await fetch(`/api/sessions/${session.id}/reprocess`, { method: "POST" });
@@ -360,6 +451,45 @@ function drawMapMarker() {
   ctx.restore();
 }
 
+/* screen-space contact markers of the last drawMap, for right-click hit
+   testing (dismiss flow); refilled on every draw */
+const hitMarkers = [];
+const HIT_RADIUS_PX = 12;
+
+function nearestMarker(x, y) {
+  let best = null, bestD = HIT_RADIUS_PX;
+  for (const m of hitMarkers) {
+    const d = Math.hypot(m.x - x, m.y - y);
+    if (d <= bestD) { best = m; bestD = d; }
+  }
+  return best;
+}
+
+/* right-click a contact spark -> "not a contact": the marker stops counting
+   and the lap's 💥 flag lifts once no real contact remains (see issue #26) */
+function bindMapContext(canvas) {
+  canvas.addEventListener("contextmenu", async (e) => {
+    const hit = nearestMarker(e.offsetX, e.offsetY);
+    if (!hit) return;  // not on a marker: leave the browser menu alone
+    e.preventDefault();
+    const ok = await uiConfirm("Not a contact?",
+      "Dismiss this contact marker? It stops counting toward Contacts (and the lap's "
+      + "💥 flag lifts once no real contact remains). Reset edits brings it back.",
+      { okText: "Dismiss" });
+    if (!ok) return;
+    const res = await fetch(`/api/laps/${hit.lapId}/dismiss_contact`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ t: hit.t }),
+    });
+    if (!res.ok) {
+      await uiAlert("Dismiss failed", (await res.json()).detail || "failed");
+      return;
+    }
+    reloadSession();
+  });
+}
+
 function bindMapDrag(canvas) {
   canvas.addEventListener("pointerdown", (e) => {
     if (state.mapMode !== "3d") return;
@@ -391,6 +521,7 @@ function drawMap() {
   ctx.clearRect(0, 0, cssW, cssH);
 
   mapCursor.proj = null; // stale until this draw completes
+  hitMarkers.length = 0; // refilled by drawHits below
 
   const A = state.dataA, B = state.dataB;
   const three = state.mapMode === "3d";
@@ -611,8 +742,8 @@ function drawMap() {
 
     const side = $("#map-side");
     const lapMeta = state.laps.find((l) => l.id === state.lapA);
-    // landings (spikes on jump touchdowns) are shown but not counted as contact
-    const contacts = (A.collisions || []).filter((h) => !h.landing).length;
+    // landings (jump touchdowns) and user-dismissed spikes don't count
+    const contacts = (A.collisions || []).filter((h) => !h.landing && !h.dismissed).length;
     const jumps = A.jumps || [];
     const hard = jumps.filter((j) => j.hard).length;
     side.innerHTML = `<div class="lap-grid" style="text-align:left">
@@ -642,8 +773,10 @@ function drawMap() {
   const drawHits = (d, fill, r) => {
     if (!d || !d.collisions) return;
     for (const h of d.collisions) {
-      if (h.landing) continue;  // drawn as its jump's touchdown, not a spark
+      if (h.landing) continue;   // drawn as its jump's touchdown, not a spark
+      if (h.dismissed) continue; // user said "not a contact"
       const [X, Y] = P(h.x, h.y ?? 0, h.z, false);
+      hitMarkers.push({ x: X, y: Y, lapId: d.lap.id, t: h.t });
       ctx.save();
       ctx.strokeStyle = "#fff";
       ctx.lineWidth = 1.5;

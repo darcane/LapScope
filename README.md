@@ -50,6 +50,9 @@ in Rivals.
 - **Dirty-lap flags** — the packet has no "lap invalidated" field, so LapScope infers
   it: ⏪ **rewind** (the lap clock ran backwards) and 💥 **contact** (a G-spike beyond
   what tires can generate). Rewound stretches are trimmed from the charts and map.
+- **You have the final say** — detection wrong on a recording? Right-click a contact
+  marker on the map to dismiss it, edit a lap's flags, or exclude junk laps from the
+  bests — all reversible (**Reset edits**), and kept across a **Reprocess**.
 - **Automatic event detection** — races, Rivals, sprints, drags, touge,
   cross-country, and **World Time Attack** are each detected and timed correctly, even
   though the game never labels them (it doesn't even count the last lap of a race).
