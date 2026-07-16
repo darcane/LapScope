@@ -21,7 +21,13 @@
 </header>
 
 <div class="analysis-layout">
-  <aside id="session-list"><div class="empty-hint">loading…</div></aside>
+  <aside class="sidebar">
+    <div class="sidebar-actions">
+      <button id="btn-import" title="Import a LapScope CSV export — rebuilds the session (laps, charts, map) from the file">Import CSV</button>
+      <input type="file" id="import-file" accept=".csv,text/csv" hidden>
+    </div>
+    <div id="session-list"><div class="empty-hint">loading…</div></div>
+  </aside>
 
   <div class="detail" id="detail">
     <div class="empty-hint">No session selected. Drive with Data Out enabled (or run the
@@ -55,6 +61,7 @@
       <button id="btn-car">Name car</button>
       <button id="btn-reprocess" title="Re-run lap detection over the stored telemetry (manual edits are kept)">Reprocess</button>
       <button id="btn-reset-edits" style="display:none" title="Remove every manual edit — dismissed contacts, flag overrides, excluded laps">Reset edits</button>
+      <button id="btn-export" title="Download the whole session as CSV — full-rate telemetry, one lap column (excluded laps are skipped)">Export CSV</button>
       <button id="btn-delete" class="danger">Delete</button>
     </div>
     <div class="car-line" id="header-car"></div>
@@ -80,6 +87,7 @@
                 <option value="slip">tire slip</option>
               </select>
             </span>
+            <button id="btn-map-png" title="Save the map as it is drawn — a shareable PNG with a title / car / lap-time caption">Save PNG</button>
             <span id="legend-scale"></span>
             <span><span class="swatch" style="background:#5b6675"></span> lap B</span>
             <span><span class="swatch" style="background:#34d399"></span> start</span>

@@ -7,6 +7,8 @@ no httpx, same zero-dependency footprint as the rest of the tests.
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 from types import SimpleNamespace
 
 import pytest
@@ -396,6 +398,231 @@ def test_exclude_lap_recomputes_bests_and_counts(tmp_path):
     assert sessions(store)[0]["lap_count"] == n_timed
     restored = next(r for r in session_laps(sid, req)["laps"] if r["id"] == best["id"])
     assert restored["is_best"] and not restored["excluded"]
+
+
+# ------------------------- CSV export (issue #29) -------------------------
+# Full-rate telemetry out of the app: /data's decimation is for charts, an
+# export must carry every kept frame and honor the manual edits above.
+
+
+def _csv_text(resp):
+    """A StreamingResponse body as text (Starlette wraps the sync generator
+    into an async iterator, hence the event loop)."""
+    async def collect():
+        return "".join([chunk async for chunk in resp.body_iterator])
+    return asyncio.run(collect())
+
+
+def _csv_rows(resp):
+    return list(csv.reader(io.StringIO(_csv_text(resp))))
+
+
+def test_export_lap_csv_is_full_rate_with_stable_header(tmp_path):
+    """/laps/{id}/export.csv: the documented header, one row per kept frame
+    (a clean lap keeps everything, so rows == raw frame count), canonical
+    km/h values, monotonic time, and a download disposition."""
+    from app.api.routes import _EXPORT_HEADER, export_lap_csv, lap_data
+
+    store = _dirty_store(tmp_path)
+    sid = sessions(store)[0]["id"]
+    req = _request_for(store)
+    lap = next(lap for lap in completed_laps(store, sid) if not flags_of(lap))
+
+    resp = export_lap_csv(lap["id"], req)
+    assert resp.headers["content-type"].startswith("text/csv")
+    disp = resp.headers["content-disposition"]
+    assert disp.startswith('attachment; filename="lapscope_') and disp.endswith('.csv"')
+
+    header, *body = _csv_rows(resp)
+    assert header == _EXPORT_HEADER
+    chart = lap_data(lap["id"], req, "speed_kmh", 50)
+    assert len(body) == chart["n_frames"]  # full rate, nothing decimated away
+    assert len(body) > len(chart["dist"])  # far denser than a chart fetch
+    assert {r[0] for r in body} == {str(lap["lap_number"] + 1)}
+    speeds = [float(r[header.index("speed_kmh")]) for r in body]
+    assert max(speeds) > 50.0  # km/h scale, not raw m/s
+    ts = [float(r[header.index("t_s")]) for r in body]
+    assert ts == sorted(ts)
+
+
+def test_export_lap_csv_respects_rewind_trim(tmp_path):
+    """The rewound-over stretch never reaches an export - the CSV carries the
+    same kept trace the charts and the map draw, not the raw frame rows."""
+    from app.api.routes import export_lap_csv, lap_data
+
+    store = _dirty_store(tmp_path)
+    sid = sessions(store)[0]["id"]
+    req = _request_for(store)
+    lap = next(lap for lap in completed_laps(store, sid) if "rewind" in flags_of(lap))
+
+    body = _csv_rows(export_lap_csv(lap["id"], req))[1:]
+    raw = lap_data(lap["id"], req, "speed_kmh", 50)["n_frames"]
+    assert 0 < len(body) < raw
+
+
+def test_export_session_csv_skips_excluded_and_untimed_laps(tmp_path):
+    """/sessions/{id}/export.csv concatenates exactly the timed laps (told
+    apart by the lap column): exclusions are honored the way bests/counts do,
+    and the untimed post-finish coast never gets a lap column a re-import
+    would mint a time for - while either kind stays exportable through its
+    own per-lap URL (explicit ask wins)."""
+    from app.api.routes import (LapPatch, export_lap_csv, export_session_csv,
+                                patch_lap)
+
+    store = _dirty_store(tmp_path)
+    sid = sessions(store)[0]["id"]
+    req = _request_for(store)
+    laps = completed_laps(store, sid)
+    assert len(laps) < len(store.session_laps(sid))  # the coast lap exists...
+
+    nums = {r[0] for r in _csv_rows(export_session_csv(sid, req))[1:]}
+    assert nums == {str(lap["lap_number"] + 1) for lap in laps}  # ...and is skipped
+
+    victim = laps[1]
+    patch_lap(victim["id"], LapPatch(excluded=True), req)
+    after = {r[0] for r in _csv_rows(export_session_csv(sid, req))[1:]}
+    assert after == nums - {str(victim["lap_number"] + 1)}
+
+    solo = _csv_rows(export_lap_csv(victim["id"], req))[1:]
+    assert solo and {r[0] for r in solo} == {str(victim["lap_number"] + 1)}
+
+
+def test_export_csv_unknown_ids_are_404(tmp_path):
+    from app.api.routes import export_lap_csv, export_session_csv
+
+    store = Store(tmp_path / "empty.db")
+    req = _request_for(store)
+    for handler in (export_lap_csv, export_session_csv):
+        with pytest.raises(HTTPException) as exc:
+            handler(12345, req)
+        assert exc.value.status_code == 404
+    store.close()
+
+
+def test_export_filename_is_windows_and_header_safe():
+    """Session names end up inside Content-Disposition and on the user's
+    disk: anything outside the safe ASCII set (slashes, quotes, colons,
+    unicode) flattens to underscores, Windows-hostile trailing dots/spaces
+    are trimmed, and a name reduced to nothing falls back to "export"."""
+    from app.api.routes import _export_filename, _safe_filename
+
+    assert _safe_filename('Hökübu / "WTA" <run>: 2.') == "H_k_bu _ _WTA_ _run_ 2"
+    assert _safe_filename("...") == "export"
+
+    lap = {"lap_number": 1, "lap_time": 83.456}
+    assert _export_filename("My Race", lap) == "lapscope_My Race_lap2_1-23.456.csv"
+    assert _export_filename("My Race") == "lapscope_My Race_session.csv"
+    untimed = {"lap_number": 2, "lap_time": None}
+    assert _export_filename("My Race", untimed) == "lapscope_My Race_lap3.csv"
+
+
+# ------------------------- CSV import (the reverse trip) -------------------------
+
+
+def _import_request(store, text: str, recording: bool = False):
+    """Stub request for import_csv: the raw body is the file, and the
+    tracker gate needs an answerable session_id."""
+    req = _request_for(store, tracker=SimpleNamespace(
+        session_id=7 if recording else None))
+
+    async def body():
+        return text.encode()
+    req.body = body
+    return req
+
+
+def test_import_csv_round_trips_a_session_export(tmp_path):
+    """Export the dirty session, import the file back: the timed laps come
+    back with their lap times, the telemetry channels survive (the wall-hit
+    collision re-detects from the round-tripped G spike), and the session is
+    browsable like any recording - just with no car metadata."""
+    from app.api.routes import (export_session_csv, import_csv, lap_data,
+                                session_laps)
+    from app.api.routes import sessions as sessions_ep
+
+    store = _dirty_store(tmp_path)
+    sid = sessions(store)[0]["id"]
+    req = _request_for(store)
+    source = completed_laps(store, sid)
+
+    text = _csv_text(export_session_csv(sid, req))
+    # the harness hands back a closed store (reads run on short-lived
+    # connections); import writes through the event-loop connection, so it
+    # needs the store reopened - exactly as it is in a running app
+    store = Store(store.db_path)
+    out = asyncio.run(import_csv(_import_request(store, text), name="Round trip"))
+    assert out["ok"] and out["laps"] == len(source)
+
+    imported = session_laps(out["session_id"], _request_for(store))["laps"]
+    assert len(imported) == len(source)
+    for src, imp in zip(source, imported):
+        assert imp["lap_number"] == src["lap_number"]
+        # the exported clock's last sample sits within a frame of the lap time
+        assert abs(imp["lap_time"] - src["lap_time"]) < 0.05
+
+    # the wall hit on lap 2 re-detects from the reconstructed acceleration
+    hit_lap = next(lap for lap in imported if lap["lap_number"] == 1)
+    data = lap_data(hit_lap["id"], _request_for(store), "speed_kmh,pos_x", 500)
+    assert any(not c["landing"] for c in data["collisions"])
+    assert data["n_frames"] > 500  # full-rate frames were written
+
+    card = next(s for s in sessions_ep(_request_for(store))
+                if s["id"] == out["session_id"])
+    assert card["display_name"] == "Round trip"
+    assert card["car_name"] == "Unknown car"
+    assert card["car_known"] is True  # no ordinal -> nothing to report/name
+    assert card["lap_count"] == len(source)
+    store.close()
+
+
+def test_import_csv_accepts_a_minimal_lap_file(tmp_path):
+    """A hand-trimmed CSV with only the required columns is a valid import:
+    one lap group, timed by the clock's last sample."""
+    from app.api.routes import import_csv
+
+    store = Store(tmp_path / "imp.db")
+    text = ("lap,t_s,dist_m,speed_kmh,lap_time_s,pos_x_m,pos_z_m\n"
+            "1,0.0,0.0,100.0,0.017,0.0,0.0\n"
+            "1,1.0,27.8,100.0,1.017,27.8,0.0\n")
+    out = asyncio.run(import_csv(_import_request(store, text), name=""))
+    assert out["laps"] == 1 and out["frames"] == 2
+
+    laps = store.session_laps(out["session_id"])
+    assert len(laps) == 1 and abs(laps[0]["lap_time"] - 1.017) < 1e-6
+    session = store.get_session(out["session_id"])
+    assert session["name"] == "Imported session"  # fallback name
+    store.close()
+
+
+def test_import_csv_rejects_garbage(tmp_path):
+    """Nothing is written on a bad file: wrong header, malformed numbers,
+    and empty bodies are 400s that name the problem (and the line), and the
+    reprocess-style 409 guards a live recording."""
+    from app.api.routes import import_csv
+
+    store = Store(tmp_path / "imp.db")
+    ok_header = "lap,t_s,dist_m,speed_kmh,lap_time_s,pos_x_m,pos_z_m\n"
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(import_csv(_import_request(store, "a,b\n1,2\n"), name=""))
+    assert exc.value.status_code == 400 and "missing columns" in exc.value.detail
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(import_csv(
+            _import_request(store, ok_header + "1,zero,0,0,0,0,0\n"), name=""))
+    assert exc.value.status_code == 400 and "line 2" in exc.value.detail
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(import_csv(_import_request(store, ok_header), name=""))
+    assert exc.value.status_code == 400  # header only, no data rows
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(import_csv(
+            _import_request(store, ok_header, recording=True), name=""))
+    assert exc.value.status_code == 409
+
+    assert store.list_sessions() == []  # every rejection left the DB alone
+    store.close()
 
 
 def test_edits_survive_reprocess_and_reset_reverts(tmp_path):

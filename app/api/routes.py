@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
 import math
+import re
 import time
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .. import __version__, cars
@@ -16,7 +20,7 @@ from ..recorder.laps import (AIRBORNE_MIN_S, AIRBORNE_SLIP_MAX,
                              AIRBORNE_SUSP_MAX, IMPACT_ACCEL, LANDING_GRACE_S)
 from ..recorder.reprocess import reprocess_session
 from ..recorder.store import lap_anchor, lap_span
-from ..telemetry.packet import parse
+from ..telemetry.packet import empty_fields, pack, parse
 
 log = logging.getLogger("lapscope.api")
 router = APIRouter()
@@ -56,6 +60,8 @@ def _class_letter(v) -> str:
 
 
 def _car_name(ordinal, override=None) -> str:
+    if ordinal is None:  # imported sessions carry no car metadata at all
+        return override or "Unknown car"
     return override or CAR_NAMES.get(ordinal) or f"Car #{ordinal}"
 
 
@@ -63,7 +69,10 @@ def _session_out(row: dict) -> dict:
     row["car_class_letter"] = _class_letter(row.get("car_class"))
     override = row.pop("car_name_override", None)
     row["car_name"] = _car_name(row.get("car_ordinal"), override)
-    row["car_known"] = override is not None or row.get("car_ordinal") in CAR_NAMES
+    # a NULL ordinal (imported session) counts as known: there is no ordinal
+    # to name or report, so the unknown-car affordances must not appear
+    row["car_known"] = (row.get("car_ordinal") is None or override is not None
+                        or row.get("car_ordinal") in CAR_NAMES)
     # conditions / track_type stay None until tagged (or auto-detected):
     # defaulting them to dry/road made every untagged session look tagged
     dt = row.get("drivetrain_type")
@@ -431,6 +440,17 @@ def _apply_dismissals(collisions: list[dict], edits: list[dict]) -> None:
         c["dismissed"] = any(abs(c["t"] - a) <= DISMISS_MATCH_S for a in anchors)
 
 
+def _fix_dead_lap_clock(lap_time: list[float], t_rel: list[float]) -> list[float]:
+    """World Time Attack and bare sprints broadcast no lap clock at all
+    (CurrentLap stays 0 for the whole event), which made the A/B delta-time
+    chart a flat zero line for exactly those events. Fall back to time since
+    the lap's first frame - restart_lap re-anchors geometric laps at launch,
+    so it counts from the line like a live lap clock would."""
+    if any(v > 0.5 for v in lap_time):
+        return lap_time
+    return list(t_rel)
+
+
 @router.get("/laps/{lap_id}/data")
 def lap_data(
     lap_id: int,
@@ -465,13 +485,239 @@ def lap_data(
         for n in names:
             out[n].append(round(CHANNELS[n](p), 4))
 
-    # World Time Attack and bare sprints broadcast no lap clock at all
-    # (CurrentLap stays 0 for the whole event), which made the A/B delta-time
-    # chart a flat zero line for exactly those events. Fall back to time since
-    # the lap's first frame - restart_lap re-anchors geometric laps at launch,
-    # so it counts from the line like a live lap clock would.
-    if "lap_time" in out and not any(v > 0.5 for v in out["lap_time"]):
-        out["lap_time"] = list(t_rel)
+    if "lap_time" in out:
+        out["lap_time"] = _fix_dead_lap_clock(out["lap_time"], t_rel)
 
     return {"lap": lap, "n_frames": len(rows), "dist": dist, "t": t_rel,
             "channels": out, "collisions": collisions, "jumps": jumps}
+
+
+# CSV export column -> CHANNELS key. Headers carry the canonical unit
+# (issue #29: exports are always metric/psi, whatever the display settings)
+_EXPORT_CHANNELS = [
+    ("speed_kmh", "speed_kmh"), ("rpm", "rpm"), ("gear", "gear"),
+    ("throttle_pct", "throttle"), ("brake_pct", "brake"), ("steer_pct", "steer"),
+    ("lat_g", "lat_g"), ("lon_g", "lon_g"), ("slip_front", "slip_front"),
+    ("slip_rear", "slip_rear"), ("slip_max", "slip_max"), ("boost_psi", "boost"),
+    ("lap_time_s", "lap_time"),
+    ("pos_x_m", "pos_x"), ("pos_y_m", "pos_y"), ("pos_z_m", "pos_z"),
+]
+_EXPORT_HEADER = ["lap", "t_s", "dist_m"] + [h for h, _ in _EXPORT_CHANNELS]
+
+_FILENAME_UNSAFE = re.compile(r"[^A-Za-z0-9._ -]+")
+
+
+def _safe_filename(name: str) -> str:
+    """A Content-Disposition-safe ASCII filename part (also Windows-safe:
+    no \\ / : * ? " < > |). Leading/trailing dots and spaces are trimmed -
+    Windows silently strips them, which would desync the name we promised."""
+    return _FILENAME_UNSAFE.sub("_", name).strip(" .") or "export"
+
+
+def _export_filename(display_name: str, lap: dict | None = None) -> str:
+    parts = ["lapscope", _safe_filename(display_name)]
+    if lap is None:
+        parts.append("session")
+    else:
+        parts.append(f"lap{lap['lap_number'] + 1}")
+        if lap["lap_time"]:
+            t = lap["lap_time"]
+            parts.append(f"{int(t // 60)}-{t % 60:06.3f}")
+    return "_".join(parts) + ".csv"
+
+
+def _lap_csv_rows(lap: dict, rows: list[tuple[float, bytes]]):
+    """One lap's telemetry as CSV rows, full resolution - /data's decimation
+    is for charts, an export must keep every kept frame. Same rewind-trimmed
+    trace and rounding as /data, so the two never disagree."""
+    kept, _, _ = _scan_lap(rows, lap["start_distance"] or 0.0)
+    start_dist = lap["start_distance"] or 0.0
+    t0 = kept[0][0] if kept else 0.0
+    t_rel = [round(t - t0, 3) for t, _, _ in kept]
+    lap_times = _fix_dead_lap_clock(
+        [round(CHANNELS["lap_time"](p), 4) for _, _, p in kept], t_rel)
+    for i, (t, d, p) in enumerate(kept):
+        row: list = [lap["lap_number"] + 1, t_rel[i], round(d - start_dist, 2)]
+        for _, ch in _EXPORT_CHANNELS:
+            row.append(lap_times[i] if ch == "lap_time" else round(CHANNELS[ch](p), 4))
+        yield row
+
+
+def _csv_stream(store, laps: list[dict]):
+    """One CSV document: header row, then every lap's frames in lap order.
+    Chunked per lap so a long session never materializes in memory at once."""
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(_EXPORT_HEADER)
+    yield buf.getvalue()
+    for lap in laps:
+        buf.seek(0)
+        buf.truncate(0)
+        for row in _lap_csv_rows(lap, store.lap_frames(lap)):
+            writer.writerow(row)
+        yield buf.getvalue()
+
+
+def _csv_response(store, laps: list[dict], filename: str) -> StreamingResponse:
+    return StreamingResponse(
+        _csv_stream(store, laps), media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@router.get("/laps/{lap_id}/export.csv")
+def export_lap_csv(lap_id: int, request: Request):
+    """The lap's full-resolution telemetry as a CSV download (issue #29).
+    Deliberately works on excluded laps too: exclusion is a session-level
+    statement (bests/counts), exporting one lap is an explicit ask."""
+    store = request.app.state.store
+    lap = store.get_lap(lap_id)
+    if lap is None:
+        raise HTTPException(404, "lap not found")
+    session = _session_out(store.get_session(lap["session_id"]))
+    return _csv_response(store, [lap],
+                         _export_filename(session["display_name"], lap))
+
+
+@router.get("/sessions/{session_id}/export.csv")
+def export_session_csv(session_id: int, request: Request):
+    """The session's timed laps in one CSV, told apart by the lap column.
+    Laps the user excluded are skipped - the export honors manual edits the
+    same way bests and counts do - and so are untimed laps (the post-finish
+    coast): the CSV has no way to mark a lap incomplete, so a re-import
+    would mint a lap time for it. Either kind can still be exported on its
+    own through /laps/{id}/export.csv."""
+    store = request.app.state.store
+    session = store.get_session(session_id)
+    if session is None:
+        raise HTTPException(404, "session not found")
+    laps = [lap for lap in store.session_laps(session_id)
+            if lap["lap_time"] and not lap["excluded"]]
+    return _csv_response(store, laps,
+                         _export_filename(_session_out(session)["display_name"]))
+
+
+# columns an import can't do without; everything else defaults to 0
+_IMPORT_REQUIRED = {"lap", "t_s", "dist_m", "speed_kmh", "lap_time_s",
+                    "pos_x_m", "pos_z_m"}
+
+# NormalizedSuspensionTravel for synthesized frames: the CSV carries no
+# suspension channel, and all four wheels below AIRBORNE_SUSP_MAX reads as
+# airborne - park them at a firmly grounded mid-travel value so the jump
+# classifier never fires on imported data
+_GROUNDED_SUSP = 0.5
+
+
+def _synth_frame(row: dict, global_dist: float, global_t: float,
+                 lap_index: int) -> bytes:
+    """One Data Out packet from one CSV row. Only the channels the CSV
+    carries are real; the rest is neutral filler. The inverse of the
+    CHANNELS extractors, so an exported value round-trips exactly."""
+    f = empty_fields()
+    f["is_race_on"] = 1
+    f["current_engine_rpm"] = row.get("rpm", 0.0)
+    f["accel_x"] = row.get("lat_g", 0.0) * 9.80665
+    f["accel_z"] = row.get("lon_g", 0.0) * 9.80665
+    f["norm_susp_travel"] = [_GROUNDED_SUSP] * 4
+    front, rear = row.get("slip_front", 0.0), row.get("slip_rear", 0.0)
+    f["tire_combined_slip"] = [front, front, rear, rear]
+    f["pos_x"] = row.get("pos_x_m", 0.0)
+    f["pos_y"] = row.get("pos_y_m", 0.0)
+    f["pos_z"] = row.get("pos_z_m", 0.0)
+    f["speed"] = row.get("speed_kmh", 0.0) / 3.6
+    f["boost"] = row.get("boost_psi", 0.0)
+    f["distance_traveled"] = global_dist
+    f["current_lap"] = row.get("lap_time_s", 0.0)
+    f["current_race_time"] = global_t
+    f["lap_number"] = max(0, lap_index)
+    f["accel"] = int(round(min(100.0, max(0.0, row.get("throttle_pct", 0.0))) * 2.55))
+    f["brake"] = int(round(min(100.0, max(0.0, row.get("brake_pct", 0.0))) * 2.55))
+    f["gear"] = max(0, min(255, int(row.get("gear", 0))))
+    f["steer"] = int(round(min(100.0, max(-100.0, row.get("steer_pct", 0.0))) * 1.27))
+    return pack(f)
+
+
+def _parse_import_csv(body: str) -> list[tuple[int, list[dict]]]:
+    """LapScope-export CSV -> lap groups in file order. 400s carry the line
+    number - an import failing silently or half-way would be worse than no
+    import at all (nothing is written until parsing succeeded)."""
+    reader = csv.reader(io.StringIO(body))
+    header = next(reader, None)
+    if not header or not _IMPORT_REQUIRED <= set(header):
+        missing = sorted(_IMPORT_REQUIRED - set(header or []))
+        raise HTTPException(400, f"not a LapScope CSV export: missing columns {missing}")
+    idx = {c: i for i, c in enumerate(header)}
+    groups: list[tuple[int, list[dict]]] = []
+    for ln, cells in enumerate(reader, start=2):
+        if not cells or not any(c.strip() for c in cells):
+            continue
+        try:
+            row = {c: float(cells[i]) for c, i in idx.items()
+                   if i < len(cells) and cells[i].strip() != ""}
+            lap_no = int(row.pop("lap"))
+        except (KeyError, ValueError):
+            raise HTTPException(400, f"line {ln}: malformed row")
+        if not _IMPORT_REQUIRED - {"lap"} <= row.keys():
+            raise HTTPException(400, f"line {ln}: a required value is empty")
+        if not groups or groups[-1][0] != lap_no:
+            groups.append((lap_no, []))
+        rows = groups[-1][1]
+        if rows and row["t_s"] < rows[-1]["t_s"]:
+            raise HTTPException(400, f"line {ln}: samples out of order (t_s)")
+        rows.append(row)
+    if not groups:
+        raise HTTPException(400, "no data rows")
+    return groups
+
+
+@router.post("/import/csv")
+async def import_csv(request: Request, name: str = Query("", max_length=120)):
+    """Recreate a session from a LapScope CSV export (a lap's or a whole
+    session's). async def on purpose: imports write through the Store's
+    event-loop connection, same rule as reprocess - and the same 409 while
+    recording, since parsing a big file on the loop would stall live
+    telemetry. The CSV carries a subset of the packet (that is the point of
+    the export), so the synthesized frames hold neutral filler for the rest;
+    every lap group becomes a completed lap timed by its clock's last sample,
+    and car/route metadata is unknown (the session shows "Unknown car").
+    The raw body IS the file (text/csv) - no multipart, no new dependency."""
+    store = request.app.state.store
+    if request.app.state.tracker.session_id is not None:
+        raise HTTPException(409, "a session is recording; retry after it ends")
+    body = (await request.body()).decode("utf-8", "replace")
+    groups = _parse_import_csv(body)
+
+    # lay the lap groups end to end on fresh time / distance axes: exported
+    # t_s and dist_m are lap-relative, frames need session-global values
+    base = time.time()
+    t_off, d_off = 0.0, 0.0
+    frames: list[tuple[float, bytes]] = []
+    laps: list[dict] = []
+    for lap_no, rows in groups:
+        for r in rows:
+            frames.append((base + t_off + r["t_s"],
+                           _synth_frame(r, d_off + r["dist_m"],
+                                        t_off + r["t_s"], lap_no - 1)))
+        # the clock's high-water mark, not the last sample: a lap's trace may
+        # end on the crossing frame, where the game already reset the clock
+        clock = max(r["lap_time_s"] for r in rows)
+        laps.append({"number": lap_no - 1,
+                     "started_t": base + t_off + rows[0]["t_s"],
+                     "ended_t": base + t_off + rows[-1]["t_s"],
+                     "start_distance": d_off,
+                     "lap_time": clock or None})
+        step = (rows[-1]["t_s"] - rows[0]["t_s"]) / max(1, len(rows) - 1)
+        t_off += rows[-1]["t_s"] + max(step, 1 / 60)
+        d_off += rows[-1]["dist_m"] + 1.0
+
+    sid = store.create_session(base, {"car_ordinal": None, "car_class": None,
+                                      "car_pi": None, "drivetrain_type": None})
+    store.add_frames(sid, frames)
+    for lap in laps:
+        lap_id = store.add_lap(sid, lap["number"], lap["started_t"],
+                               lap["start_distance"])
+        store.complete_lap(lap_id, lap["ended_t"], lap["lap_time"])
+    store.end_session(sid, frames[-1][0], len(frames))
+    store.mark_session_kept(sid)  # survives cleanup even if all laps untimed
+    store.rename_session(sid, name.strip()[:80] or "Imported session")
+    return {"ok": True, "session_id": sid, "laps": len(laps),
+            "frames": len(frames)}

@@ -748,7 +748,10 @@ main.grid .lap-grid { margin-bottom: auto; }
   margin: 0 auto;
   align-items: start;
 }
-#session-list { display: flex; flex-direction: column; gap: 8px; max-height: calc(100vh - 92px); overflow-y: auto; }
+.sidebar { display: flex; flex-direction: column; gap: 8px; max-height: calc(100vh - 92px); }
+.sidebar-actions { display: flex; }
+.sidebar-actions button { flex: 1; }
+#session-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
 .session-card {
   background: linear-gradient(165deg, var(--panel-hi), var(--panel-lo));
   border: 1px solid var(--panel-edge);
