@@ -53,6 +53,12 @@ in Rivals.
 - **You have the final say** — detection wrong on a recording? Right-click a contact
   marker on the map to dismiss it, edit a lap's flags, or exclude junk laps from the
   bests — all reversible (**Reset edits**), and kept across a **Reprocess**.
+- **Take it with you** — export any lap (⬇ in the lap table) or the whole session
+  (**Export CSV**) as full-rate telemetry CSV for spreadsheets or MoTeC-style tools,
+  and **Save PNG** turns the track map as drawn — colors, 2D/3D, A + B overlay — into
+  a shareable image with a title / car / lap-time caption. **Import CSV** (above the
+  session list) closes the loop: send a friend your lap's CSV and they can open it
+  like a recording — laps, charts, and map rebuilt from the file.
 - **Automatic event detection** — races, Rivals, sprints, drags, touge,
   cross-country, and **World Time Attack** are each detected and timed correctly, even
   though the game never labels them (it doesn't even count the last lap of a race).

@@ -4,6 +4,7 @@ const LAP_CHANNELS = "speed_kmh,throttle,brake,steer,slip_front,slip_rear,lap_ti
 
 const state = {
   sessionId: null,
+  session: null,  // resolved session object (badges, export captions)
   laps: [],
   lapA: null, lapB: null,     // lap ids
   dataA: null, dataB: null,   // /api/laps/{id}/data payloads
@@ -80,6 +81,7 @@ async function selectSession(id) {
   state.dataA = state.dataB = null;
   const payload = await (await fetch(`/api/sessions/${id}/laps`)).json();
   state.laps = payload.laps;
+  state.session = payload.session;  // PNG export captions from it
 
   const detail = $("#detail");
   detail.innerHTML = "";
@@ -116,6 +118,8 @@ async function selectSession(id) {
   $("#btn-reprocess").onclick = () => reprocessSession(s);
   $("#btn-reset-edits").style.display = s.edit_count ? "" : "none";
   $("#btn-reset-edits").onclick = () => resetEdits(s);
+  $("#btn-export").onclick = () => { window.location = `/api/sessions/${s.id}/export.csv`; };
+  $("#btn-map-png").onclick = exportMapPng;
   $("#btn-delete").onclick = () => deleteSession(s);
   $("#color-mode").value = state.colorMode;
   $("#color-mode").onchange = (e) => {
@@ -164,11 +168,13 @@ function renderLapRows() {
       <td>${l.gap_to_best != null && l.gap_to_best > 0 ? "+" + l.gap_to_best.toFixed(3) : (l.is_best ? "best" : "")}</td>
       <td style="color:var(--muted)">${flagIcons(l.flags)}${edited ? `<span class="lap-flag" title="flags edited by you — ✎ to change, Reset edits to undo">✎</span>` : ""}${l.lap_time ? "" : " incomplete"}${l.excluded ? " excluded" : ""}</td>
       <td class="lap-actions">
+        <button class="lap-act act-csv" title="Download this lap's telemetry as CSV">⬇</button>
         <button class="lap-act act-flags" title="Edit this lap's flags">✎</button>
         <button class="lap-act act-exclude" title="${l.excluded ? "Restore the lap into bests and counts" : "Exclude the lap from bests and counts"}">${l.excluded ? "↩" : "🗑"}</button>
       </td>`;
     for (const pick of tr.querySelectorAll(".pick"))
       pick.onclick = () => pickLap(l.id, pick.dataset.slot);
+    $(".act-csv", tr).onclick = () => { window.location = `/api/laps/${l.id}/export.csv`; };
     $(".act-flags", tr).onclick = () => editLapFlags(l);
     $(".act-exclude", tr).onclick = () => toggleLapExcluded(l);
     tbody.appendChild(tr);
@@ -180,6 +186,7 @@ function renderLapRows() {
 async function reloadSession() {
   const payload = await (await fetch(`/api/sessions/${state.sessionId}/laps`)).json();
   state.laps = payload.laps;
+  state.session = payload.session;
   const reset = $("#btn-reset-edits");
   if (reset) reset.style.display = payload.session.edit_count ? "" : "none";
   for (const slot of ["a", "b"]) {
@@ -814,6 +821,71 @@ function drawMap() {
   if (mapCursor.idx != null) drawMapMarker();
 }
 
+/* ---------------- export (issue #29) ---------------- */
+
+/* mirror of the backend's _safe_filename, so a PNG and its lap's CSV sort
+   together in a download folder */
+function safeFilename(name) {
+  return name.replace(/[^A-Za-z0-9._ -]+/g, "_").replace(/^[ .]+|[ .]+$/g, "") || "export";
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/* the map canvas is already the shareable artifact - snapshot the cached
+   clean frame (mapCursor.snap: no hover dot, dismissed contacts already
+   absent) and composite a caption bar under it. The canvas itself is
+   transparent over the page background, so the PNG needs its own fill. */
+function exportMapPng() {
+  const s = state.session;
+  const lapMeta = state.laps.find((l) => l.id === state.lapA);
+  if (!state.dataA || !s || !lapMeta) {
+    uiAlert("Nothing to export", "Tag a lap as A to draw its racing line first.");
+    return;
+  }
+  if (!mapCursor.snap) drawMap();
+  const snap = mapCursor.snap;
+  const dpr = mapCursor.dpr || 1;
+  const css = getComputedStyle(document.documentElement);
+  const color = (name, fallback) => (css.getPropertyValue(name) || fallback).trim();
+
+  const pad = 12, lineH = 21, capH = pad + 2 * lineH + pad / 2;
+  const out = document.createElement("canvas");
+  out.width = snap.width;
+  out.height = snap.height + Math.round(capH * dpr);
+  const ctx = out.getContext("2d");
+  ctx.fillStyle = color("--bg", "#06080c");
+  ctx.fillRect(0, 0, out.width, out.height);
+  ctx.drawImage(snap, 0, 0);
+
+  ctx.scale(dpr, dpr);
+  ctx.textBaseline = "top";
+  const yCap = snap.height / dpr + pad;
+  const pi = s.car_pi ? ` ${s.car_class_letter} ${s.car_pi}` : "";
+  ctx.fillStyle = color("--text", "#e8eef6");
+  ctx.font = "600 15px 'Segoe UI', system-ui, sans-serif";
+  ctx.fillText(`${displayName(s)} — ${s.car_name}${pi}`, pad, yCap);
+  const lapB = state.laps.find((l) => l.id === state.lapB);
+  const tags = [TRACK_META[s.track_type]?.[1], CONDITION_META[s.conditions]?.[1]]
+    .filter(Boolean).join(" · ");
+  ctx.fillStyle = color("--muted", "#8494a7");
+  ctx.font = "13px 'Segoe UI', system-ui, sans-serif";
+  ctx.fillText(`Lap ${lapMeta.lap_number + 1} — ${fmtLap(lapMeta.lap_time)}`
+    + (lapB ? `  vs  Lap ${lapB.lap_number + 1} — ${fmtLap(lapB.lap_time)}` : "")
+    + (tags ? `  ·  ${tags}` : ""), pad, yCap + lineH);
+
+  const time = lapMeta.lap_time ? `_${fmtLap(lapMeta.lap_time).replace(":", "-")}` : "";
+  const name = `lapscope_${safeFilename(displayName(s))}_lap${lapMeta.lap_number + 1}${time}`
+    + (lapB ? `_vs_lap${lapB.lap_number + 1}` : "") + ".png";
+  out.toBlob((blob) => { if (blob) downloadBlob(blob, name); }, "image/png");
+}
+
 /* ---------------- comparison charts ---------------- */
 
 function interp(xs, ys, xq) {
@@ -941,8 +1013,37 @@ function drawCharts() {
   ], 140);
 }
 
+/* Import CSV: the file's raw text is the request body (text/csv - no
+   multipart, matching the backend's no-new-dependency route); the rebuilt
+   session is selected as soon as the server is done */
+function bindImport() {
+  const input = $("#import-file");
+  $("#btn-import").onclick = () => input.click();
+  input.onchange = async () => {
+    const file = input.files[0];
+    input.value = ""; // so the same file can be re-imported
+    if (!file) return;
+    const res = await fetch(
+      `/api/import/csv?name=${encodeURIComponent(file.name.replace(/\.csv$/i, ""))}`, {
+        method: "POST",
+        headers: { "Content-Type": "text/csv" },
+        body: await file.text(),
+      });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try { detail = (await res.json()).detail || detail; } catch { /* not JSON */ }
+      uiAlert("Couldn't import", detail);
+      return;
+    }
+    const out = await res.json();
+    await loadSessions();
+    selectSession(out.session_id);
+  };
+}
+
 window.addEventListener("resize", () => { drawMap(); drawCharts(); });
 // live-apply unit / layer changes from the settings panel
 onSettingsChange(() => { drawMap(); drawCharts(); });
+bindImport();
 loadSessions();
 setInterval(loadSessions, 15000); // pick up newly finished sessions
