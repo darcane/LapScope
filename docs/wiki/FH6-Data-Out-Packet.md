@@ -57,7 +57,7 @@ These are the facts that shaped the app — each one broke a naive assumption:
 - **`DistanceTraveled` is NOT meters on real circuits.** It advances by the
   same fixed amount every lap of a given route — roughly 2.4–2.5× the true
   driven length — making it a *track-position parameter*, not an odometer in
-  meters. That's perfect for aligning two laps by track position (how the A/B
+  meters. That's perfect for aligning laps by track position (how the lap
   comparison charts work) and for fingerprinting routes, but useless as a
   length: the "Driven" figure on the analysis page is integrated from `Speed`
   instead.

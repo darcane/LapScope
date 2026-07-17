@@ -75,9 +75,10 @@ in Rivals.
   preferences (draw the live map in free roam, show/hide analysis contact markers,
   default 2D/3D view and color-by). Preferences are saved in your browser.
 
-**Analysis — A/B lap comparison** (distance-aligned delta, speed, inputs, steering, slip):
+**Analysis — lap comparison** (distance-aligned delta, speed, inputs, steering, slip —
+overlay up to 6 laps, even from different sessions, each in its own color):
 
-![Analysis A/B comparison](docs/media/analysis-compare.png)
+![Analysis lap comparison](docs/media/analysis-compare.png)
 
 **Track map**, colored by speed — the same real circuit in 2D and in 3D. The 3D view uses
 the packet's elevation and is drag-to-rotate; the ✦ markers are detected contacts:
@@ -91,7 +92,7 @@ glow + impact ring on hard landings; the red ✦ is a real contact:
 
 ![Jump glyphs on the 3D track map](docs/media/track-map-3d-jumps.png)
 
-**Lap list with dirty-lap flags** (💥 contact, ⏪ rewind) and A/B compare tags:
+**Lap list with dirty-lap flags** (💥 contact, ⏪ rewind) and compare tags:
 
 ![Lap list with dirty-lap flags](docs/media/session-list.png)
 

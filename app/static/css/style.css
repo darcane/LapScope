@@ -753,6 +753,7 @@ main.grid .lap-grid { margin-bottom: auto; }
 .sidebar-actions button { flex: 1; }
 #session-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
 .session-card {
+  position: relative;  /* anchors the ＋ quick-add */
   background: linear-gradient(165deg, var(--panel-hi), var(--panel-lo));
   border: 1px solid var(--panel-edge);
   border-left: 3px solid var(--panel-edge);
@@ -762,7 +763,20 @@ main.grid .lap-grid { margin-bottom: auto; }
 }
 .session-card:hover { border-color: var(--accent); }
 .session-card.active { border-color: var(--panel-edge); border-left-color: var(--accent); background: #131c27; }
-.session-card .title { font-family: var(--display); font-weight: 600; font-size: 1rem; }
+.session-card .title { font-family: var(--display); font-weight: 600; font-size: 1rem; padding-right: 26px; }
+.session-card .card-add {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  line-height: 1;
+  border-radius: 6px;
+  color: var(--muted);
+  background: #0d1218;
+}
+.session-card .card-add:hover { color: var(--accent); }
 .session-card .sub { color: var(--muted); font-size: 0.8rem; margin-top: 3px; }
 
 .detail { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
@@ -832,9 +846,63 @@ table.laps .pick {
   cursor: pointer;
   margin-right: 4px;
   user-select: none;
+  color: var(--muted);
 }
-table.laps .pick.a { background: #113742; border-color: var(--accent); color: var(--accent); }
-table.laps .pick.b { background: #3f2d14; border-color: var(--warn); color: var(--warn); }
+table.laps .pick:hover { border-color: var(--accent); color: var(--accent); }
+/* a picked lap's chip carries its overlay color inline (text/border/bg) */
+table.laps .pick.on { font-weight: 600; }
+
+/* comparison tray: the overlay roster (issue #30) - chip letters and colors
+   match the lap table, the map traces and the chart series */
+.cmp-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-size: 0.85rem;
+}
+.cmp-tray .tray-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-family: var(--display);
+  font-weight: 600;
+}
+.tray-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 9px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 999px;
+  background: #0d1218;
+  font-variant-numeric: tabular-nums;
+}
+.cmp-tray .swatch, .lap-grid .swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  vertical-align: -1px;
+}
+.tray-chip .ref-tag {
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  cursor: help;
+}
+.tray-chip button {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.tray-chip button:hover { color: var(--text); }
+.tray-warn { color: var(--warn); font-size: 0.8rem; }
+.tray-clear { margin-left: auto; }
 
 .map-row { display: grid; grid-template-columns: 1fr 320px; gap: 12px; }
 @media (max-width: 1100px) { .map-row { grid-template-columns: 1fr; } }
