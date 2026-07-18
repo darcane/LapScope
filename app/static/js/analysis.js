@@ -184,11 +184,12 @@ async function selectSession(id) {
       saveSettings({ defaultMapMode: state.mapMode });
       for (const x of document.querySelectorAll("#map-mode button"))
         x.classList.toggle("active", x === b);
-      $("#map-hint").style.display = state.mapMode === "3d" ? "" : "none";
+      resetMapView(); // a 2D pan/zoom makes no sense under the 3D projection
+      updateMapHint();
       drawMap();
     };
   }
-  $("#map-hint").style.display = state.mapMode === "3d" ? "" : "none";
+  updateMapHint();
   bindMapDrag($("#trackmap"));
   bindMapContext($("#trackmap"));
 
@@ -602,7 +603,18 @@ function speedColor(v, lo, hi) {
 }
 
 /* 3D view state: yaw is user-draggable; the tilt is a fixed axonometric angle */
-const map3d = { yaw: -0.9, dragging: false, dragX: 0, dragYaw: 0 };
+const map3d = { yaw: -0.9, drag: null };
+
+/* map viewport on top of the fit-to-canvas projection, shared by 2D and 3D:
+   wheel zooms about the cursor, dragging pans (2D always, 3D with Shift held —
+   a plain 3D drag keeps rotating). zoom 1 = the classic full-fit frame. */
+const mapView = { zoom: 1, panX: 0, panY: 0 };
+
+function resetMapView() {
+  mapView.zoom = 1;
+  mapView.panX = 0;
+  mapView.panY = 0;
+}
 
 /* chart cursor -> map marker: drawMap caches its finished frame plus the
    world->canvas projection, so hovering a chart only blits the cache and
@@ -700,22 +712,52 @@ function bindMapContext(canvas) {
   });
 }
 
+function updateMapHint() {
+  const el = $("#map-hint");
+  if (!el) return;
+  el.style.display = "";
+  el.textContent = state.mapMode === "3d"
+    ? "↔ drag to rotate · scroll to zoom · shift-drag to pan · double-click resets"
+    : "scroll to zoom · drag to pan · double-click resets";
+}
+
 function bindMapDrag(canvas) {
   canvas.addEventListener("pointerdown", (e) => {
-    if (state.mapMode !== "3d") return;
-    map3d.dragging = true;
-    map3d.dragX = e.clientX;
-    map3d.dragYaw = map3d.yaw;
+    const rotate = state.mapMode === "3d" && !e.shiftKey;
+    if (!rotate && mapView.zoom <= 1) return; // nothing to pan at full fit
+    map3d.drag = {
+      rotate, x: e.clientX, y: e.clientY,
+      yaw: map3d.yaw, panX: mapView.panX, panY: mapView.panY,
+    };
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener("pointermove", (e) => {
-    if (!map3d.dragging) return;
-    map3d.yaw = map3d.dragYaw + (e.clientX - map3d.dragX) * 0.008;
+    const d = map3d.drag;
+    if (!d) return;
+    if (d.rotate) {
+      map3d.yaw = d.yaw + (e.clientX - d.x) * 0.008;
+    } else {
+      mapView.panX = d.panX + (e.clientX - d.x);
+      mapView.panY = d.panY + (e.clientY - d.y);
+    }
     drawMap();
   });
-  const stop = () => { map3d.dragging = false; };
+  const stop = () => { map3d.drag = null; };
   canvas.addEventListener("pointerup", stop);
   canvas.addEventListener("pointercancel", stop);
+  // wheel: zoom about the cursor, so what you point at stays put
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const zoom = Math.min(12, Math.max(1, mapView.zoom * Math.exp(-e.deltaY * 0.002)));
+    if (zoom === mapView.zoom) return;
+    const k = zoom / mapView.zoom;
+    mapView.panX = e.offsetX - (e.offsetX - mapView.panX) * k;
+    mapView.panY = e.offsetY - (e.offsetY - mapView.panY) * k;
+    mapView.zoom = zoom;
+    if (zoom === 1) { mapView.panX = 0; mapView.panY = 0; }
+    drawMap();
+  }, { passive: false });
+  canvas.addEventListener("dblclick", () => { resetMapView(); drawMap(); });
 }
 
 function drawMap() {
@@ -737,7 +779,7 @@ function drawMap() {
   const ref = refPick();
   const multi = state.picks.length >= 2;  // overlay mode: solid distinct colors
   const three = state.mapMode === "3d";
-  canvas.style.cursor = three ? "grab" : "default";
+  canvas.style.cursor = three || mapView.zoom > 1 ? "grab" : "default";
   // the speed/slip gradient only exists for a lone lap; in an overlay the
   // colors identify laps (issue #30) and the select would mislead
   const colorSel = $("#color-mode");
@@ -815,7 +857,9 @@ function drawMap() {
   const offY = (cssH - (pMaxY - pMinY) * scale) / 2 - pMinY * scale;
   const P = (x, y, z, ground) => {
     const [sx, sy] = raw(x, y, z, ground);
-    return [sx * scale + offX, sy * scale + offY];
+    // the user viewport (wheel zoom + pan) sits on top of the full fit
+    return [(sx * scale + offX) * mapView.zoom + mapView.panX,
+            (sy * scale + offY) * mapView.zoom + mapView.panY];
   };
   const at = (d, i, ground) => {
     const c = d.channels;
