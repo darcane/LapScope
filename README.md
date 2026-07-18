@@ -38,6 +38,8 @@ in Rivals.
   throttle/brake/steering traces, a lap timer with a **live delta vs. your
   session-best lap**, and a **track map that draws itself as you drive** — it survives
   a mid-race pause (photo mode included) and marks contacts and jumps as they happen.
+  An optional **raw telemetry panel** (off by default, ⚙ Settings) shows every packet
+  field live in game-native units, with a ⏸ Hold button to freeze the values mid-drive.
 - **Lap analysis** — every timed drive is stored. Browse sessions, see lap times, draw
   your **racing line colored by speed or tire slip**, and **compare two laps (A vs. B)**
   with distance-aligned charts: time delta, speed, inputs, steering, and slip. The map
@@ -73,7 +75,10 @@ in Rivals.
 - **Settings** — a ⚙ **Settings** panel (top-right on both pages) to switch units —
   **speed** (km/h ↔ mph), **tire temp** (°C ↔ °F), **distance** (km ↔ mi) — plus map
   preferences (draw the live map in free roam, show/hide analysis contact markers,
-  default 2D/3D view and color-by). Preferences are saved in your browser.
+  default 2D/3D view and color-by) and **raw data** toggles: a live panel with every
+  packet field as the game sends it, and a **raw-data-at-cursor table** on the analysis
+  page — hover any chart to read every channel of every compared lap at that exact
+  spot. Preferences are saved in your browser.
 
 **Analysis — lap comparison** (distance-aligned delta, speed, inputs, steering, slip —
 overlay up to 6 laps, even from different sessions, each in its own color):

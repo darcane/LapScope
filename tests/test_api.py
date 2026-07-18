@@ -58,6 +58,38 @@ def test_lap_time_channel_kept_when_lap_clock_alive(tmp_path):
     assert any(v > 0.5 for v in data["channels"]["lap_time"])
 
 
+def test_raw_channels_cover_every_packet_field(tmp_path):
+    """The generated raw_* channels expose every packet field verbatim (wheel
+    groups as _fl/_fr/_rl/_rr) without disturbing the curated channels'
+    scaling. RAW_FIELDS in common.js mirrors the same list for the frontend."""
+    from app.api.routes import CHANNELS, lap_data
+    from app.telemetry.packet import FIELDS
+
+    for name, count in FIELDS:
+        if count == 1:
+            assert f"raw_{name}" in CHANNELS
+        else:
+            for w in ("fl", "fr", "rl", "rr"):
+                assert f"raw_{name}_{w}" in CHANNELS
+
+    def scenario(sim):
+        sim.event(120, "event")
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    lap = completed_laps(store, sessions(store)[0]["id"])[0]
+    data = lap_data(lap["id"], _request_for(store),
+                    "speed_kmh,steer,raw_speed,raw_steer,raw_tire_temp_fl", 500)
+    ch = data["channels"]
+
+    assert any(v > 1.0 for v in ch["raw_speed"])  # m/s, actually moving
+    for kmh, mps in zip(ch["speed_kmh"], ch["raw_speed"]):
+        assert abs(kmh - mps * 3.6) < 1e-3  # raw is the unscaled packet value
+    for pct, raw in zip(ch["steer"], ch["raw_steer"]):
+        assert abs(pct - raw / 1.27) < 1e-3  # curated ±100 %, raw ±127
+    assert len(ch["raw_tire_temp_fl"]) == len(ch["raw_speed"])
+
+
 def test_collisions_tag_landings_but_keep_wall_hits(tmp_path):
     """/laps/{id}/data classifies each collision burst: jump landings carry
     landing=true (drawn amber, not counted as contact), wall hits

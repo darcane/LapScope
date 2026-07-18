@@ -108,6 +108,13 @@
     <h2>Input trace — <span class="lg-th">throttle</span> · <span class="lg-br">brake</span> · <span class="lg-st">steering</span></h2>
     <canvas id="strip"></canvas>
   </section>
+
+  <section class="panel span12" id="raw-panel" style="display:none">
+    <h2>Raw telemetry — packet values, game-native units
+      <button id="raw-hold" title="Freeze the displayed values to read them — telemetry keeps recording">⏸ Hold</button>
+    </h2>
+    <div id="raw-body"></div>
+  </section>
 </main>
 
 <script src="js/common.js"></script>

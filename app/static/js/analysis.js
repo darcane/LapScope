@@ -2,6 +2,13 @@
 
 const LAP_CHANNELS = "speed_kmh,throttle,brake,steer,slip_front,slip_rear,lap_time,pos_x,pos_y,pos_z";
 
+/* raw_* channel names (the backend generates the same set from packet.FIELDS);
+   appended to lap fetches only while the Settings raw-data toggle is on */
+const RAW_CHANNELS = RAW_FIELDS.flatMap(([name, count]) =>
+  count === 1 ? [`raw_${name}`] : RAW_WHEELS.map((w) => `raw_${name}_${w}`)).join(",");
+const channelList = () =>
+  getSettings().rawAnalysis ? `${LAP_CHANNELS},${RAW_CHANNELS}` : LAP_CHANNELS;
+
 /* overlay palette: distinct on the dark theme and identical between map and
    charts; first entry = the accent, so a single picked lap looks like before */
 const PICK_COLORS = ["#22d3ee", "#f59e0b", "#a78bfa", "#34d399", "#f472b6", "#94a3b8"];
@@ -233,6 +240,16 @@ function renderLapRows() {
   }
 }
 
+/* Re-fetch every picked lap's channel data (after a manual edit, or because
+   the raw-data toggle changed the channel list). */
+async function refetchPickData() {
+  for (const p of state.picks) {
+    const res = await fetch(
+      `/api/laps/${p.lapId}/data?channels=${channelList()}&max_points=1500`);
+    if (res.ok) p.data = await res.json();
+  }
+}
+
 /* Re-fetch the session's laps + every picked lap's data after a manual edit,
    keeping the comparison tray (unlike selectSession's auto-pick reset). */
 async function reloadSession() {
@@ -248,12 +265,10 @@ async function reloadSession() {
       const lap = payload.laps.find((l) => l.id === p.lapId);
       if (lap) p.lap = lap;
     }
-    // channel data refreshed for all: a map right-click can dismiss a contact
-    // on a pick from a session other than the displayed one
-    const res = await fetch(
-      `/api/laps/${p.lapId}/data?channels=${LAP_CHANNELS}&max_points=1500`);
-    if (res.ok) p.data = await res.json();
   }
+  // channel data refreshed for all: a map right-click can dismiss a contact
+  // on a pick from a session other than the displayed one
+  await refetchPickData();
   renderPicks();
   loadSessions();  // lap counts / best on the session cards may have moved
 }
@@ -336,7 +351,7 @@ async function addPick(lap, session, { auto = false } = {}) {
   renderPicks();  // the chip/row shows up right away, data follows
   try {
     const res = await fetch(
-      `/api/laps/${lap.id}/data?channels=${LAP_CHANNELS}&max_points=1500`);
+      `/api/laps/${lap.id}/data?channels=${channelList()}&max_points=1500`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     // rapid clicks race their fetches: only a pick still in the tray may
@@ -394,6 +409,7 @@ function renderPicks() {
   renderTray();
   drawMap();
   drawCharts();
+  renderRawSection();
 }
 
 function renderTray() {
@@ -597,6 +613,7 @@ function setMapCursor(idx) {
   if (idx === mapCursor.idx) return;
   mapCursor.idx = idx;
   drawMapMarker();
+  updateRawTable(idx);
 }
 
 function lowerBound(xs, x) {
@@ -1253,6 +1270,90 @@ function drawCharts() {
   ], 140);
 }
 
+/* ---------------- raw data at cursor (Settings → Raw data) ---------------- */
+
+/* One table row per raw_* channel (RAW_FIELDS in common.js mirrors the
+   packet), one value column per picked lap in tray order/colors. The table is
+   rebuilt when the pick set changes; cells fill on chart hover. */
+const rawView = { rows: [], cols: [], lastIdx: null };
+
+const rawLoaded = (p) => p.data && p.data.channels.raw_speed;
+
+function renderRawSection() {
+  const sec = $("#raw-section");
+  if (!sec) return;
+  rawView.rows = [];
+  rawView.cols = getSettings().rawAnalysis ? state.picks.filter(rawLoaded) : [];
+  rawView.lastIdx = null;
+  sec.style.display = rawView.cols.length ? "" : "none";
+  const holder = $("#raw-table");
+  $("#raw-pos").textContent = "";
+  holder.innerHTML = "";
+  if (!rawView.cols.length) return;
+
+  const table = document.createElement("table");
+  const head = table.insertRow();
+  head.appendChild(document.createElement("th"));
+  for (const p of rawView.cols) {
+    const th = document.createElement("th");
+    th.textContent = `${pickLetter(p)} · Lap ${p.lap.lap_number + 1}`;
+    th.style.color = p.color;
+    head.appendChild(th);
+  }
+  for (const [name, count, unit, dec] of RAW_FIELDS) {
+    const rows = count === 1 ? [[`raw_${name}`, name]]
+      : RAW_WHEELS.map((w) => [`raw_${name}_${w}`, `${name} ${w.toUpperCase()}`]);
+    for (const [ch, label] of rows) {
+      const tr = table.insertRow();
+      const lab = tr.insertCell();
+      lab.textContent = label;
+      if (unit) {
+        const u = document.createElement("em");
+        u.textContent = unit;
+        lab.appendChild(u);
+      }
+      const cells = rawView.cols.map(() => {
+        const td = tr.insertCell();
+        td.textContent = "—";
+        return td;
+      });
+      rawView.rows.push({ ch, dec, cells });
+    }
+  }
+  holder.appendChild(table);
+  if (mapCursor.idx != null) updateRawTable(mapCursor.idx);
+}
+
+/* Fill every cell with the values at the hovered track position. The cursor
+   index lives on the reference lap's arrays; other laps are read at their own
+   nearest sample of that dist (same rule as drawMapMarker's dots). idx null =
+   the cursor left the charts: keep the last values on screen. */
+function updateRawTable(idx) {
+  if (idx == null || idx === rawView.lastIdx || !rawView.rows.length) return;
+  const ref = refPick();
+  if (!ref || !rawLoaded(ref)) return;
+  rawView.lastIdx = idx;
+  const ri = Math.min(idx, ref.data.dist.length - 1);
+  const dist = ref.data.dist[ri];
+  $("#raw-pos").textContent = `— @ track position ${Math.round(dist)}`;
+  const at = rawView.cols.map((p) =>
+    p === ref ? ri : Math.min(lowerBound(p.data.dist, dist), p.data.dist.length - 1));
+  for (const row of rawView.rows) {
+    for (let c = 0; c < rawView.cols.length; c++) {
+      const arr = rawView.cols[c].data.channels[row.ch];
+      row.cells[c].textContent = arr ? fmtRaw(arr[at[c]], row.dec) : "—";
+    }
+  }
+}
+
+/* The toggle can arrive when the picks were fetched without raw channels —
+   refetch once, then build the table. */
+async function syncRawSection() {
+  if (getSettings().rawAnalysis && state.picks.some((p) => p.data && !rawLoaded(p)))
+    await refetchPickData();
+  renderRawSection();
+}
+
 /* Import CSV: the file's raw text is the request body (text/csv - no
    multipart, matching the backend's no-new-dependency route); the rebuilt
    session is selected as soon as the server is done */
@@ -1283,7 +1384,7 @@ function bindImport() {
 
 window.addEventListener("resize", () => { drawMap(); drawCharts(); });
 // live-apply unit / layer changes from the settings panel
-onSettingsChange(() => { drawMap(); drawCharts(); });
+onSettingsChange(() => { drawMap(); drawCharts(); syncRawSection(); });
 bindImport();
 loadSessions();
 setInterval(loadSessions, 15000); // pick up newly finished sessions

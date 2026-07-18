@@ -104,6 +104,12 @@
       <h2>Lap comparison <span id="cmp-label" style="text-transform:none"></span></h2>
       <div class="charts" id="charts"><div class="empty-hint">Tag laps in the table above (or ＋ on a session card) to compare.</div></div>
     </section>
+    <section class="panel" id="raw-section" style="display:none">
+      <h2>Raw data at cursor <span id="raw-pos" style="text-transform:none"></span></h2>
+      <p class="raw-hint">Hover a comparison chart — every packet channel at that spot, per picked lap,
+        in game-native units. Values stay at the last hovered position.</p>
+      <div class="raw-table" id="raw-table"></div>
+    </section>
   </div>
 </template>
 

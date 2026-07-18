@@ -931,3 +931,79 @@ select {
 .uplot .u-legend { color: var(--muted); font-size: 0.8rem; }
 .uplot .u-title { color: var(--muted); font-family: var(--display); font-weight: 600; letter-spacing: 0.08em; font-size: 0.85rem; }
 .empty-hint { color: var(--muted); padding: 30px; text-align: center; }
+
+/* ---------- raw data views (Settings → Raw data) ---------- */
+
+/* live page: full-width value grid + wheels table */
+#raw-panel h2 button {
+  margin-left: auto;
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  padding: 3px 10px;
+  text-transform: uppercase;
+}
+#raw-panel h2 button.on { border-color: var(--accent); color: var(--accent); }
+.raw-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 1px 18px;
+}
+.raw-cell {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 0;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.05);
+}
+.raw-cell span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.raw-cell span em { font-style: normal; opacity: 0.65; margin-left: 4px; font-size: 0.7rem; }
+.raw-cell b { font-weight: 600; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.raw-sub {
+  margin: 12px 0 4px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-family: var(--display);
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.raw-wheels { border-collapse: collapse; margin-top: 10px; font-size: 0.8rem; }
+.raw-wheels th {
+  color: var(--muted);
+  font-weight: 600;
+  text-align: right;
+  padding: 2px 16px;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+}
+.raw-wheels td { text-align: right; padding: 2px 16px; font-variant-numeric: tabular-nums; }
+.raw-wheels td:first-child, .raw-wheels th:first-child {
+  text-align: left;
+  color: var(--muted);
+  padding-left: 0;
+  font-size: 0.78rem;
+}
+
+/* analysis page: values-at-cursor table, one column per picked lap */
+.raw-table { max-height: 340px; overflow: auto; margin-top: 6px; }
+.raw-table table { border-collapse: collapse; width: 100%; font-size: 0.8rem; }
+.raw-table th {
+  position: sticky;
+  top: 0;
+  background: var(--panel-lo);
+  text-align: right;
+  padding: 4px 14px;
+  font-weight: 600;
+}
+.raw-table td { text-align: right; padding: 1px 14px; font-variant-numeric: tabular-nums; }
+.raw-table td:first-child, .raw-table th:first-child { text-align: left; color: var(--muted); padding-left: 0; }
+.raw-table td:first-child em { font-style: normal; opacity: 0.65; margin-left: 4px; font-size: 0.7rem; }
+.raw-table tr:hover td { background: rgba(255, 255, 255, 0.03); }
+.raw-hint { color: var(--muted); font-size: 0.8rem; margin: 0 0 4px; }
