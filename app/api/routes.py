@@ -20,7 +20,7 @@ from ..recorder.laps import (AIRBORNE_MIN_S, AIRBORNE_SLIP_MAX,
                              AIRBORNE_SUSP_MAX, IMPACT_ACCEL, LANDING_GRACE_S)
 from ..recorder.reprocess import reprocess_session
 from ..recorder.store import lap_anchor, lap_span
-from ..telemetry.packet import empty_fields, pack, parse
+from ..telemetry.packet import FIELDS, empty_fields, pack, parse
 
 log = logging.getLogger("lapscope.api")
 router = APIRouter()
@@ -53,6 +53,18 @@ CHANNELS = {
     "pos_y": lambda p: p["pos_y"],   # elevation (world up-axis, meters)
     "pos_z": lambda p: p["pos_z"],
 }
+
+# raw_* channels: every packet field verbatim, generated from packet.FIELDS so the
+# two can never drift; namespaced raw_ so the curated channels above (throttle/brake
+# scaled to %, steer to +-100) keep their meaning. Wheel groups split into
+# _fl/_fr/_rl/_rr (packet order FL FR RL RR). The frontend mirror of this list is
+# RAW_FIELDS in app/static/js/common.js.
+for _name, _count in FIELDS:
+    if _count == 1:
+        CHANNELS[f"raw_{_name}"] = lambda p, n=_name: p[n]
+    else:
+        for _i, _w in enumerate(("fl", "fr", "rl", "rr")):
+            CHANNELS[f"raw_{_name}_{_w}"] = lambda p, n=_name, i=_i: p[n][i]
 
 
 def _class_letter(v) -> str:

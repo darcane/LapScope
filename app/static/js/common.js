@@ -109,6 +109,55 @@ function dtBadge(dt) {
   return `<span class="dt-badge dt-${dt}">${dt}</span>`;
 }
 
+/* ---------- raw packet fields ----------
+   [name, count, unit, decimals] for every FH6 Data Out field, in packet order —
+   mirrors FIELDS in app/telemetry/packet.py (keep the two in lockstep; the
+   backend generates its raw_* channels from that same list). count 4 = wheel
+   group ordered FL FR RL RR. Units are the packet's own (m/s, °F, 0–255…):
+   the raw views deliberately skip the Settings unit conversions. */
+const RAW_FIELDS = [
+  ["is_race_on", 1, "", 0],
+  ["timestamp_ms", 1, "ms", 0],
+  ["engine_max_rpm", 1, "rpm", 0],
+  ["engine_idle_rpm", 1, "rpm", 0],
+  ["current_engine_rpm", 1, "rpm", 1],
+  ["accel_x", 1, "m/s²", 3], ["accel_y", 1, "m/s²", 3], ["accel_z", 1, "m/s²", 3],
+  ["vel_x", 1, "m/s", 3], ["vel_y", 1, "m/s", 3], ["vel_z", 1, "m/s", 3],
+  ["ang_vel_x", 1, "rad/s", 3], ["ang_vel_y", 1, "rad/s", 3], ["ang_vel_z", 1, "rad/s", 3],
+  ["yaw", 1, "rad", 3], ["pitch", 1, "rad", 3], ["roll", 1, "rad", 3],
+  ["norm_susp_travel", 4, "0–1", 3],
+  ["tire_slip_ratio", 4, "", 3],
+  ["wheel_rotation_speed", 4, "rad/s", 1],
+  ["wheel_on_rumble_strip", 4, "0/1", 0],
+  ["wheel_in_puddle", 4, "m", 3],
+  ["surface_rumble", 4, "", 3],
+  ["tire_slip_angle", 4, "", 3],
+  ["tire_combined_slip", 4, "", 3],
+  ["susp_travel_meters", 4, "m", 4],
+  ["car_ordinal", 1, "", 0], ["car_class", 1, "", 0], ["car_pi", 1, "", 0],
+  ["drivetrain_type", 1, "", 0], ["num_cylinders", 1, "", 0],
+  ["car_group", 1, "", 0], ["smashable_vel_diff", 1, "", 3], ["smashable_mass", 1, "", 3],
+  ["pos_x", 1, "m", 2], ["pos_y", 1, "m", 2], ["pos_z", 1, "m", 2],
+  ["speed", 1, "m/s", 2], ["power", 1, "W", 0], ["torque", 1, "N·m", 1],
+  ["tire_temp", 4, "°F", 1],
+  ["boost", 1, "psi", 2], ["fuel", 1, "0–1", 4], ["distance_traveled", 1, "m", 1],
+  ["best_lap", 1, "s", 3], ["last_lap", 1, "s", 3],
+  ["current_lap", 1, "s", 3], ["current_race_time", 1, "s", 3],
+  ["lap_number", 1, "", 0], ["race_position", 1, "", 0],
+  ["accel", 1, "0–255", 0], ["brake", 1, "0–255", 0],
+  ["clutch", 1, "0–255", 0], ["handbrake", 1, "0–255", 0],
+  ["gear", 1, "", 0], ["steer", 1, "±127", 0],
+  ["normalized_driving_line", 1, "", 0], ["normalized_ai_brake_difference", 1, "", 0],
+];
+const RAW_WHEELS = ["fl", "fr", "rl", "rr"];
+
+/* raw value -> display string (both raw views); dec comes from RAW_FIELDS */
+function fmtRaw(v, dec) {
+  if (v == null) return "—";
+  if (typeof v === "number") return v.toFixed(dec);
+  return String(v); // booleans (race_mode) pass through as true/false
+}
+
 /* ---------- themed modal dialogs (replace window.prompt / confirm / alert) ---------- */
 
 function showModal({ title, message = "", extra = null, value = null, placeholder = "",

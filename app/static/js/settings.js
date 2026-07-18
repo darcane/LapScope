@@ -14,6 +14,8 @@ const SETTINGS_DEFAULTS = {
   contactLayer: true,   // show contact sparks + jump glyphs on the analysis map
   defaultMapMode: "2d", // "2d" | "3d"  (absorbs legacy fc_mapmode)
   defaultColor: "speed", // "speed" | "slip"
+  rawLive: false,       // raw telemetry value grid on the live dashboard
+  rawAnalysis: false,   // raw values-at-cursor table on the analysis page
 };
 
 /* One-time migration of the pre-Settings ad-hoc keys, then cached in memory. */
@@ -166,6 +168,11 @@ function openSettings() {
   toggle("Contact & jump markers (analysis)", "contactLayer");
   seg("Default map view", "defaultMapMode", [{ label: "2D", value: "2d" }, { label: "3D", value: "3d" }]);
   seg("Default color", "defaultColor", [{ label: "Speed", value: "speed" }, { label: "Slip", value: "slip" }]);
+
+  // raw packet values, game-native units - no conversions on purpose
+  group("Raw data");
+  toggle("Raw telemetry panel (live)", "rawLive");
+  toggle("Raw data at cursor (analysis)", "rawAnalysis");
 
   // Car-name list: server-side state (not a browser preference) — shows the
   // community list's size/age and re-downloads it on demand. The same refresh

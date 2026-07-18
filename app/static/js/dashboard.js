@@ -189,7 +189,10 @@ function setConn(text, cls) {
 
 // toggling the free-roam-map setting off mid-drive: drop the accumulated path
 // so it doesn't linger on screen (races clear it on their own on session change)
-onSettingsChange(() => { if (!getSettings().freeroamMap) resetLiveMap(liveMap.session); });
+onSettingsChange(() => {
+  if (!getSettings().freeroamMap) resetLiveMap(liveMap.session);
+  syncRawPanel();
+});
 
 /* no-data overlay: refresh server stats while visible */
 async function pollStatus() {
@@ -251,6 +254,94 @@ function updateShiftLights(frac) {
   shiftLights.forEach((led, i) => {
     led.classList.toggle("on", frac >= 0.55 + i * 0.042);
   });
+}
+
+/* ---------- raw telemetry panel (Settings → Raw data) ----------
+   Every packet field of the live WS frame, verbatim — RAW_FIELDS (common.js)
+   mirrors packet.py FIELDS — plus the tracker extras the listener merges in.
+   The DOM is built once; each frame rewrites only the cells whose text
+   changed, so 60 Hz updates stay cheap. Hold freezes the display only —
+   recording and the rest of the dashboard keep running. */
+const RAW_EXTRAS = [
+  ["session_id", "", 0], ["race_mode", "", 0], ["delta", "s", 3],
+  ["session_best", "s", 3], ["lap_elapsed", "s", 3],
+];
+const rawPanel = { cells: [], held: false };
+
+function initRawPanel() {
+  const body = $("raw-body");
+
+  const grid = () => {
+    const g = document.createElement("div");
+    g.className = "raw-grid";
+    body.appendChild(g);
+    return g;
+  };
+  const addCell = (holder, label, unit, get, dec) => {
+    const c = document.createElement("div");
+    c.className = "raw-cell";
+    const lab = document.createElement("span");
+    lab.textContent = label;
+    if (unit) {
+      const u = document.createElement("em");
+      u.textContent = unit;
+      lab.appendChild(u);
+    }
+    const val = document.createElement("b");
+    c.append(lab, val);
+    holder.appendChild(c);
+    rawPanel.cells.push({ el: val, get, dec, txt: null });
+  };
+
+  const scalars = grid();
+  for (const [name, count, unit, dec] of RAW_FIELDS) {
+    if (count === 1) addCell(scalars, name, unit, (f) => f[name], dec);
+  }
+
+  // the ten wheel-group fields as one table, FL FR RL RR columns (packet order)
+  const table = document.createElement("table");
+  table.className = "raw-wheels";
+  const head = table.insertRow();
+  for (const h of ["", "FL", "FR", "RL", "RR"]) {
+    const th = document.createElement("th");
+    th.textContent = h;
+    head.appendChild(th);
+  }
+  for (const [name, count, unit, dec] of RAW_FIELDS) {
+    if (count !== 4) continue;
+    const tr = table.insertRow();
+    tr.insertCell().textContent = unit ? `${name} (${unit})` : name;
+    for (let i = 0; i < 4; i++)
+      rawPanel.cells.push({ el: tr.insertCell(), get: (f) => (f[name] || [])[i], dec, txt: null });
+  }
+  body.appendChild(table);
+
+  // not packet data: the fields the recorder merges into the frame
+  const sub = document.createElement("div");
+  sub.className = "raw-sub";
+  sub.textContent = "tracker extras";
+  body.appendChild(sub);
+  const extras = grid();
+  for (const [name, unit, dec] of RAW_EXTRAS)
+    addCell(extras, name, unit, (f) => f[name], dec);
+
+  const hold = $("raw-hold");
+  hold.onclick = () => {
+    rawPanel.held = !rawPanel.held;
+    hold.classList.toggle("on", rawPanel.held);
+    hold.textContent = rawPanel.held ? "▶ Resume" : "⏸ Hold";
+  };
+}
+
+function updateRawPanel(f) {
+  for (const c of rawPanel.cells) {
+    const txt = fmtRaw(c.get(f), c.dec);
+    if (txt !== c.txt) { c.txt = txt; c.el.textContent = txt; }
+  }
+}
+
+function syncRawPanel() {
+  $("raw-panel").style.display = getSettings().rawLive ? "" : "none";
 }
 
 function render() {
@@ -315,7 +406,11 @@ function render() {
     d.textContent = (f.delta >= 0 ? "+" : "−") + Math.abs(f.delta).toFixed(3);
     d.className = f.delta >= 0 ? "pos" : "neg";
   }
+
+  if (getSettings().rawLive && !rawPanel.held) updateRawPanel(f);
 }
 
+initRawPanel();
+syncRawPanel();
 connect();
 render();
