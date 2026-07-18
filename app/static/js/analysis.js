@@ -781,13 +781,10 @@ function drawMap() {
   const three = state.mapMode === "3d";
   canvas.style.cursor = three || mapView.zoom > 1 ? "grab" : "default";
   // the speed/slip gradient only exists for a lone lap; in an overlay the
-  // colors identify laps (issue #30) and the select would mislead
-  const colorSel = $("#color-mode");
-  if (colorSel) {
-    colorSel.disabled = multi;
-    colorSel.title = multi
-      ? "colors identify laps while comparing — keep a single lap to color by telemetry" : "";
-  }
+  // colors identify laps (issue #30), so the select disappears entirely — a
+  // merely-disabled control still looked clickable and confused people
+  const colorWrap = $("#color-wrap");
+  if (colorWrap) colorWrap.style.display = multi ? "none" : "";
   if (!ref) { // the side stats and color legend describe the reference lap -
     $("#map-side").innerHTML = "";      // don't let them show a lap that was untagged
     $("#legend-scale").innerHTML = "";
