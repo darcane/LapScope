@@ -901,7 +901,17 @@ table.laps .pick.on { font-weight: 600; }
   font-size: 0.9rem;
 }
 .tray-chip button:hover { color: var(--text); }
-.tray-warn { color: var(--warn); font-size: 0.8rem; }
+/* cross-route overlay: loud enough to not be skimmed past (a modal fires
+   once too, but this badge is what stays on screen) */
+.tray-warn {
+  color: var(--warn);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 3px 10px;
+  border: 1px solid rgba(255, 190, 61, 0.5);
+  background: rgba(255, 190, 61, 0.12);
+  border-radius: 6px;
+}
 .tray-clear { margin-left: auto; }
 
 .map-row { display: grid; grid-template-columns: 1fr 320px; gap: 12px; }

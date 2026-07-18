@@ -395,6 +395,26 @@ function pickLap(lapId) {
   if (lap) addPick(lap, state.session);
 }
 
+/* overlaying laps from different routes is allowed (route_id null = each
+   unidentified session counts as its own route) but the traces live in each
+   route's own world coordinates, so nothing will line up. Warn with a modal
+   the moment an overlay first crosses routes — once per episode, re-armed
+   when the tray is back to a single route — on top of the tray badge. */
+let warnedCrossRoute = false;
+function crossRoute() {
+  return new Set(state.picks.map((p) => p.session.route_id ?? `s${p.session.id}`)).size > 1;
+}
+function maybeWarnCrossRoute() {
+  if (!crossRoute()) { warnedCrossRoute = false; return; }
+  if (warnedCrossRoute) return;
+  warnedCrossRoute = true;
+  uiAlert("⚠ Comparing laps from different routes",
+    "The picked laps were recorded on different routes. Positions are world "
+    + "coordinates, so the map overlay and the distance-aligned charts will "
+    + "not line up — Δ time and racing-line spread are only meaningful "
+    + "between laps of the same route.");
+}
+
 /* single funnel for "the pick set changed": re-render rows, tray, map, charts.
    A reference change invalidates the zoom window and the hover index — both
    live on the reference lap's distance axis. */
@@ -412,6 +432,7 @@ function renderPicks() {
   drawMap();
   drawCharts();
   renderRawSection();
+  maybeWarnCrossRoute();
 }
 
 function renderTray() {
@@ -457,11 +478,10 @@ function renderTray() {
     el.appendChild(chip);
   }
   // overlaying different routes is allowed but rarely what you want
-  const routes = new Set(state.picks.map((p) => p.session.route_id ?? `s${p.session.id}`));
-  if (routes.size > 1) {
+  if (crossRoute()) {
     const warn = document.createElement("span");
     warn.className = "tray-warn";
-    warn.textContent = "⚠ laps from different routes — overlay may not align";
+    warn.textContent = "⚠ laps from different routes — the overlay will not align";
     el.appendChild(warn);
   }
   const clear = document.createElement("button");
