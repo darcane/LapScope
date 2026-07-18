@@ -1,18 +1,41 @@
-/* Session browser, track map, and A/B lap comparison charts. */
+/* Session browser, track map, and multi-lap comparison charts (issue #30). */
 
 const LAP_CHANNELS = "speed_kmh,throttle,brake,steer,slip_front,slip_rear,lap_time,pos_x,pos_y,pos_z";
 
+/* overlay palette: distinct on the dark theme and identical between map and
+   charts; first entry = the accent, so a single picked lap looks like before */
+const PICK_COLORS = ["#22d3ee", "#f59e0b", "#a78bfa", "#34d399", "#f472b6", "#94a3b8"];
+const MAX_PICKS = PICK_COLORS.length;
+
 const state = {
   sessionId: null,
-  session: null,  // resolved session object (badges, export captions)
+  session: null,  // resolved session object of the *displayed* session
   laps: [],
-  lapA: null, lapB: null,     // lap ids
-  dataA: null, dataB: null,   // /api/laps/{id}/data payloads
+  // comparison tray, ordered; picks[0] is the reference lap ("A") the Δ chart,
+  // zoom window and map extras are based on. Picks persist across session
+  // switches (cross-session overlay), each carrying its own lap/session meta.
+  // pick = { lapId, lap, session, color, data, auto }
+  picks: [],
   colorMode: getSettings().defaultColor,
   mapMode: getSettings().defaultMapMode,
   charts: [],
   zoomRange: null,  // [distLo, distHi] while the charts are drag-zoomed
 };
+
+const pickOf = (lapId) => state.picks.find((p) => p.lapId === lapId);
+const refPick = () => (state.picks[0] && state.picks[0].data ? state.picks[0] : null);
+const pickLetter = (pick) => String.fromCharCode(65 + state.picks.indexOf(pick)); // A–F
+const nextColor = () => PICK_COLORS.find((c) => !state.picks.some((p) => p.color === c));
+function shortName(session) {
+  const n = displayName(session);
+  return n.length > 14 ? n.slice(0, 13) + "…" : n;
+}
+/* tray chips / captions: the plain lap number is enough while every pick is
+   from the displayed session; session names only appear once picks cross */
+function chipLabel(pick, crossSession) {
+  const lapN = `Lap ${pick.lap.lap_number + 1}`;
+  return crossSession ? `${shortName(pick.session)} · L${pick.lap.lap_number + 1}` : lapN;
+}
 
 /* dirty-lap markers inferred by the recorder (the game sends no official flag) */
 const FLAG_META = {
@@ -71,14 +94,34 @@ async function loadSessions() {
       $(".car-line", card).title = "Unknown car — open the session to name or report it";
     }
     card.onclick = () => selectSession(s.id);
+    if (s.best_lap) {
+      // grind workflow: build the overlay straight from the sidebar, one
+      // best lap per attempt, without opening each session (issue #30)
+      const add = document.createElement("button");
+      add.className = "card-add";
+      add.title = "Add this session's best lap to the comparison (click again to remove)";
+      add.textContent = "＋";
+      add.onclick = async (e) => {
+        e.stopPropagation();
+        try {
+          const payload = await (await fetch(`/api/sessions/${s.id}/laps`)).json();
+          const best = payload.laps.find((l) => l.is_best);
+          if (!best) return;
+          const existing = pickOf(best.id);
+          if (existing) { promoteManual(); removePick(existing); }
+          else await addPick(best, payload.session);
+        } catch (err) {
+          uiAlert("Couldn't load session", String(err.message || err));
+        }
+      };
+      card.appendChild(add);
+    }
     el.appendChild(card);
   }
 }
 
 async function selectSession(id) {
   state.sessionId = id;
-  state.lapA = state.lapB = null;
-  state.dataA = state.dataB = null;
   const payload = await (await fetch(`/api/sessions/${id}/laps`)).json();
   state.laps = payload.laps;
   state.session = payload.session;  // PNG export captions from it
@@ -142,12 +185,18 @@ async function selectSession(id) {
   bindMapDrag($("#trackmap"));
   bindMapContext($("#trackmap"));
 
-  renderLapRows();
   loadSessions();
 
-  // preselect: best lap as A
-  const best = payload.laps.find((l) => l.is_best);
-  if (best) pickLap(best.id, "a");
+  // preselect: best lap as A — but only while the tray holds no deliberate
+  // picks. A manually built comparison must survive browsing other sessions
+  // (the whole point of the cross-session overlay); the lone auto pick from
+  // casual browsing is replaced like before.
+  if (!state.picks.some((p) => !p.auto)) {
+    state.picks.length = 0;
+    const best = payload.laps.find((l) => l.is_best);
+    if (best) { addPick(best, s, { auto: true }); return; }  // renders itself
+  }
+  renderPicks();
 }
 
 function renderLapRows() {
@@ -160,9 +209,13 @@ function renderLapRows() {
     if (l.excluded) tr.className = "excluded";
     // an override never changes the icons' meaning, just their source
     const edited = (l.flags || "") !== (l.flags_auto || "");
+    const pick = pickOf(l.id);
+    // one toggle per lap; a picked lap wears its overlay letter + color
+    const pickChip = pick
+      ? `<span class="pick on" style="color:${pick.color};border-color:${pick.color};background:${pick.color}26" title="Remove from the comparison">${pickLetter(pick)}</span>`
+      : `<span class="pick" title="Add to the comparison (up to ${MAX_PICKS} laps, across sessions)">+</span>`;
     tr.innerHTML = `
-      <td><span class="pick ${state.lapA === l.id ? "a" : ""}" data-slot="a">A</span>
-          <span class="pick ${state.lapB === l.id ? "b" : ""}" data-slot="b">B</span></td>
+      <td>${pickChip}</td>
       <td>${l.lap_number + 1}</td>
       <td class="lap-time">${fmtLap(l.lap_time)}</td>
       <td>${l.gap_to_best != null && l.gap_to_best > 0 ? "+" + l.gap_to_best.toFixed(3) : (l.is_best ? "best" : "")}</td>
@@ -172,8 +225,7 @@ function renderLapRows() {
         <button class="lap-act act-flags" title="Edit this lap's flags">✎</button>
         <button class="lap-act act-exclude" title="${l.excluded ? "Restore the lap into bests and counts" : "Exclude the lap from bests and counts"}">${l.excluded ? "↩" : "🗑"}</button>
       </td>`;
-    for (const pick of tr.querySelectorAll(".pick"))
-      pick.onclick = () => pickLap(l.id, pick.dataset.slot);
+    $(".pick", tr).onclick = () => pickLap(l.id);
     $(".act-csv", tr).onclick = () => { window.location = `/api/laps/${l.id}/export.csv`; };
     $(".act-flags", tr).onclick = () => editLapFlags(l);
     $(".act-exclude", tr).onclick = () => toggleLapExcluded(l);
@@ -181,25 +233,28 @@ function renderLapRows() {
   }
 }
 
-/* Re-fetch the session's laps + the picked laps' data after a manual edit,
-   keeping the A/B selection (unlike selectSession, which resets it). */
+/* Re-fetch the session's laps + every picked lap's data after a manual edit,
+   keeping the comparison tray (unlike selectSession's auto-pick reset). */
 async function reloadSession() {
   const payload = await (await fetch(`/api/sessions/${state.sessionId}/laps`)).json();
   state.laps = payload.laps;
   state.session = payload.session;
   const reset = $("#btn-reset-edits");
   if (reset) reset.style.display = payload.session.edit_count ? "" : "none";
-  for (const slot of ["a", "b"]) {
-    const key = slot === "a" ? "lapA" : "lapB";
-    const dataKey = slot === "a" ? "dataA" : "dataB";
-    if (state[key] == null) continue;
+  for (const p of state.picks) {
+    // lap meta (flags / excluded / is_best) moved for picks of this session
+    if (p.session.id === state.sessionId) {
+      p.session = payload.session;
+      const lap = payload.laps.find((l) => l.id === p.lapId);
+      if (lap) p.lap = lap;
+    }
+    // channel data refreshed for all: a map right-click can dismiss a contact
+    // on a pick from a session other than the displayed one
     const res = await fetch(
-      `/api/laps/${state[key]}/data?channels=${LAP_CHANNELS}&max_points=1500`);
-    if (res.ok) state[dataKey] = await res.json();
+      `/api/laps/${p.lapId}/data?channels=${LAP_CHANNELS}&max_points=1500`);
+    if (res.ok) p.data = await res.json();
   }
-  renderLapRows();
-  drawMap();
-  drawCharts();
+  renderPicks();
   loadSessions();  // lap counts / best on the session cards may have moved
 }
 
@@ -260,35 +315,143 @@ async function resetEdits(session) {
   reloadSession();
 }
 
-async function pickLap(lapId, slot) {
-  const key = slot === "a" ? "lapA" : "lapB";
-  const dataKey = slot === "a" ? "dataA" : "dataB";
-  if (state[key] === lapId) {           // toggle off
-    state[key] = null;
-    state[dataKey] = null;
-  } else {
-    state[key] = lapId;
-    state[dataKey] = null;
-    renderLapRows();
-    try {
-      const res = await fetch(
-        `/api/laps/${lapId}/data?channels=${LAP_CHANNELS}&max_points=1500`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      // rapid clicks race their fetches: only the pick that still owns the
-      // slot may write it - a stale response must not overwrite a newer one
-      if (state[key] !== lapId) return;
-      state[dataKey] = data;
-    } catch (err) {
-      if (state[key] !== lapId) return; // stale failure; the newer pick renders
-      state[key] = null;                // untag so the row doesn't lie
-      uiAlert("Couldn't load lap data", String(err.message || err));
-    }
+/* ---------------- comparison tray ---------------- */
+
+/* every deliberate pick action turns the whole tray into user intent: from
+   then on selectSession stops replacing it (see the auto-pick rule there) */
+function promoteManual() {
+  for (const p of state.picks) p.auto = false;
+}
+
+async function addPick(lap, session, { auto = false } = {}) {
+  if (pickOf(lap.id)) return;
+  if (state.picks.length >= MAX_PICKS) {
+    uiAlert("Comparison full",
+      `Up to ${MAX_PICKS} laps can be overlaid — remove one from the tray first.`);
+    return;
+  }
+  const pick = { lapId: lap.id, lap, session, color: nextColor(), data: null, auto };
+  state.picks.push(pick);
+  if (!auto) promoteManual();
+  renderPicks();  // the chip/row shows up right away, data follows
+  try {
+    const res = await fetch(
+      `/api/laps/${lap.id}/data?channels=${LAP_CHANNELS}&max_points=1500`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    // rapid clicks race their fetches: only a pick still in the tray may
+    // land its data - a removed pick's late response must be dropped
+    if (!state.picks.includes(pick)) return;
+    pick.data = data;
+  } catch (err) {
+    if (!state.picks.includes(pick)) return; // stale failure; nothing to untag
+    removePick(pick);                        // untag so the row doesn't lie
+    uiAlert("Couldn't load lap data", String(err.message || err));
+    return;
+  }
+  renderPicks();
+}
+
+function removePick(pick) {
+  const i = state.picks.indexOf(pick);
+  if (i >= 0) state.picks.splice(i, 1);
+  renderPicks();
+}
+
+/* make a pick the reference lap ("A"): Δ, slip, zoom and map extras re-base */
+function promoteRef(pick) {
+  const i = state.picks.indexOf(pick);
+  if (i <= 0) return;
+  state.picks.splice(i, 1);
+  state.picks.unshift(pick);
+  promoteManual();
+  renderPicks();
+}
+
+function pickLap(lapId) {
+  const existing = pickOf(lapId);
+  if (existing) {
+    promoteManual();  // dropping a lap is deliberate too
+    removePick(existing);
+    return;
+  }
+  const lap = state.laps.find((l) => l.id === lapId);
+  if (lap) addPick(lap, state.session);
+}
+
+/* single funnel for "the pick set changed": re-render rows, tray, map, charts.
+   A reference change invalidates the zoom window and the hover index — both
+   live on the reference lap's distance axis. */
+let lastRefId = null;
+function renderPicks() {
+  const ref = state.picks[0] || null;
+  if ((ref ? ref.lapId : null) !== lastRefId) {
+    lastRefId = ref ? ref.lapId : null;
+    state.zoomRange = null;
+    mapCursor.idx = null;
   }
   renderLapRows();
-  state.zoomRange = null;  // new lap data: the old zoom window means nothing
+  renderTray();
   drawMap();
   drawCharts();
+}
+
+function renderTray() {
+  const el = $("#cmp-tray");
+  if (!el) return;
+  el.innerHTML = "";
+  el.style.display = state.picks.length ? "" : "none";
+  if (!state.picks.length) return;
+  const label = document.createElement("span");
+  label.className = "tray-label";
+  label.textContent = "Comparing";
+  el.appendChild(label);
+  const crossSession = state.picks.some((p) => p.session.id !== state.sessionId);
+  for (const p of state.picks) {
+    const chip = document.createElement("span");
+    chip.className = "tray-chip";
+    chip.style.borderColor = p.color;
+    const sw = document.createElement("span");
+    sw.className = "swatch";
+    sw.style.background = p.color;
+    chip.appendChild(sw);
+    const txt = document.createElement("span");
+    txt.textContent = `${pickLetter(p)} · ${chipLabel(p, crossSession)} — ${fmtLap(p.lap.lap_time)}`;
+    chip.appendChild(txt);
+    if (p === state.picks[0]) {
+      const tag = document.createElement("span");
+      tag.className = "ref-tag";
+      tag.title = "Reference lap: Δ time, slip, zoom and map extras are based on it";
+      tag.textContent = "ref";
+      chip.appendChild(tag);
+    } else {
+      const star = document.createElement("button");
+      star.title = "Make this the reference lap";
+      star.textContent = "★";
+      star.onclick = () => promoteRef(p);
+      chip.appendChild(star);
+    }
+    const x = document.createElement("button");
+    x.title = "Remove from the comparison";
+    x.textContent = "×";
+    x.onclick = () => { promoteManual(); removePick(p); };
+    chip.appendChild(x);
+    el.appendChild(chip);
+  }
+  // overlaying different routes is allowed but rarely what you want
+  const routes = new Set(state.picks.map((p) => p.session.route_id ?? `s${p.session.id}`));
+  if (routes.size > 1) {
+    const warn = document.createElement("span");
+    warn.className = "tray-warn";
+    warn.textContent = "⚠ laps from different routes — overlay may not align";
+    el.appendChild(warn);
+  }
+  const clear = document.createElement("button");
+  clear.className = "tray-clear";
+  clear.textContent = "Clear";
+  clear.title = "Empty the comparison tray";
+  clear.onclick = () => { state.picks.length = 0; renderPicks(); };
+  el.appendChild(clear);
 }
 
 async function renameSession(session) {
@@ -388,6 +551,9 @@ async function reprocessSession(session) {
   }
   const { laps } = await res.json();
   await uiAlert("Reprocess complete", `${laps} completed lap${laps === 1 ? "" : "s"} found.`);
+  // the replay recreates lap rows under recycled rowids: a kept pick could
+  // silently point at a different lap - drop this session's picks instead
+  state.picks = state.picks.filter((p) => p.session.id !== session.id);
   selectSession(session.id);
   loadSessions();
 }
@@ -402,6 +568,7 @@ async function deleteSession(session) {
     await uiAlert("Delete failed", (await res.json()).detail || "delete failed");
     return;
   }
+  state.picks = state.picks.filter((p) => p.session.id !== session.id);
   state.sessionId = null;
   $("#detail").innerHTML = `<div class="empty-hint">Session deleted.</div>`;
   loadSessions();
@@ -432,30 +599,49 @@ function setMapCursor(idx) {
   drawMapMarker();
 }
 
+function lowerBound(xs, x) {
+  let lo = 0, hi = xs.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (xs[mid] < x) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
 function drawMapMarker() {
   const canvas = $("#trackmap");
-  const A = state.dataA;
+  const ref = refPick();
   if (!canvas || !mapCursor.snap || !mapCursor.proj) return;
   const ctx = canvas.getContext("2d");
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(mapCursor.snap, 0, 0);
   ctx.setTransform(mapCursor.dpr, 0, 0, mapCursor.dpr, 0, 0);
-  if (mapCursor.idx == null || !A) return;
-  const c = A.channels;
-  const i = Math.min(mapCursor.idx, c.pos_x.length - 1);
-  const [x, y] = mapCursor.proj(c.pos_x[i], c.pos_y ? c.pos_y[i] : 0, c.pos_z[i], false);
-  ctx.save();
-  ctx.shadowColor = "#22d3ee";
-  ctx.shadowBlur = 10;
-  ctx.fillStyle = "#22d3ee";
-  ctx.strokeStyle = "#fff";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(x, y, 6, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
-  ctx.restore();
+  if (mapCursor.idx == null || !ref) return;
+  // the cursor index lives on the reference lap's arrays; every other lap is
+  // marked at the same track position (its own lower bound on dist), so the
+  // dots' spread IS the racing-line difference at that spot
+  const ri = Math.min(mapCursor.idx, ref.data.channels.pos_x.length - 1);
+  const dist = ref.data.dist[ri];
+  const dot = (p, i, r) => {
+    const c = p.data.channels;
+    const j = Math.min(i, c.pos_x.length - 1);
+    const [x, y] = mapCursor.proj(c.pos_x[j], c.pos_y ? c.pos_y[j] : 0, c.pos_z[j], false);
+    ctx.save();
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = p.color;
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  };
+  for (const p of state.picks)
+    if (p.data && p !== ref) dot(p, lowerBound(p.data.dist, dist), 4.5);
+  dot(ref, ri, 6);  // reference last, on top
 }
 
 /* screen-space contact markers of the last drawMap, for right-click hit
@@ -530,19 +716,29 @@ function drawMap() {
   mapCursor.proj = null; // stale until this draw completes
   hitMarkers.length = 0; // refilled by drawHits below
 
-  const A = state.dataA, B = state.dataB;
+  const loaded = state.picks.filter((p) => p.data);
+  const ref = refPick();
+  const multi = state.picks.length >= 2;  // overlay mode: solid distinct colors
   const three = state.mapMode === "3d";
   canvas.style.cursor = three ? "grab" : "default";
-  if (!A) { // the side stats and color legend describe lap A - don't let
-    $("#map-side").innerHTML = "";      // them show a lap that was untagged
+  // the speed/slip gradient only exists for a lone lap; in an overlay the
+  // colors identify laps (issue #30) and the select would mislead
+  const colorSel = $("#color-mode");
+  if (colorSel) {
+    colorSel.disabled = multi;
+    colorSel.title = multi
+      ? "colors identify laps while comparing — keep a single lap to color by telemetry" : "";
+  }
+  if (!ref) { // the side stats and color legend describe the reference lap -
+    $("#map-side").innerHTML = "";      // don't let them show a lap that was untagged
     $("#legend-scale").innerHTML = "";
   }
-  if (!A && !B) return;
+  if (!loaded.length) return;
 
   // world extent (elevation exaggeration is derived from it)
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity,
       minZ = Infinity, maxZ = -Infinity;
-  for (const d of [A, B]) if (d) {
+  for (const { data: d } of loaded) {
     const c = d.channels;
     for (let i = 0; i < c.pos_x.length; i++) {
       minX = Math.min(minX, c.pos_x[i]); maxX = Math.max(maxX, c.pos_x[i]);
@@ -559,7 +755,7 @@ function drawMap() {
   let yLo = minY, yBand = yRange;
   if (three) {
     const ys = [];
-    for (const d of [A, B]) if (d && d.channels.pos_y) ys.push(...d.channels.pos_y);
+    for (const { data: d } of loaded) if (d.channels.pos_y) ys.push(...d.channels.pos_y);
     if (ys.length) {
       ys.sort((a, b) => a - b);
       yLo = ys[Math.floor(0.05 * (ys.length - 1))];
@@ -584,7 +780,7 @@ function drawMap() {
 
   // fit-to-canvas over every point that may be drawn (ground + elevated in 3D)
   let pMinX = Infinity, pMaxX = -Infinity, pMinY = Infinity, pMaxY = -Infinity;
-  for (const d of [A, B]) if (d) {
+  for (const { data: d } of loaded) {
     const c = d.channels;
     for (let i = 0; i < c.pos_x.length; i++) {
       const y = c.pos_y ? c.pos_y[i] : 0;
@@ -621,39 +817,28 @@ function drawMap() {
   };
 
   if (three) {
-    // ground shadow + elevation posts first, so the ribbon reads as floating
-    if (B) polyline(B, true, "rgba(91,102,117,0.22)", 1.2);
-    if (A) {
-      polyline(A, true, "rgba(0,0,0,0.5)", 3);
+    // ground shadow + elevation posts first, so the ribbon reads as floating;
+    // the reference gets the full treatment, the rest a faint ground line
+    for (const p of loaded) if (p !== ref)
+      polyline(p.data, true, "rgba(91,102,117,0.22)", 1.2);
+    if (ref) {
+      polyline(ref.data, true, "rgba(0,0,0,0.5)", 3);
       ctx.strokeStyle = "rgba(123,135,148,0.18)";
       ctx.lineWidth = 1;
-      for (let i = 0; i < A.channels.pos_x.length; i += 14) {
-        const [gx, gy] = at(A, i, true), [ax, ay] = at(A, i, false);
+      for (let i = 0; i < ref.data.channels.pos_x.length; i += 14) {
+        const [gx, gy] = at(ref.data, i, true), [ax, ay] = at(ref.data, i, false);
         ctx.beginPath(); ctx.moveTo(gx, gy); ctx.lineTo(ax, ay); ctx.stroke();
       }
     }
   }
 
-  if (B) polyline(B, false, "#5b6675", 1.5);
+  // non-reference traces: each in its tray color, under the reference
+  for (const p of loaded) if (p !== ref) polyline(p.data, false, p.color, 2);
 
-  if (A) {
-    let vals, lo = 0, hi = 1, colorFn;
-    if (state.colorMode === "speed") {
-      vals = A.channels.speed_kmh;
-      lo = Math.min(...vals); hi = Math.max(...vals);
-      colorFn = (v) => speedColor(v, lo, hi);
-      $("#legend-scale").innerHTML =
-        `<span class="swatch" style="background:hsl(220,80%,55%)"></span> ${speedFromKmh(lo).toFixed(0)} ` +
-        `→ <span class="swatch" style="background:hsl(0,80%,55%)"></span> ${speedFromKmh(hi).toFixed(0)} ${speedUnit()}`;
-    } else {
-      vals = A.channels.slip_front.map((f, i) => Math.max(f, A.channels.slip_rear[i]));
-      colorFn = slipColor;
-      $("#legend-scale").innerHTML =
-        `<span class="swatch" style="background:hsl(120,75%,55%)"></span> grip ` +
-        `→ <span class="swatch" style="background:hsl(0,75%,55%)"></span> sliding`;
-    }
-    // chart drag-zoom window -> the matching index range on lap A's trace
-    // (dist is the charts' shared x-array, ascending by construction)
+  if (ref) {
+    const A = ref.data;
+    // chart drag-zoom window -> the matching index range on the reference
+    // trace (dist is the charts' shared x-array, ascending by construction)
     let zi = null;
     if (state.zoomRange && A.dist && A.dist.length) {
       const [lo, hi] = state.zoomRange;
@@ -676,21 +861,43 @@ function drawMap() {
       ctx.stroke();
       ctx.restore();
     }
-    ctx.lineWidth = 3;
-    ctx.lineCap = "round";
-    let prev = at(A, 0, false);
-    for (let i = 1; i < A.channels.pos_x.length; i++) {
-      const cur = at(A, i, false);
-      // everything outside the zoom window fades so the span reads instantly
-      ctx.globalAlpha = zi && (i <= zi[0] || i > zi[1]) ? 0.22 : 1;
-      ctx.strokeStyle = colorFn(vals[i]);
-      ctx.beginPath();
-      ctx.moveTo(prev[0], prev[1]);
-      ctx.lineTo(cur[0], cur[1]);
-      ctx.stroke();
-      prev = cur;
+    if (!multi) {
+      // a lone lap keeps the telemetry gradient (speed / slip)
+      let vals, lo = 0, hi = 1, colorFn;
+      if (state.colorMode === "speed") {
+        vals = A.channels.speed_kmh;
+        lo = Math.min(...vals); hi = Math.max(...vals);
+        colorFn = (v) => speedColor(v, lo, hi);
+        $("#legend-scale").innerHTML =
+          `<span class="swatch" style="background:hsl(220,80%,55%)"></span> ${speedFromKmh(lo).toFixed(0)} ` +
+          `→ <span class="swatch" style="background:hsl(0,80%,55%)"></span> ${speedFromKmh(hi).toFixed(0)} ${speedUnit()}`;
+      } else {
+        vals = A.channels.slip_front.map((f, i) => Math.max(f, A.channels.slip_rear[i]));
+        colorFn = slipColor;
+        $("#legend-scale").innerHTML =
+          `<span class="swatch" style="background:hsl(120,75%,55%)"></span> grip ` +
+          `→ <span class="swatch" style="background:hsl(0,75%,55%)"></span> sliding`;
+      }
+      ctx.lineWidth = 3;
+      ctx.lineCap = "round";
+      let prev = at(A, 0, false);
+      for (let i = 1; i < A.channels.pos_x.length; i++) {
+        const cur = at(A, i, false);
+        // everything outside the zoom window fades so the span reads instantly
+        ctx.globalAlpha = zi && (i <= zi[0] || i > zi[1]) ? 0.22 : 1;
+        ctx.strokeStyle = colorFn(vals[i]);
+        ctx.beginPath();
+        ctx.moveTo(prev[0], prev[1]);
+        ctx.lineTo(cur[0], cur[1]);
+        ctx.stroke();
+        prev = cur;
+      }
+      ctx.globalAlpha = 1;
+    } else {
+      // overlay: the reference wears its solid tray color, on top and wider
+      $("#legend-scale").innerHTML = "";
+      polyline(A, false, ref.color, 3);
     }
-    ctx.globalAlpha = 1;
     if (zi) {  // span endpoints: filled = where the window starts, hollow = ends
       for (const [idx, fill, ring] of [[zi[0], "#22d3ee", "#fff"], [zi[1], "#0b1520", "#22d3ee"]]) {
         const [X, Y] = at(A, idx, false);
@@ -748,14 +955,18 @@ function drawMap() {
       drivenM += (A.channels.speed_kmh[i] + A.channels.speed_kmh[i - 1]) / 7.2 * (A.t[i] - A.t[i - 1]);
 
     const side = $("#map-side");
-    const lapMeta = state.laps.find((l) => l.id === state.lapA);
     // landings (jump touchdowns) and user-dismissed spikes don't count
     const contacts = (A.collisions || []).filter((h) => !h.landing && !h.dismissed).length;
     const jumps = A.jumps || [];
     const hard = jumps.filter((j) => j.hard).length;
+    // one cell per picked lap (letter + color match tray, map and charts);
+    // letters and numbers only - session names stay in the tray, which
+    // renders them via textContent (user-named sessions must not hit innerHTML)
+    const lapCells = state.picks.map((p) => `
+      <div><div class="label"><span class="swatch" style="background:${p.color}"></span> ${pickLetter(p)} · Lap ${p.lap.lap_number + 1}</div>
+      <div class="value">${fmtLap(p.lap.lap_time)}</div></div>`).join("");
     side.innerHTML = `<div class="lap-grid" style="text-align:left">
-      <div><div class="label">Lap A</div><div class="value">${fmtLap(lapMeta?.lap_time)}</div></div>
-      <div><div class="label">Lap B</div><div class="value">${fmtLap(state.laps.find((l) => l.id === state.lapB)?.lap_time)}</div></div>
+      ${lapCells}
       <div><div class="label">Samples</div><div class="value">${A.n_frames}</div></div>
       <div><div class="label">Driven</div><div class="value">${distFromM(drivenM).toFixed(2)} ${distUnit()}</div></div>
       <div><div class="label">Elevation range</div><div class="value">${yRange > 0.3 ? yRange.toFixed(0) + " m" : "flat"}</div></div>
@@ -766,9 +977,11 @@ function drawMap() {
 
   // jump flights (takeoff -> touchdown, detected server-side) with the shared
   // glyph, then collision points (contact spikes) as red bursts - both over
-  // the ribbon so they read against any speed/slip color. B's are dimmer,
-  // like its line. Landing spikes are part of the jump glyph (hard = glow +
-  // impact ring), no longer their own spark - they aren't contact.
+  // the ribbon so they read against any coloring. The reference lap's are
+  // full-strength, every other pick's dimmer (they'd drown the overlay in
+  // sparks otherwise); all of them land in hitMarkers, so right-click
+  // dismissal works on any picked lap. Landing spikes are part of the jump
+  // glyph (hard = glow + impact ring), not their own spark - not contact.
   const drawJumps = (d, color) => {
     if (!d || !d.jumps) return;
     for (const j of d.jumps) {
@@ -805,10 +1018,10 @@ function drawMap() {
     }
   };
   if (getSettings().contactLayer) {
-    drawJumps(B, "#7f6f4b");
-    drawJumps(A, "#f59e0b");
-    drawHits(B, "#7f5b5b", 6);
-    drawHits(A, "#ef4444", 7);
+    for (const p of loaded) if (p !== ref) drawJumps(p.data, "#7f6f4b");
+    if (ref) drawJumps(ref.data, "#f59e0b");
+    for (const p of loaded) if (p !== ref) drawHits(p.data, "#7f5b5b", 6);
+    if (ref) drawHits(ref.data, "#ef4444", 7);
   }
 
   // cache the finished frame + projection for the chart-cursor marker
@@ -843,12 +1056,13 @@ function downloadBlob(blob, filename) {
    absent) and composite a caption bar under it. The canvas itself is
    transparent over the page background, so the PNG needs its own fill. */
 function exportMapPng() {
-  const s = state.session;
-  const lapMeta = state.laps.find((l) => l.id === state.lapA);
-  if (!state.dataA || !s || !lapMeta) {
-    uiAlert("Nothing to export", "Tag a lap as A to draw its racing line first.");
+  const ref = refPick();
+  if (!ref) {
+    uiAlert("Nothing to export", "Tag a lap to draw its racing line first.");
     return;
   }
+  const s = ref.session;      // the caption belongs to the reference lap's
+  const lapMeta = ref.lap;    // own session, not the one being browsed
   if (!mapCursor.snap) drawMap();
   const snap = mapCursor.snap;
   const dpr = mapCursor.dpr || 1;
@@ -871,18 +1085,21 @@ function exportMapPng() {
   ctx.fillStyle = color("--text", "#e8eef6");
   ctx.font = "600 15px 'Segoe UI', system-ui, sans-serif";
   ctx.fillText(`${displayName(s)} — ${s.car_name}${pi}`, pad, yCap);
-  const lapB = state.laps.find((l) => l.id === state.lapB);
   const tags = [TRACK_META[s.track_type]?.[1], CONDITION_META[s.conditions]?.[1]]
     .filter(Boolean).join(" · ");
+  // every picked lap, in tray order; laps from other sessions carry their
+  // session's name so a cross-session overlay stays readable
+  const lapsTxt = state.picks.map((p) => {
+    const t = `Lap ${p.lap.lap_number + 1} — ${fmtLap(p.lap.lap_time)}`;
+    return p.session.id !== s.id ? `${shortName(p.session)} ${t}` : t;
+  }).join("  ·  ");
   ctx.fillStyle = color("--muted", "#8494a7");
   ctx.font = "13px 'Segoe UI', system-ui, sans-serif";
-  ctx.fillText(`Lap ${lapMeta.lap_number + 1} — ${fmtLap(lapMeta.lap_time)}`
-    + (lapB ? `  vs  Lap ${lapB.lap_number + 1} — ${fmtLap(lapB.lap_time)}` : "")
-    + (tags ? `  ·  ${tags}` : ""), pad, yCap + lineH);
+  ctx.fillText(lapsTxt + (tags ? `  ·  ${tags}` : ""), pad, yCap + lineH);
 
   const time = lapMeta.lap_time ? `_${fmtLap(lapMeta.lap_time).replace(":", "-")}` : "";
   const name = `lapscope_${safeFilename(displayName(s))}_lap${lapMeta.lap_number + 1}${time}`
-    + (lapB ? `_vs_lap${lapB.lap_number + 1}` : "") + ".png";
+    + (state.picks.length > 1 ? `_overlay${state.picks.length}` : "") + ".png";
   out.toBlob((blob) => { if (blob) downloadBlob(blob, name); }, "image/png");
 }
 
@@ -908,8 +1125,9 @@ const AXIS = { stroke: "#7b8794", grid: { stroke: "#242e3b" }, ticks: { stroke: 
    fires setScale for our own propagation too, hence the re-entry guard. */
 let zoomSyncing = false;
 function syncZoom(u) {
-  if (zoomSyncing || !state.dataA) return;
-  const x = state.dataA.dist;
+  const ref = refPick();
+  if (zoomSyncing || !ref) return;
+  const x = ref.data.dist;
   const { min, max } = u.scales.x;
   if (min == null || max == null || !x.length) return;
   zoomSyncing = true;
@@ -956,19 +1174,29 @@ function drawCharts() {
   state.charts = [];
   holder.innerHTML = "";
 
-  const A = state.dataA;
-  if (!A) {
-    holder.innerHTML = `<div class="empty-hint">Tag lap A (and optionally B) above.</div>`;
+  const ref = refPick();
+  if (!ref) {
+    holder.innerHTML =
+      `<div class="empty-hint">Tag laps in the table above (or ＋ on a session card) to compare.</div>`;
     $("#cmp-label").textContent = "";
     return;
   }
-  const B = state.dataB;
-  $("#cmp-label").textContent = B ? "— A colored, B gray" : "";
+  const A = ref.data;
+  // every non-reference pick, interpolated onto the reference's
+  // track-position axis once (the charts all share that x-array)
+  const others = state.picks.slice(1).filter((p) => p.data);
+  const multi = others.length > 0;
+  const cache = new Map();
+  for (const p of others) {
+    const c = {};
+    for (const name of ["speed_kmh", "throttle", "brake", "steer", "lap_time"])
+      c[name] = interp(p.data.dist, p.data.channels[name], A.dist);
+    cache.set(p, c);
+  }
+  $("#cmp-label").textContent = multi ? "— Δ and slip vs A (reference)" : "";
 
   const x = A.dist;
-  const chan = (d, name) => d.channels[name];
-  const onA = (name) => chan(A, name);
-  const onB = (name) => (B ? interp(B.dist, chan(B, name), x) : null);
+  const onA = (name) => A.channels[name];
 
   const div = () => {
     const el = document.createElement("div");
@@ -976,38 +1204,50 @@ function drawCharts() {
     return el;
   };
 
-  // cache B interpolations once
-  const onBcache = {};
-  if (B) for (const name of ["speed_kmh", "throttle", "brake", "steer", "lap_time"])
-    onBcache[name] = onB(name);
-
-  if (B) {
-    const dt = onA("lap_time").map((tA, i) => tA - onBcache.lap_time[i]);
-    makeChart(div(), "Δ time (A − B), negative = A ahead", x,
-      [{ label: "Δs", stroke: "#22d3ee", fill: "rgba(34,211,238,0.08)", _vals: dt }], 170);
+  if (multi) {
+    const tA = onA("lap_time");
+    makeChart(div(), "Δ time vs A — above 0 = behind A", x, others.map((p) => ({
+      label: `Δ ${pickLetter(p)}`, stroke: p.color,
+      fill: others.length === 1 ? `${p.color}14` : undefined,
+      _vals: cache.get(p).lap_time.map((tP, i) => tP - tA[i]),
+    })), 170);
   }
 
   const toSpeed = (arr) => arr.map(speedFromKmh);
   makeChart(div(), `Speed (${speedUnit()})`, x, [
-    { label: "A", stroke: "#22d3ee", _vals: toSpeed(onA("speed_kmh")) },
-    ...(B ? [{ label: "B", stroke: "#5b6675", _vals: toSpeed(onBcache.speed_kmh) }] : []),
+    { label: "A", stroke: ref.color, _vals: toSpeed(onA("speed_kmh")) },
+    ...others.map((p) => ({
+      label: pickLetter(p), stroke: p.color, width: 1.2, _vals: toSpeed(cache.get(p).speed_kmh),
+    })),
   ]);
 
-  makeChart(div(), "Throttle / Brake (%)", x, [
-    { label: "thr A", stroke: "#34d399", _vals: onA("throttle") },
-    { label: "brk A", stroke: "#f87171", _vals: onA("brake") },
-    ...(B ? [
-      { label: "thr B", stroke: "#34d399", dash: [5, 5], width: 1, _vals: onBcache.throttle },
-      { label: "brk B", stroke: "#f87171", dash: [5, 5], width: 1, _vals: onBcache.brake },
-    ] : []),
-  ]);
+  // with several laps the channel colors (green/red) would collide with the
+  // lap colors, so the overlay encodes the channel in the line style instead
+  makeChart(div(),
+    multi ? "Throttle (solid) / Brake (dashed) (%)" : "Throttle / Brake (%)", x,
+    multi
+      ? [ref, ...others].flatMap((p) => {
+          const thr = p === ref ? onA("throttle") : cache.get(p).throttle;
+          const brk = p === ref ? onA("brake") : cache.get(p).brake;
+          return [
+            { label: `thr ${pickLetter(p)}`, stroke: p.color, width: 1.2, _vals: thr },
+            { label: `brk ${pickLetter(p)}`, stroke: p.color, dash: [5, 5], width: 1.1, _vals: brk },
+          ];
+        })
+      : [
+          { label: "thr A", stroke: "#34d399", _vals: onA("throttle") },
+          { label: "brk A", stroke: "#f87171", _vals: onA("brake") },
+        ]);
 
   makeChart(div(), "Steering (%)", x, [
-    { label: "A", stroke: "#93a3b8", _vals: onA("steer") },
-    ...(B ? [{ label: "B", stroke: "#5b6675", dash: [5, 5], width: 1, _vals: onBcache.steer }] : []),
+    { label: "A", stroke: multi ? ref.color : "#93a3b8", _vals: onA("steer") },
+    ...others.map((p) => ({
+      label: pickLetter(p), stroke: p.color, width: 1.2, _vals: cache.get(p).steer,
+    })),
   ], 120);
 
-  makeChart(div(), "Tire combined slip (front / rear) — 1.0 = grip limit", x, [
+  makeChart(div(),
+    `Tire combined slip (front / rear${multi ? ", A only" : ""}) — 1.0 = grip limit`, x, [
     { label: "front", stroke: "#fbbf24", _vals: onA("slip_front") },
     { label: "rear", stroke: "#f87171", _vals: onA("slip_rear") },
   ], 140);

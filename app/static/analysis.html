@@ -16,7 +16,7 @@
     <a href="index.html">Live</a>
     <a class="active" href="analysis.html">Analysis</a>
   </nav>
-  <div class="chip" id="hint">pick a session, then tag laps A and B to compare</div>
+  <div class="chip" id="hint">pick a session, then tag laps to compare — up to 6, across sessions</div>
   <div id="settings-btn" class="chip clickable" title="Settings" aria-label="Settings">⚙ Settings</div>
 </header>
 
@@ -72,6 +72,7 @@
         <tbody id="lap-rows"></tbody>
       </table>
     </section>
+    <div id="cmp-tray" class="cmp-tray" style="display:none"></div>
     <section class="panel">
       <h2>Track map</h2>
       <div class="map-row">
@@ -89,7 +90,6 @@
             </span>
             <button id="btn-map-png" title="Save the map as it is drawn — a shareable PNG with a title / car / lap-time caption">Save PNG</button>
             <span id="legend-scale"></span>
-            <span><span class="swatch" style="background:#5b6675"></span> lap B</span>
             <span><span class="swatch" style="background:#34d399"></span> start</span>
             <span title="contact spike (wall / obstacle) — right-click one to dismiss a wrong detection"><span style="color:#ef4444">✦</span> contact (right-click to dismiss)</span>
             <span title="jump: takeoff ○ to touchdown ▸ — a ring marks a hard landing"><span style="color:#f59e0b">○⇢</span> jump</span>
@@ -97,12 +97,12 @@
             <span id="map-hint" style="display:none">↔ drag the map to rotate</span>
           </div>
         </div>
-        <div id="map-side" class="empty-hint">Tag a lap as <b>A</b> to draw its racing line.</div>
+        <div id="map-side" class="empty-hint">Tag a lap to draw its racing line — add more to overlay them.</div>
       </div>
     </section>
     <section class="panel">
       <h2>Lap comparison <span id="cmp-label" style="text-transform:none"></span></h2>
-      <div class="charts" id="charts"><div class="empty-hint">Tag lap A (and optionally B) above.</div></div>
+      <div class="charts" id="charts"><div class="empty-hint">Tag laps in the table above (or ＋ on a session card) to compare.</div></div>
     </section>
   </div>
 </template>
