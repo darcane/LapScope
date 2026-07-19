@@ -95,6 +95,21 @@ def test_refresh_download_failure_keeps_current_list(car_state, monkeypatch):
     assert cars.CAR_NAMES == before
 
 
+def test_refresh_persist_failure_is_a_refresh_error(car_state, monkeypatch):
+    """A filesystem failure while persisting the validated list (disk full,
+    permissions, DATA_DIR gone) must surface as RefreshError - the endpoint's
+    readable 502 - not escape as a bare 500 (issue #42). The in-memory list
+    stays untouched."""
+    _source(car_state, GOOD_LIST, monkeypatch)
+    monkeypatch.setattr(cars, "_data_dir", str(car_state / "gone" / "deeper"))
+    before = dict(cars.CAR_NAMES)
+
+    with pytest.raises(cars.RefreshError):
+        cars.refresh()
+
+    assert cars.CAR_NAMES == before
+
+
 def test_load_ignores_corrupt_downloaded_copy(car_state):
     (car_state / cars.DOWNLOAD_NAME).write_text("{corrupt", encoding="utf-8")
     cars.load(str(car_state))

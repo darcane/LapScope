@@ -308,15 +308,22 @@ def dismiss_contact(lap_id: int, body: DismissBody, request: Request):
     (from the collision list of /laps/{id}/data). The marker is tagged
     dismissed at read time; when no real (non-landing, non-dismissed)
     contact remains on the lap, its contact flag is lifted through a flags
-    override. Flags are only ever removed here, never added."""
+    override. Flags are only ever removed here, never added. Only a real
+    contact qualifies: a landing spike never counted, so it is a 404 like
+    any other non-marker t, and re-dismissing an already-dismissed marker
+    is an idempotent no-op, not another edit row (issue #42)."""
     store = request.app.state.store
     lap = store.get_lap(lap_id)
     if lap is None:
         raise HTTPException(404, "lap not found")
     _, collisions, _ = _scan_lap(store.lap_frames(lap), lap["start_distance"] or 0.0)
-    if not any(abs(c["t"] - body.t) <= DISMISS_MATCH_S for c in collisions):
+    _apply_dismissals(collisions, store.session_edits(lap["session_id"]))
+    matched = [c for c in collisions
+               if abs(c["t"] - body.t) <= DISMISS_MATCH_S and not c["landing"]]
+    if not matched:
         raise HTTPException(404, "no contact marker at that time")
-    store.add_edit(lap["session_id"], "dismiss_contact", body.t)
+    if any(not c["dismissed"] for c in matched):
+        store.add_edit(lap["session_id"], "dismiss_contact", body.t)
     edits = store.session_edits(lap["session_id"])
     _apply_dismissals(collisions, edits)
     remaining = sum(1 for c in collisions if not c["landing"] and not c["dismissed"])

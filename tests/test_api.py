@@ -414,6 +414,40 @@ def test_dismiss_contact_rejects_a_time_with_no_marker(tmp_path):
     assert "contact" in flags_of(store.session_laps(sid)[lap["lap_number"]])
 
 
+def test_dismiss_contact_rejects_landings_and_duplicate_dismissals(tmp_path):
+    """API hardening (issue #42): a landing spike never counted as contact,
+    so "dismissing" it is a 404 like any non-marker t (it could only strip a
+    contact flag the user set by hand), and re-dismissing an
+    already-dismissed marker is an idempotent no-op, not a duplicate edit
+    row inflating edit_count."""
+    from app.api.routes import DismissBody, dismiss_contact, lap_data
+
+    def scenario(sim):
+        sim.event(180, "dirty with jumps", dirty=True)
+        sim.race_off()
+
+    store = run(scenario, tmp_path, jumps=True)
+    sid = sessions(store)[0]["id"]
+    req = _request_for(store)
+    lap = next(lap for lap in completed_laps(store, sid) if "contact" in flags_of(lap))
+    data = lap_data(lap["id"], req, "speed_kmh", 500)
+    walls = [c for c in data["collisions"] if not c["landing"]]
+    # a landing far enough from every wall hit that ±0.5 s can't match one
+    landing = next(c for c in data["collisions"] if c["landing"]
+                   and all(abs(c["t"] - w["t"]) > 0.6 for w in walls))
+
+    with pytest.raises(HTTPException) as exc:
+        dismiss_contact(lap["id"], DismissBody(t=landing["t"]), req)
+    assert exc.value.status_code == 404
+    assert store.session_edits(sid) == []  # nothing stored for the rejection
+
+    dismiss_contact(lap["id"], DismissBody(t=walls[0]["t"]), req)
+    n_edits = len(store.session_edits(sid))
+    out = dismiss_contact(lap["id"], DismissBody(t=walls[0]["t"]), req)
+    assert out["ok"]
+    assert len(store.session_edits(sid)) == n_edits  # no duplicate edit row
+
+
 def test_lap_flags_override_set_revert_and_validate(tmp_path):
     """PATCH /laps/{id} flags: "" clears every marker (effective flags None,
     detected CSV preserved in flags_auto); writing back exactly the detected
