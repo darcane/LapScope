@@ -79,7 +79,10 @@ function displayName(s) {
 /* ---------------- sessions sidebar ---------------- */
 
 async function loadSessions() {
-  const list = await (await fetch("/api/sessions")).json();
+  let list;
+  try {
+    list = await (await fetch("/api/sessions")).json();
+  } catch { return; }  // server briefly away (restart): keep the current list
   const el = $("#session-list");
   el.innerHTML = "";
   if (!list.length) {
@@ -127,9 +130,24 @@ async function loadSessions() {
   }
 }
 
+/* rapid clicks race their fetches: only the latest selection may render its
+   payload, or a slower response would show session A while state.sessionId
+   is already B (same rule addPick applies to lap-data fetches) */
+let selectSeq = 0;
+
 async function selectSession(id) {
+  const seq = ++selectSeq;
   state.sessionId = id;
-  const payload = await (await fetch(`/api/sessions/${id}/laps`)).json();
+  let payload;
+  try {
+    const res = await fetch(`/api/sessions/${id}/laps`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    payload = await res.json();
+  } catch (err) {
+    if (seq === selectSeq) uiAlert("Couldn't load session", String(err.message || err));
+    return;
+  }
+  if (seq !== selectSeq) return;  // a newer selection landed; drop this payload
   state.laps = payload.laps;
   state.session = payload.session;  // PNG export captions from it
 
@@ -139,7 +157,9 @@ async function selectSession(id) {
   const s = payload.session;
   $("#session-title").textContent = displayName(s);
   $("#header-badges").innerHTML = classBadge(s.car_class_letter, s.car_pi) + dtBadge(s.drivetrain);
-  $("#header-car").textContent = s.car_name + (s.route_name ? "" : "  ·  route not identified yet (complete a lap)");
+  // route_id, not route_name: routes are created nameless, so an
+  // identified-but-unnamed route must not read as "not identified"
+  $("#header-car").textContent = s.car_name + (s.route_id ? "" : "  ·  route not identified yet (complete a lap)");
   if (!s.car_known) {
     // community list doesn't know this ordinal yet: make it one click to fix
     const help = document.createElement("button");
@@ -1209,7 +1229,12 @@ function interp(xs, ys, xq) {
     while (i < xs.length - 2 && xs[i + 1] < x) i++;
     if (x <= xs[0]) out[k] = ys[0];
     else if (x >= xs[xs.length - 1]) out[k] = ys[ys.length - 1];
-    else out[k] = ys[i] + (ys[i + 1] - ys[i]) * ((x - xs[i]) / (xs[i + 1] - xs[i]));
+    else {
+      const span = xs[i + 1] - xs[i];  // 0 on plateaued dist (parked frames):
+      out[k] = span > 0                // 0/0 would put a NaN gap in the chart
+        ? ys[i] + (ys[i + 1] - ys[i]) * ((x - xs[i]) / span)
+        : ys[i];
+    }
   }
   return out;
 }

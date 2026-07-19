@@ -106,8 +106,11 @@ def refresh() -> tuple[int, int]:
     added = len(fetched.keys() - CAR_NAMES.keys())
     dest = _downloaded_file()
     tmp = dest.with_name(dest.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, dest)  # atomic: never leaves a half-written list behind
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, dest)  # atomic: never leaves a half-written list behind
+    except OSError as exc:
+        raise RefreshError(f"could not save the car list: {exc}") from exc
     load()
     log.info("car list refreshed: %d cars (%d new) from %s",
              len(CAR_NAMES), added, SOURCE_URL)

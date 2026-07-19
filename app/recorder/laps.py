@@ -767,7 +767,7 @@ class SessionTracker:
         # point-to-point events may never start the lap clock; fall back to
         # race time elapsed since the lap opened
         def lap_elapsed() -> float:
-            if cur > 0:
+            if cur > 0.001:  # same dead-clock epsilon as the live overlay in on_frame
                 return cur
             if self._lap_open_rt is not None and rt > self._lap_open_rt + 0.05:
                 return rt - self._lap_open_rt

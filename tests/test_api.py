@@ -137,6 +137,50 @@ def test_lap_data_reports_jump_segments(tmp_path):
     assert data["collisions"] and all(h["landing"] for h in data["collisions"])
 
 
+def test_mid_flight_spike_marks_its_own_jump_hard():
+    """A spike burst that starts AND ends while airborne (clipping something
+    mid-flight) belongs to the flight it happened in - not to the previous
+    jump, which is the last *emitted* segment at that moment (issue #41).
+    Two flights, the second with a mid-air burst that subsides before
+    touchdown: only the second may be hard."""
+    from app.api.routes import _scan_lap
+    from app.telemetry.packet import empty_fields, pack
+
+    def frame(d, *, air=False, gx=0.0):
+        f = empty_fields()
+        f["is_race_on"] = 1
+        f["distance_traveled"] = d
+        f["pos_x"] = d
+        f["norm_susp_travel"] = [0.05 if air else 0.5] * 4
+        f["tire_combined_slip"] = [0.01 if air else 0.3] * 4
+        f["accel_x"] = gx
+        return pack(f)
+
+    rows: list[tuple[float, bytes]] = []
+    t, d = 0.0, 0.0
+
+    def add(n, **kw):
+        nonlocal t, d
+        for _ in range(n):
+            rows.append((t, frame(d, **kw)))
+            t += 0.05
+            d += 2.0
+
+    add(10)                  # grounded run-up
+    add(8, air=True)         # flight 1: clean (0.4 s, past AIRBORNE_MIN_S)
+    add(10)                  # grounded stretch between the flights
+    add(4, air=True)         # flight 2 begins (0.2 s in: "flying")
+    add(2, air=True, gx=60)  # mid-air spike burst...
+    add(4, air=True)         # ...subsides while still airborne
+    add(10)                  # touchdown + rollout
+
+    _, collisions, jumps = _scan_lap(rows, 0.0)
+    assert len(jumps) == 2
+    assert not jumps[0]["hard"] and jumps[0]["g"] is None  # first flight clean
+    assert jumps[1]["hard"] and jumps[1]["g"] > 4.0        # the spike is its
+    assert collisions and all(c["landing"] for c in collisions)
+
+
 def test_lap_data_no_jumps_on_a_flat_lap(tmp_path):
     """A plain circuit lap never leaves the ground: jumps must be empty."""
     from app.api.routes import lap_data
@@ -368,6 +412,40 @@ def test_dismiss_contact_rejects_a_time_with_no_marker(tmp_path):
     assert exc.value.status_code == 404
     assert store.session_edits(sid) == []
     assert "contact" in flags_of(store.session_laps(sid)[lap["lap_number"]])
+
+
+def test_dismiss_contact_rejects_landings_and_duplicate_dismissals(tmp_path):
+    """API hardening (issue #42): a landing spike never counted as contact,
+    so "dismissing" it is a 404 like any non-marker t (it could only strip a
+    contact flag the user set by hand), and re-dismissing an
+    already-dismissed marker is an idempotent no-op, not a duplicate edit
+    row inflating edit_count."""
+    from app.api.routes import DismissBody, dismiss_contact, lap_data
+
+    def scenario(sim):
+        sim.event(180, "dirty with jumps", dirty=True)
+        sim.race_off()
+
+    store = run(scenario, tmp_path, jumps=True)
+    sid = sessions(store)[0]["id"]
+    req = _request_for(store)
+    lap = next(lap for lap in completed_laps(store, sid) if "contact" in flags_of(lap))
+    data = lap_data(lap["id"], req, "speed_kmh", 500)
+    walls = [c for c in data["collisions"] if not c["landing"]]
+    # a landing far enough from every wall hit that ±0.5 s can't match one
+    landing = next(c for c in data["collisions"] if c["landing"]
+                   and all(abs(c["t"] - w["t"]) > 0.6 for w in walls))
+
+    with pytest.raises(HTTPException) as exc:
+        dismiss_contact(lap["id"], DismissBody(t=landing["t"]), req)
+    assert exc.value.status_code == 404
+    assert store.session_edits(sid) == []  # nothing stored for the rejection
+
+    dismiss_contact(lap["id"], DismissBody(t=walls[0]["t"]), req)
+    n_edits = len(store.session_edits(sid))
+    out = dismiss_contact(lap["id"], DismissBody(t=walls[0]["t"]), req)
+    assert out["ok"]
+    assert len(store.session_edits(sid)) == n_edits  # no duplicate edit row
 
 
 def test_lap_flags_override_set_revert_and_validate(tmp_path):
@@ -655,6 +733,40 @@ def test_import_csv_rejects_garbage(tmp_path):
 
     assert store.list_sessions() == []  # every rejection left the DB alone
     store.close()
+
+
+def test_import_csv_survives_reprocess(tmp_path):
+    """Reprocessing an imported session must keep its lap times (issue #39):
+    each synthesized lap group's final frame carries the group's lap time as
+    LastLap, so the replay re-times every lap through the LastLap-change
+    finish - including a session of identical consecutive lap times, which
+    the LapNumber-increment path (LastLap on the next group's frames) could
+    not tell apart. Before the fix this replay found 0 completed laps and
+    the times were gone until a re-import."""
+    from app.api.routes import import_csv
+    from app.recorder.reprocess import reprocess_session
+
+    store = Store(tmp_path / "imp.db")
+    rows = ["lap,t_s,dist_m,speed_kmh,lap_time_s,pos_x_m,pos_z_m\n"]
+    for lap in (1, 2):  # two identical 12 s laps (> the 5 s lap-age gate)
+        for i in range(121):
+            t = i * 0.1
+            rows.append(f"{lap},{t:.1f},{t * 30:.1f},108.0,"
+                        f"{t + 0.017:.3f},{t * 30:.1f},0.0\n")
+    out = asyncio.run(import_csv(_import_request(store, "".join(rows)), name=""))
+    sid = out["session_id"]
+    before = [lap["lap_time"] for lap in store.session_laps(sid)]
+    assert len(before) == 2 and all(t == pytest.approx(12.017) for t in before)
+
+    found = reprocess_session(store, sid)
+    after = [lap["lap_time"] for lap in store.session_laps(sid)]
+    session = store.get_session(sid)
+    store.close()
+    assert found == 2
+    assert all(t == pytest.approx(12.017, abs=0.05) for t in after)
+    # the synthesized suspension is flat, not evidence of tarmac: a replay
+    # must not auto-tag imported sessions with a track type
+    assert session["track_type"] is None
 
 
 def test_edits_survive_reprocess_and_reset_reverts(tmp_path):

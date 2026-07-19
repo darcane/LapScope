@@ -49,6 +49,7 @@ const liveMap = {
   airSince: null,  // when the current all-wheels-unloaded stretch began
   airStart: null,  // [x, z] where that stretch began (the takeoff point)
   graceUntil: 0,   // spikes before this time are jump landings, not contact
+  pendingHard: false, // mid-flight spike waiting for its jump (pushed at touchdown)
 };
 
 function resetLiveMap(sessionId) {
@@ -64,6 +65,7 @@ function resetLiveMap(sessionId) {
   liveMap.airSince = null;
   liveMap.airStart = null;
   liveMap.graceUntil = 0;
+  liveMap.pendingHard = false;
 }
 
 // One marker per impact: register on the rising edge only, so grinding a wall
@@ -80,6 +82,7 @@ function feedCollision(f) {
     liveMap.overImpact = false;
     liveMap.airSince = null;
     liveMap.airStart = null;
+    liveMap.pendingHard = false;
     return;
   }
   const t = f._t;
@@ -93,17 +96,23 @@ function feedCollision(f) {
   } else {
     if (liveMap.airSince != null && t - liveMap.airSince >= AIRBORNE_MIN_S) {
       liveMap.graceUntil = t + LANDING_GRACE_S;
-      // a real flight just ended: this frame is the touchdown
+      // a real flight just ended: this frame is the touchdown; a spike seen
+      // mid-flight belongs to THIS jump (issue #41)
       liveMap.jumps.push({ x0: liveMap.airStart[0], z0: liveMap.airStart[1],
-                           x1: f.pos_x, z1: f.pos_z, hard: false });
+                           x1: f.pos_x, z1: f.pos_z, hard: liveMap.pendingHard });
+      liveMap.pendingHard = false;
     }
     liveMap.airSince = null;
   }
   const flying = liveMap.airSince != null && t - liveMap.airSince >= AIRBORNE_MIN_S;
   if (Math.hypot(f.accel_x, f.accel_z) >= IMPACT_ACCEL) {
     if (!liveMap.overImpact) {
-      if (flying || t < liveMap.graceUntil) {
-        // the landing of a jump, not contact: mark its glyph hard, no spark
+      if (flying) {
+        // mid-flight spike: its jump isn't pushed until touchdown - hold it
+        // instead of marking the previous jump hard (issue #41)
+        liveMap.pendingHard = true;
+      } else if (t < liveMap.graceUntil) {
+        // the landing of the jump that just ended: mark its glyph hard, no spark
         const j = liveMap.jumps[liveMap.jumps.length - 1];
         if (j) j.hard = true;
       } else {
@@ -217,15 +226,18 @@ setInterval(() => { if (!$("nodata").classList.contains("hidden")) pollStatus();
 pollStatus();
 
 let chipOrdinal = null;
+let chipSeq = 0;  // quick car changes race their fetches: only the latest may render
 async function updateCarChip(f) {
   if (f.car_ordinal === chipOrdinal) return;
   chipOrdinal = f.car_ordinal;
+  const seq = ++chipSeq;
   let name = `Car #${f.car_ordinal}`, known = false;
   try {
     const info = await (await fetch(`/api/cars/${f.car_ordinal}`)).json();
     name = info.name;
     known = info.known;
   } catch { }
+  if (seq !== chipSeq) return;  // a newer car's fetch superseded this one
   const chip = $("car-chip");
   chip.innerHTML = `${classBadge(CLASS_LETTERS[f.car_class] || "?", f.car_pi)}` +
     `${dtBadge(DRIVETRAINS[f.drivetrain_type] || "?")} <span class="car-nm"></span>`;

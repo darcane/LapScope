@@ -308,15 +308,22 @@ def dismiss_contact(lap_id: int, body: DismissBody, request: Request):
     (from the collision list of /laps/{id}/data). The marker is tagged
     dismissed at read time; when no real (non-landing, non-dismissed)
     contact remains on the lap, its contact flag is lifted through a flags
-    override. Flags are only ever removed here, never added."""
+    override. Flags are only ever removed here, never added. Only a real
+    contact qualifies: a landing spike never counted, so it is a 404 like
+    any other non-marker t, and re-dismissing an already-dismissed marker
+    is an idempotent no-op, not another edit row (issue #42)."""
     store = request.app.state.store
     lap = store.get_lap(lap_id)
     if lap is None:
         raise HTTPException(404, "lap not found")
     _, collisions, _ = _scan_lap(store.lap_frames(lap), lap["start_distance"] or 0.0)
-    if not any(abs(c["t"] - body.t) <= DISMISS_MATCH_S for c in collisions):
+    _apply_dismissals(collisions, store.session_edits(lap["session_id"]))
+    matched = [c for c in collisions
+               if abs(c["t"] - body.t) <= DISMISS_MATCH_S and not c["landing"]]
+    if not matched:
         raise HTTPException(404, "no contact marker at that time")
-    store.add_edit(lap["session_id"], "dismiss_contact", body.t)
+    if any(not c["dismissed"] for c in matched):
+        store.add_edit(lap["session_id"], "dismiss_contact", body.t)
     edits = store.session_edits(lap["session_id"])
     _apply_dismissals(collisions, edits)
     remaining = sum(1 for c in collisions if not c["landing"] and not c["dismissed"])
@@ -393,24 +400,40 @@ def _scan_lap(rows: list[tuple[float, bytes]], start_dist: float):
     air_since: float | None = None
     air_start: tuple | None = None  # (t, d, frame) of the first airborne frame
     grace_until = 0.0
+    pending_hard: float | None = None  # mid-flight landing peak (g) waiting for
+                                       # its own segment to be emitted
 
     def emit(peak: tuple, landing: bool) -> None:
+        nonlocal pending_hard
         g0, t0, d0, p0 = peak
         collisions.append({"x": round(p0["pos_x"], 2), "y": round(p0["pos_y"], 2),
                            "z": round(p0["pos_z"], 2), "dist": round(d0 - start_dist, 2),
                            "t": round(t0, 3),
                            "g": round(g0 / 9.80665, 2), "landing": landing})
-        if landing and jumps:
-            jumps[-1]["hard"] = True
-            jumps[-1]["g"] = max(jumps[-1]["g"] or 0.0, round(g0 / 9.80665, 2))
+        if landing:
+            peak_g = round(g0 / 9.80665, 2)
+            if air_since is not None:
+                # the burst resolved while still airborne (clipping something
+                # mid-flight): this flight's segment isn't emitted until
+                # touchdown, so hold the peak for emit_jump instead of
+                # marking the PREVIOUS jump hard (issue #41)
+                pending_hard = max(pending_hard or 0.0, peak_g)
+            elif jumps:
+                jumps[-1]["hard"] = True
+                jumps[-1]["g"] = max(jumps[-1]["g"] or 0.0, peak_g)
 
     def emit_jump(start: tuple, land: tuple) -> None:
+        nonlocal pending_hard
         (t0, d0, p0), (t1, d1, p1) = start, land
         jumps.append({"x0": round(p0["pos_x"], 2), "y0": round(p0["pos_y"], 2),
                       "z0": round(p0["pos_z"], 2), "dist0": round(d0 - start_dist, 2),
                       "x1": round(p1["pos_x"], 2), "y1": round(p1["pos_y"], 2),
                       "z1": round(p1["pos_z"], 2), "dist1": round(d1 - start_dist, 2),
                       "air_s": round(t1 - t0, 2), "hard": False, "g": None})
+        if pending_hard is not None:  # a mid-flight spike waited for this segment
+            jumps[-1]["hard"] = True
+            jumps[-1]["g"] = pending_hard
+            pending_hard = None
 
     for t, d, p in kept:
         airborne = (all(s < AIRBORNE_SUSP_MAX for s in p["norm_susp_travel"])
@@ -435,10 +458,12 @@ def _scan_lap(rows: list[tuple[float, bytes]], start_dist: float):
         elif peak is not None:
             emit(peak, burst_landing)
             peak = None
-    if air_since is not None and kept and kept[-1][0] - air_since >= AIRBORNE_MIN_S:
-        emit_jump(air_start, kept[-1])  # lap trace ended mid-flight
+    # resolve a trailing burst BEFORE a trailing flight: a trace ending
+    # mid-burst mid-flight must hand its peak to the segment emitted next
     if peak is not None:  # impact ran to the last kept frame
         emit(peak, burst_landing)
+    if air_since is not None and kept and kept[-1][0] - air_since >= AIRBORNE_MIN_S:
+        emit_jump(air_start, kept[-1])  # lap trace ended mid-flight
 
     return kept, collisions, jumps
 
@@ -620,12 +645,23 @@ _GROUNDED_SUSP = 0.5
 
 
 def _synth_frame(row: dict, global_dist: float, global_t: float,
-                 lap_index: int) -> bytes:
+                 lap_index: int, last_lap: float = 0.0) -> bytes:
     """One Data Out packet from one CSV row. Only the channels the CSV
     carries are real; the rest is neutral filler. The inverse of the
     CHANNELS extractors, so an exported value round-trips exactly."""
     f = empty_fields()
     f["is_race_on"] = 1
+    # last_lap is 0 on every frame except each lap group's final one, which
+    # carries the group's lap time: the LastLap-change finish signal a
+    # reprocess needs to re-time the lap (issue #39). Firing it per group
+    # also works for a lone lap and for identical consecutive lap times,
+    # which the LapNumber-increment path couldn't tell apart.
+    f["last_lap"] = last_lap
+    # synthesized suspension is flat, so a replay must see no surface
+    # evidence at all - |NormalizedDrivingLine| saturated means "off the
+    # course" to the track-type classifier, keeping a reprocess from
+    # auto-tagging every imported session "road"
+    f["normalized_driving_line"] = 127
     f["current_engine_rpm"] = row.get("rpm", 0.0)
     f["accel_x"] = row.get("lat_g", 0.0) * 9.80665
     f["accel_z"] = row.get("lon_g", 0.0) * 9.80665
@@ -705,13 +741,15 @@ async def import_csv(request: Request, name: str = Query("", max_length=120)):
     frames: list[tuple[float, bytes]] = []
     laps: list[dict] = []
     for lap_no, rows in groups:
-        for r in rows:
-            frames.append((base + t_off + r["t_s"],
-                           _synth_frame(r, d_off + r["dist_m"],
-                                        t_off + r["t_s"], lap_no - 1)))
         # the clock's high-water mark, not the last sample: a lap's trace may
         # end on the crossing frame, where the game already reset the clock
         clock = max(r["lap_time_s"] for r in rows)
+        for i, r in enumerate(rows):
+            frames.append((base + t_off + r["t_s"],
+                           _synth_frame(r, d_off + r["dist_m"],
+                                        t_off + r["t_s"], lap_no - 1,
+                                        last_lap=clock if i == len(rows) - 1
+                                        else 0.0)))
         laps.append({"number": lap_no - 1,
                      "started_t": base + t_off + rows[0]["t_s"],
                      "ended_t": base + t_off + rows[-1]["t_s"],
