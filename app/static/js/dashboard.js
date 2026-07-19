@@ -226,15 +226,18 @@ setInterval(() => { if (!$("nodata").classList.contains("hidden")) pollStatus();
 pollStatus();
 
 let chipOrdinal = null;
+let chipSeq = 0;  // quick car changes race their fetches: only the latest may render
 async function updateCarChip(f) {
   if (f.car_ordinal === chipOrdinal) return;
   chipOrdinal = f.car_ordinal;
+  const seq = ++chipSeq;
   let name = `Car #${f.car_ordinal}`, known = false;
   try {
     const info = await (await fetch(`/api/cars/${f.car_ordinal}`)).json();
     name = info.name;
     known = info.known;
   } catch { }
+  if (seq !== chipSeq) return;  // a newer car's fetch superseded this one
   const chip = $("car-chip");
   chip.innerHTML = `${classBadge(CLASS_LETTERS[f.car_class] || "?", f.car_pi)}` +
     `${dtBadge(DRIVETRAINS[f.drivetrain_type] || "?")} <span class="car-nm"></span>`;
