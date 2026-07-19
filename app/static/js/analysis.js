@@ -139,7 +139,9 @@ async function selectSession(id) {
   const s = payload.session;
   $("#session-title").textContent = displayName(s);
   $("#header-badges").innerHTML = classBadge(s.car_class_letter, s.car_pi) + dtBadge(s.drivetrain);
-  $("#header-car").textContent = s.car_name + (s.route_name ? "" : "  ·  route not identified yet (complete a lap)");
+  // route_id, not route_name: routes are created nameless, so an
+  // identified-but-unnamed route must not read as "not identified"
+  $("#header-car").textContent = s.car_name + (s.route_id ? "" : "  ·  route not identified yet (complete a lap)");
   if (!s.car_known) {
     // community list doesn't know this ordinal yet: make it one click to fix
     const help = document.createElement("button");
