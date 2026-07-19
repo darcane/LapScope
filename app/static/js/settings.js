@@ -10,6 +10,9 @@ const SETTINGS_DEFAULTS = {
   speed: "kmh",         // "kmh" | "mph"
   temp: "c",            // "c" | "f"  (packet TireTemp is Fahrenheit)
   dist: "km",           // "km" | "mi"
+  power: "kw",          // "kw" | "hp" | "ps"  (packet Power is Watts)
+  boost: "psi",         // "psi" | "bar"  (packet Boost is psi)
+  accent: "cyan",       // key into ACCENTS below
   freeroamMap: false,   // draw the live track map in free roam, not only races
   contactLayer: true,   // show contact sparks + jump glyphs on the analysis map
   defaultMapMode: "2d", // "2d" | "3d"  (absorbs legacy fc_mapmode)
@@ -49,6 +52,9 @@ function getSettings() { return _settings; }
 function saveSettings(patch) {
   _settings = { ..._settings, ...patch };
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(_settings)); } catch { /* private mode */ }
+  // restyle the page before listeners run, so canvas redraws triggered by
+  // them already see the new --accent
+  if ("accent" in patch) applyAccent();
   for (const cb of _settingsListeners) {
     try { cb(_settings); } catch { /* a bad listener must not block the rest */ }
   }
@@ -77,8 +83,58 @@ function tempUnit() { return _settings.temp === "c" ? "\u00b0C" : "\u00b0F"; }
 function distFromM(m) { return _settings.dist === "mi" ? m / 1609.344 : m / 1000; }
 function distUnit() { return _settings.dist === "mi" ? "mi" : "km"; }
 
+/* packet power is Watts; hp = mechanical horsepower, PS = metric horsepower */
+function powerFromW(w) {
+  return _settings.power === "hp" ? w / 745.699872
+    : _settings.power === "ps" ? w / 735.49875
+    : w / 1000;
+}
+function powerUnit() {
+  return _settings.power === "hp" ? "hp" : _settings.power === "ps" ? "PS" : "kW";
+}
+
+/* packet boost is psi; bar values are ~7× smaller, so they get an extra decimal */
+function boostFromPsi(psi) { return _settings.boost === "bar" ? psi * 0.0689475729 : psi; }
+function boostUnit() { return _settings.boost === "bar" ? "bar" : "psi"; }
+function fmtBoost(psi) { return boostFromPsi(psi).toFixed(_settings.boost === "bar" ? 2 : 1); }
+
 /* tire-temp cell string for the grip gauge, e.g. "71°C" (input is Fahrenheit) */
 function fmtTireTemp(f) { return `${Math.round(tempFromF(f))}${tempUnit()}`; }
+
+/* ---------- accent theme (issue #25) ----------
+   Curated presets, not a free color wheel, so contrast against the dark
+   palette stays readable everywhere. Each entry:
+   - accent: what CSS --accent becomes (all light enough for the #001018
+     text that sits on accent-filled pills/buttons);
+   - pick: the chart-friendly shade used as overlay color A on the analysis
+     page (identical between map and charts);
+   - clash: index in the analysis BASE_PICK_COLORS palette that sits too
+     close to this accent — analysis.js swaps that one for cyan so six
+     overlaid laps stay tellable-apart. */
+const ACCENTS = {
+  cyan:    { label: "Cyan",    accent: "#00d4ff", pick: "#22d3ee", clash: -1 },
+  magenta: { label: "Magenta", accent: "#ff3d7f", pick: "#ff3d7f", clash: 4 },
+  violet:  { label: "Violet",  accent: "#9d6bff", pick: "#9d6bff", clash: 2 },
+  sunset:  { label: "Sunset",  accent: "#ff8c2e", pick: "#ff8c2e", clash: 1 },
+  lime:    { label: "Lime",    accent: "#a3e635", pick: "#a3e635", clash: 3 },
+  frost:   { label: "Frost",   accent: "#e8f1fb", pick: "#e8f1fb", clash: 5 },
+};
+
+function accentDef() { return ACCENTS[_settings.accent] || ACCENTS.cyan; }
+
+/* "#rrggbb" -> "rgba(r, g, b, a)": canvas strokes need alpha'd accents */
+function hexRgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+
+/* The whole CSS theme keys off --accent (style.css derives glows and fills
+   from it via color-mix); canvas renderers can't use var() and instead pull
+   accentDef() again on every settings change (gauges.js / analysis.js). */
+function applyAccent() {
+  document.documentElement.style.setProperty("--accent", accentDef().accent);
+}
+applyAccent();
 
 /* ---------- settings panel (themed modal, reuses common.js modal chrome) ---------- */
 
@@ -158,10 +214,43 @@ function openSettings() {
     body.appendChild(g);
   };
 
+  // accent swatches: one color dot per curated preset (no free color wheel)
+  const swatches = (label, key) => {
+    const row = document.createElement("div");
+    row.className = "settings-row";
+    const lab = document.createElement("span");
+    lab.className = "settings-label";
+    lab.textContent = label;
+    row.appendChild(lab);
+    const group = document.createElement("div");
+    group.className = "settings-swatches";
+    for (const [value, a] of Object.entries(ACCENTS)) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "settings-swatch";
+      b.style.setProperty("--sw", a.accent);
+      b.title = a.label;
+      b.setAttribute("aria-label", `${a.label} accent`);
+      b.classList.toggle("active", _settings[key] === value);
+      b.onclick = () => {
+        saveSettings({ [key]: value });
+        for (const x of group.children) x.classList.toggle("active", x === b);
+      };
+      group.appendChild(b);
+    }
+    row.appendChild(group);
+    body.appendChild(row);
+  };
+
+  group("Theme");
+  swatches("Accent", "accent");
+
   group("Units");
   seg("Speed", "speed", [{ label: "km/h", value: "kmh" }, { label: "mph", value: "mph" }]);
   seg("Tire temp", "temp", [{ label: "\u00b0C", value: "c" }, { label: "\u00b0F", value: "f" }]);
   seg("Distance", "dist", [{ label: "km", value: "km" }, { label: "mi", value: "mi" }]);
+  seg("Power", "power", [{ label: "kW", value: "kw" }, { label: "hp", value: "hp" }, { label: "PS", value: "ps" }]);
+  seg("Boost", "boost", [{ label: "psi", value: "psi" }, { label: "bar", value: "bar" }]);
 
   group("Maps");
   toggle("Live map in free roam", "freeroamMap");

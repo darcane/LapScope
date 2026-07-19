@@ -199,6 +199,7 @@ function setConn(text, cls) {
 // toggling the free-roam-map setting off mid-drive: drop the accumulated path
 // so it doesn't linger on screen (races clear it on their own on session change)
 onSettingsChange(() => {
+  refreshCanvasTheme(); // accent switch: gauges pick it up next rAF frame
   if (!getSettings().freeroamMap) resetLiveMap(liveMap.session);
   syncRawPanel();
 });
@@ -378,8 +379,10 @@ function render() {
   const v = speedFromMps(f.speed);
   $("speed").textContent = Math.round(Math.max(0, v));
   $("speed-unit").textContent = speedUnit();
-  $("power").textContent = Math.max(0, f.power / 1000).toFixed(0);
-  $("boost").textContent = Math.max(0, f.boost).toFixed(1);
+  $("power").textContent = powerFromW(Math.max(0, f.power)).toFixed(0);
+  $("power-unit").textContent = powerUnit();
+  $("boost").textContent = fmtBoost(Math.max(0, f.boost));
+  $("boost-unit").textContent = boostUnit();
 
   const latG = f.accel_x / 9.80665, lonG = f.accel_z / 9.80665;
   $("latg").textContent = latG.toFixed(2);

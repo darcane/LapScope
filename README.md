@@ -73,7 +73,9 @@ in Rivals.
 - **Routes** — the game never sends route names, so circuits are fingerprinted from lap
   geometry. Name a route once and every past and future session on it picks it up.
 - **Settings** — a ⚙ **Settings** panel (top-right on both pages) to switch units —
-  **speed** (km/h ↔ mph), **tire temp** (°C ↔ °F), **distance** (km ↔ mi) — plus map
+  **speed** (km/h ↔ mph), **tire temp** (°C ↔ °F), **distance** (km ↔ mi),
+  **power** (kW / hp / PS), **boost** (psi / bar) — pick an **accent theme**
+  (six curated presets; gauges, maps, and charts follow along) — plus map
   preferences (draw the live map in free roam, show/hide analysis contact markers,
   default 2D/3D view and color-by) and **raw data** toggles: a live panel with every
   packet field as the game sends it, and a **raw-data-at-cursor table** on the analysis
@@ -106,9 +108,14 @@ conditions ribbons, plus the auto-named route:
 
 ![Session list with ribbons](docs/media/session-sidebar.png)
 
-**Settings** — units and map preferences, saved in your browser:
+**Settings** — units, accent theme, and map preferences, saved in your browser:
 
 ![Settings panel](docs/media/settings.png)
+
+**Accent themes** — six curated presets; every gauge, map, and chart follows along
+(the live dashboard in Sunset, showing hp / bar power and boost units):
+
+![Live dashboard in the Sunset accent](docs/media/accent-live-sunset.png)
 
 ## Quick start
 

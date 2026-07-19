@@ -10,9 +10,20 @@ const channelList = () =>
   getSettings().rawAnalysis ? `${LAP_CHANNELS},${RAW_CHANNELS}` : LAP_CHANNELS;
 
 /* overlay palette: distinct on the dark theme and identical between map and
-   charts; first entry = the accent, so a single picked lap looks like before */
-const PICK_COLORS = ["#22d3ee", "#f59e0b", "#a78bfa", "#34d399", "#f472b6", "#94a3b8"];
-const MAX_PICKS = PICK_COLORS.length;
+   charts. Entry 0 follows the Settings accent so a single picked lap matches
+   the UI; the base color nearest the chosen accent is swapped for cyan
+   (ACCENTS[..].clash, settings.js) so six overlaid laps stay tellable-apart. */
+const BASE_PICK_COLORS = ["#22d3ee", "#f59e0b", "#a78bfa", "#34d399", "#f472b6", "#94a3b8"];
+const MAX_PICKS = BASE_PICK_COLORS.length;
+
+function accentPickPalette() {
+  const a = accentDef();
+  const pal = [...BASE_PICK_COLORS];
+  pal[0] = a.pick;
+  if (a.clash > 0) pal[a.clash] = BASE_PICK_COLORS[0];
+  return pal;
+}
+let PICK_COLORS = accentPickPalette();
 
 const state = {
   sessionId: null,
@@ -965,7 +976,7 @@ function drawMap() {
     }
     if (zi) {  // halo under the zoomed stretch so it pops against any colors
       ctx.save();
-      ctx.strokeStyle = "rgba(34,211,238,0.30)";
+      ctx.strokeStyle = hexRgba(PICK_COLORS[0], 0.30);
       ctx.lineWidth = 11;
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
@@ -1015,10 +1026,11 @@ function drawMap() {
       polyline(A, false, ref.color, 3);
     }
     if (zi) {  // span endpoints: filled = where the window starts, hollow = ends
-      for (const [idx, fill, ring] of [[zi[0], "#22d3ee", "#fff"], [zi[1], "#0b1520", "#22d3ee"]]) {
+      const zc = PICK_COLORS[0];
+      for (const [idx, fill, ring] of [[zi[0], zc, "#fff"], [zi[1], "#0b1520", zc]]) {
         const [X, Y] = at(A, idx, false);
         ctx.save();
-        ctx.shadowColor = "#22d3ee";
+        ctx.shadowColor = zc;
         ctx.shadowBlur = 8;
         ctx.fillStyle = fill;
         ctx.strokeStyle = ring;
@@ -1526,8 +1538,20 @@ function bindImport() {
 }
 
 window.addEventListener("resize", () => { drawMap(); drawCharts(); });
-// live-apply unit / layer changes from the settings panel
-onSettingsChange(() => { drawMap(); drawCharts(); syncRawSection(); });
+// live-apply unit / layer / accent changes from the settings panel
+onSettingsChange(() => {
+  const pal = accentPickPalette();
+  if (pal.join() !== PICK_COLORS.join()) { // accent switch: recolor picks in place
+    for (const p of state.picks) {
+      const i = PICK_COLORS.indexOf(p.color);
+      if (i >= 0) p.color = pal[i];
+    }
+    PICK_COLORS = pal;
+    renderLapRows();
+    renderTray();
+  }
+  drawMap(); drawCharts(); syncRawSection();
+});
 bindImport();
 loadSessions();
 setInterval(loadSessions, 15000); // pick up newly finished sessions

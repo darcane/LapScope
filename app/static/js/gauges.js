@@ -22,6 +22,13 @@ const COL = {
   good: "#2fe6a8", warn: "#ffbe3d", bad: "#ff5d5d",
   grid: "#1c2634", dim: "#3a475c99",
 };
+
+/* canvas can't use var(--accent): resolve the Settings accent into COL — at
+   load and again on every settings change (dashboard.js hook) */
+function refreshCanvasTheme() {
+  COL.accent = accentDef().accent;
+}
+refreshCanvasTheme();
 const FONT = "Rajdhani, 'Segoe UI', sans-serif";
 
 /* slip 0 -> green, ~1 -> amber, >1.15 -> red */
@@ -102,8 +109,8 @@ function drawFriction(g, trail, latG, lonG) {
 
   // soft field inside the outer ring
   const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 1.5 * scale);
-  grad.addColorStop(0, "rgba(0, 212, 255, 0.05)");
-  grad.addColorStop(1, "rgba(0, 212, 255, 0)");
+  grad.addColorStop(0, hexRgba(COL.accent, 0.05));
+  grad.addColorStop(1, hexRgba(COL.accent, 0));
   ctx.fillStyle = grad;
   ctx.beginPath(); ctx.arc(cx, cy, 1.5 * scale, 0, Math.PI * 2); ctx.fill();
 
@@ -127,7 +134,7 @@ function drawFriction(g, trail, latG, lonG) {
     ctx.lineCap = "round";
     for (let i = 1; i < trail.length; i++) {
       const alpha = (i / trail.length) * 0.5;
-      ctx.strokeStyle = `rgba(0, 212, 255, ${alpha.toFixed(3)})`;
+      ctx.strokeStyle = hexRgba(COL.accent, alpha.toFixed(3));
       ctx.beginPath();
       ctx.moveTo(cx + trail[i - 1][0] * scale, cy - trail[i - 1][1] * scale);
       ctx.lineTo(cx + trail[i][0] * scale, cy - trail[i][1] * scale);
@@ -244,7 +251,7 @@ function drawLiveMap(g, pts, ext, car) {
   const X = (x) => (x - ext.minX) * scale + (w - spanX * scale) / 2;
   const Y = (z) => (ext.maxZ - z) * scale + (h - spanZ * scale) / 2;
 
-  ctx.strokeStyle = "rgba(0, 212, 255, 0.55)";
+  ctx.strokeStyle = hexRgba(COL.accent, 0.55);
   ctx.lineWidth = 2;
   ctx.lineJoin = "round";
   ctx.beginPath();

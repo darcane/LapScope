@@ -207,9 +207,15 @@ assert them here.
   `#color-mode` (`speed`/`slip`) options in analysis.html; `analysis.js` seeds
   `state.mapMode`/`state.colorMode` from them and writes changes back via
   `saveSettings`. The `ls_settings` schema (`speed` kmh/mph, `temp` c/f, `dist`
-  km/mi, `freeroamMap`, `contactLayer`, `defaultMapMode`, `defaultColor`,
-  `rawLive`, `rawAnalysis`) lives in `settings.js` and migrates the legacy
+  km/mi, `power` kw/hp/ps, `boost` psi/bar, `accent` — a key into `ACCENTS`,
+  `freeroamMap`, `contactLayer`, `defaultMapMode`, `defaultColor`, `rawLive`,
+  `rawAnalysis`) lives in `settings.js` and migrates the legacy
   `fc_mph` / `fc_mapmode` keys on first load.
+- Accent theme: CSS derives every accent-tinted style from `--accent`
+  (style.css), which `applyAccent()` (settings.js) sets from `ACCENTS`; canvas
+  renderers can't use `var()` and re-read `accentDef()` on settings change
+  (`refreshCanvasTheme` in gauges.js, `accentPickPalette` in analysis.js) —
+  keep new accent-colored drawing code on one of those two paths.
 - Conditions set: `CONDITIONS` (api/routes.py) = `CONDITION_META` (common.js)
   = `#cond-select` options (analysis.html).
 - Car classes / colors: `CAR_CLASSES` (api/routes.py) = `CLASS_LETTERS` +

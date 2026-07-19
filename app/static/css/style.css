@@ -20,13 +20,17 @@
 
 * { box-sizing: border-box; }
 
+::selection { background: var(--accent); color: #001018; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 body {
   margin: 0;
   color: var(--text);
   font-family: "Segoe UI", system-ui, sans-serif;
-  /* four soft color fields leaning toward the center — cyan, violet, magenta, teal */
+  /* four soft color fields leaning toward the center — the first follows the
+     Settings accent, the rest stay violet, magenta, teal for a multi-hue glow */
   background:
-    radial-gradient(1000px 640px at 16% 6%, rgba(0, 212, 255, 0.075), transparent 62%),
+    radial-gradient(1000px 640px at 16% 6%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 62%),
     radial-gradient(880px 600px at 88% 20%, rgba(124, 92, 255, 0.06), transparent 60%),
     radial-gradient(1000px 660px at 82% 96%, rgba(255, 61, 127, 0.065), transparent 62%),
     radial-gradient(860px 580px at 8% 84%, rgba(47, 230, 168, 0.05), transparent 60%),
@@ -246,7 +250,7 @@ main.grid .lap-grid { margin-bottom: auto; }
   font-weight: 700;
   line-height: 0.95;
   font-variant-numeric: tabular-nums;
-  text-shadow: 0 0 26px rgba(0, 212, 255, 0.28);
+  text-shadow: 0 0 26px color-mix(in srgb, var(--accent) 28%, transparent);
 }
 #speed-unit {
   font-family: var(--display);
@@ -631,6 +635,21 @@ main.grid .lap-grid { margin-bottom: auto; }
 }
 .settings-switch.on { background: var(--accent); border-color: var(--accent); }
 .settings-switch.on::after { transform: translateX(20px); background: #001018; }
+
+/* accent swatches (Theme group): one dot per preset; the active one wears a
+   white ring + its own glow. --sw is set per-button from ACCENTS in JS. */
+.settings-swatches { display: inline-flex; gap: 9px; flex: none; }
+.settings-swatch {
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: var(--sw);
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.12s, box-shadow 0.12s, border-color 0.12s;
+}
+.settings-swatch:hover { transform: scale(1.15); }
+.settings-swatch.active { border-color: var(--text); box-shadow: 0 0 10px var(--sw); }
 
 .settings-carlist-status { color: var(--muted); font-size: 0.85rem; }
 .settings-refresh {
