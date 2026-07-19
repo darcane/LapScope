@@ -137,6 +137,50 @@ def test_lap_data_reports_jump_segments(tmp_path):
     assert data["collisions"] and all(h["landing"] for h in data["collisions"])
 
 
+def test_mid_flight_spike_marks_its_own_jump_hard():
+    """A spike burst that starts AND ends while airborne (clipping something
+    mid-flight) belongs to the flight it happened in - not to the previous
+    jump, which is the last *emitted* segment at that moment (issue #41).
+    Two flights, the second with a mid-air burst that subsides before
+    touchdown: only the second may be hard."""
+    from app.api.routes import _scan_lap
+    from app.telemetry.packet import empty_fields, pack
+
+    def frame(d, *, air=False, gx=0.0):
+        f = empty_fields()
+        f["is_race_on"] = 1
+        f["distance_traveled"] = d
+        f["pos_x"] = d
+        f["norm_susp_travel"] = [0.05 if air else 0.5] * 4
+        f["tire_combined_slip"] = [0.01 if air else 0.3] * 4
+        f["accel_x"] = gx
+        return pack(f)
+
+    rows: list[tuple[float, bytes]] = []
+    t, d = 0.0, 0.0
+
+    def add(n, **kw):
+        nonlocal t, d
+        for _ in range(n):
+            rows.append((t, frame(d, **kw)))
+            t += 0.05
+            d += 2.0
+
+    add(10)                  # grounded run-up
+    add(8, air=True)         # flight 1: clean (0.4 s, past AIRBORNE_MIN_S)
+    add(10)                  # grounded stretch between the flights
+    add(4, air=True)         # flight 2 begins (0.2 s in: "flying")
+    add(2, air=True, gx=60)  # mid-air spike burst...
+    add(4, air=True)         # ...subsides while still airborne
+    add(10)                  # touchdown + rollout
+
+    _, collisions, jumps = _scan_lap(rows, 0.0)
+    assert len(jumps) == 2
+    assert not jumps[0]["hard"] and jumps[0]["g"] is None  # first flight clean
+    assert jumps[1]["hard"] and jumps[1]["g"] > 4.0        # the spike is its
+    assert collisions and all(c["landing"] for c in collisions)
+
+
 def test_lap_data_no_jumps_on_a_flat_lap(tmp_path):
     """A plain circuit lap never leaves the ground: jumps must be empty."""
     from app.api.routes import lap_data

@@ -393,24 +393,40 @@ def _scan_lap(rows: list[tuple[float, bytes]], start_dist: float):
     air_since: float | None = None
     air_start: tuple | None = None  # (t, d, frame) of the first airborne frame
     grace_until = 0.0
+    pending_hard: float | None = None  # mid-flight landing peak (g) waiting for
+                                       # its own segment to be emitted
 
     def emit(peak: tuple, landing: bool) -> None:
+        nonlocal pending_hard
         g0, t0, d0, p0 = peak
         collisions.append({"x": round(p0["pos_x"], 2), "y": round(p0["pos_y"], 2),
                            "z": round(p0["pos_z"], 2), "dist": round(d0 - start_dist, 2),
                            "t": round(t0, 3),
                            "g": round(g0 / 9.80665, 2), "landing": landing})
-        if landing and jumps:
-            jumps[-1]["hard"] = True
-            jumps[-1]["g"] = max(jumps[-1]["g"] or 0.0, round(g0 / 9.80665, 2))
+        if landing:
+            peak_g = round(g0 / 9.80665, 2)
+            if air_since is not None:
+                # the burst resolved while still airborne (clipping something
+                # mid-flight): this flight's segment isn't emitted until
+                # touchdown, so hold the peak for emit_jump instead of
+                # marking the PREVIOUS jump hard (issue #41)
+                pending_hard = max(pending_hard or 0.0, peak_g)
+            elif jumps:
+                jumps[-1]["hard"] = True
+                jumps[-1]["g"] = max(jumps[-1]["g"] or 0.0, peak_g)
 
     def emit_jump(start: tuple, land: tuple) -> None:
+        nonlocal pending_hard
         (t0, d0, p0), (t1, d1, p1) = start, land
         jumps.append({"x0": round(p0["pos_x"], 2), "y0": round(p0["pos_y"], 2),
                       "z0": round(p0["pos_z"], 2), "dist0": round(d0 - start_dist, 2),
                       "x1": round(p1["pos_x"], 2), "y1": round(p1["pos_y"], 2),
                       "z1": round(p1["pos_z"], 2), "dist1": round(d1 - start_dist, 2),
                       "air_s": round(t1 - t0, 2), "hard": False, "g": None})
+        if pending_hard is not None:  # a mid-flight spike waited for this segment
+            jumps[-1]["hard"] = True
+            jumps[-1]["g"] = pending_hard
+            pending_hard = None
 
     for t, d, p in kept:
         airborne = (all(s < AIRBORNE_SUSP_MAX for s in p["norm_susp_travel"])
@@ -435,10 +451,12 @@ def _scan_lap(rows: list[tuple[float, bytes]], start_dist: float):
         elif peak is not None:
             emit(peak, burst_landing)
             peak = None
-    if air_since is not None and kept and kept[-1][0] - air_since >= AIRBORNE_MIN_S:
-        emit_jump(air_start, kept[-1])  # lap trace ended mid-flight
+    # resolve a trailing burst BEFORE a trailing flight: a trace ending
+    # mid-burst mid-flight must hand its peak to the segment emitted next
     if peak is not None:  # impact ran to the last kept frame
         emit(peak, burst_landing)
+    if air_since is not None and kept and kept[-1][0] - air_since >= AIRBORNE_MIN_S:
+        emit_jump(air_start, kept[-1])  # lap trace ended mid-flight
 
     return kept, collisions, jumps
 
