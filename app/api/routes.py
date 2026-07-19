@@ -620,12 +620,23 @@ _GROUNDED_SUSP = 0.5
 
 
 def _synth_frame(row: dict, global_dist: float, global_t: float,
-                 lap_index: int) -> bytes:
+                 lap_index: int, last_lap: float = 0.0) -> bytes:
     """One Data Out packet from one CSV row. Only the channels the CSV
     carries are real; the rest is neutral filler. The inverse of the
     CHANNELS extractors, so an exported value round-trips exactly."""
     f = empty_fields()
     f["is_race_on"] = 1
+    # last_lap is 0 on every frame except each lap group's final one, which
+    # carries the group's lap time: the LastLap-change finish signal a
+    # reprocess needs to re-time the lap (issue #39). Firing it per group
+    # also works for a lone lap and for identical consecutive lap times,
+    # which the LapNumber-increment path couldn't tell apart.
+    f["last_lap"] = last_lap
+    # synthesized suspension is flat, so a replay must see no surface
+    # evidence at all - |NormalizedDrivingLine| saturated means "off the
+    # course" to the track-type classifier, keeping a reprocess from
+    # auto-tagging every imported session "road"
+    f["normalized_driving_line"] = 127
     f["current_engine_rpm"] = row.get("rpm", 0.0)
     f["accel_x"] = row.get("lat_g", 0.0) * 9.80665
     f["accel_z"] = row.get("lon_g", 0.0) * 9.80665
@@ -705,13 +716,15 @@ async def import_csv(request: Request, name: str = Query("", max_length=120)):
     frames: list[tuple[float, bytes]] = []
     laps: list[dict] = []
     for lap_no, rows in groups:
-        for r in rows:
-            frames.append((base + t_off + r["t_s"],
-                           _synth_frame(r, d_off + r["dist_m"],
-                                        t_off + r["t_s"], lap_no - 1)))
         # the clock's high-water mark, not the last sample: a lap's trace may
         # end on the crossing frame, where the game already reset the clock
         clock = max(r["lap_time_s"] for r in rows)
+        for i, r in enumerate(rows):
+            frames.append((base + t_off + r["t_s"],
+                           _synth_frame(r, d_off + r["dist_m"],
+                                        t_off + r["t_s"], lap_no - 1,
+                                        last_lap=clock if i == len(rows) - 1
+                                        else 0.0)))
         laps.append({"number": lap_no - 1,
                      "started_t": base + t_off + rows[0]["t_s"],
                      "ended_t": base + t_off + rows[-1]["t_s"],

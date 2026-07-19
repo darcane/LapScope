@@ -657,6 +657,40 @@ def test_import_csv_rejects_garbage(tmp_path):
     store.close()
 
 
+def test_import_csv_survives_reprocess(tmp_path):
+    """Reprocessing an imported session must keep its lap times (issue #39):
+    each synthesized lap group's final frame carries the group's lap time as
+    LastLap, so the replay re-times every lap through the LastLap-change
+    finish - including a session of identical consecutive lap times, which
+    the LapNumber-increment path (LastLap on the next group's frames) could
+    not tell apart. Before the fix this replay found 0 completed laps and
+    the times were gone until a re-import."""
+    from app.api.routes import import_csv
+    from app.recorder.reprocess import reprocess_session
+
+    store = Store(tmp_path / "imp.db")
+    rows = ["lap,t_s,dist_m,speed_kmh,lap_time_s,pos_x_m,pos_z_m\n"]
+    for lap in (1, 2):  # two identical 12 s laps (> the 5 s lap-age gate)
+        for i in range(121):
+            t = i * 0.1
+            rows.append(f"{lap},{t:.1f},{t * 30:.1f},108.0,"
+                        f"{t + 0.017:.3f},{t * 30:.1f},0.0\n")
+    out = asyncio.run(import_csv(_import_request(store, "".join(rows)), name=""))
+    sid = out["session_id"]
+    before = [lap["lap_time"] for lap in store.session_laps(sid)]
+    assert len(before) == 2 and all(t == pytest.approx(12.017) for t in before)
+
+    found = reprocess_session(store, sid)
+    after = [lap["lap_time"] for lap in store.session_laps(sid)]
+    session = store.get_session(sid)
+    store.close()
+    assert found == 2
+    assert all(t == pytest.approx(12.017, abs=0.05) for t in after)
+    # the synthesized suspension is flat, not evidence of tarmac: a replay
+    # must not auto-tag imported sessions with a track type
+    assert session["track_type"] is None
+
+
 def test_edits_survive_reprocess_and_reset_reverts(tmp_path):
     """The point of time-keyed edits: reprocess deletes and recreates every
     lap row, yet dismissals, flag overrides and exclusions re-apply to the
