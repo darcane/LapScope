@@ -184,11 +184,12 @@ async function selectSession(id) {
       saveSettings({ defaultMapMode: state.mapMode });
       for (const x of document.querySelectorAll("#map-mode button"))
         x.classList.toggle("active", x === b);
-      $("#map-hint").style.display = state.mapMode === "3d" ? "" : "none";
+      resetMapView(); // a 2D pan/zoom makes no sense under the 3D projection
+      updateMapHint();
       drawMap();
     };
   }
-  $("#map-hint").style.display = state.mapMode === "3d" ? "" : "none";
+  updateMapHint();
   bindMapDrag($("#trackmap"));
   bindMapContext($("#trackmap"));
 
@@ -394,6 +395,26 @@ function pickLap(lapId) {
   if (lap) addPick(lap, state.session);
 }
 
+/* overlaying laps from different routes is allowed (route_id null = each
+   unidentified session counts as its own route) but the traces live in each
+   route's own world coordinates, so nothing will line up. Warn with a modal
+   the moment an overlay first crosses routes — once per episode, re-armed
+   when the tray is back to a single route — on top of the tray badge. */
+let warnedCrossRoute = false;
+function crossRoute() {
+  return new Set(state.picks.map((p) => p.session.route_id ?? `s${p.session.id}`)).size > 1;
+}
+function maybeWarnCrossRoute() {
+  if (!crossRoute()) { warnedCrossRoute = false; return; }
+  if (warnedCrossRoute) return;
+  warnedCrossRoute = true;
+  uiAlert("⚠ Comparing laps from different routes",
+    "The picked laps were recorded on different routes. Positions are world "
+    + "coordinates, so the map overlay and the distance-aligned charts will "
+    + "not line up — Δ time and racing-line spread are only meaningful "
+    + "between laps of the same route.");
+}
+
 /* single funnel for "the pick set changed": re-render rows, tray, map, charts.
    A reference change invalidates the zoom window and the hover index — both
    live on the reference lap's distance axis. */
@@ -404,12 +425,14 @@ function renderPicks() {
     lastRefId = ref ? ref.lapId : null;
     state.zoomRange = null;
     mapCursor.idx = null;
+    mapCursor.pin = null;  // the pin is an index into the old reference's arrays
   }
   renderLapRows();
   renderTray();
   drawMap();
   drawCharts();
   renderRawSection();
+  maybeWarnCrossRoute();
 }
 
 function renderTray() {
@@ -455,11 +478,10 @@ function renderTray() {
     el.appendChild(chip);
   }
   // overlaying different routes is allowed but rarely what you want
-  const routes = new Set(state.picks.map((p) => p.session.route_id ?? `s${p.session.id}`));
-  if (routes.size > 1) {
+  if (crossRoute()) {
     const warn = document.createElement("span");
     warn.className = "tray-warn";
-    warn.textContent = "⚠ laps from different routes — overlay may not align";
+    warn.textContent = "⚠ laps from different routes — the overlay will not align";
     el.appendChild(warn);
   }
   const clear = document.createElement("button");
@@ -602,18 +624,41 @@ function speedColor(v, lo, hi) {
 }
 
 /* 3D view state: yaw is user-draggable; the tilt is a fixed axonometric angle */
-const map3d = { yaw: -0.9, dragging: false, dragX: 0, dragYaw: 0 };
+const map3d = { yaw: -0.9, drag: null };
+
+/* map viewport on top of the fit-to-canvas projection, shared by 2D and 3D:
+   wheel zooms about the cursor, dragging pans (2D always, 3D with Shift held —
+   a plain 3D drag keeps rotating). zoom 1 = the classic full-fit frame. */
+const mapView = { zoom: 1, panX: 0, panY: 0 };
+
+function resetMapView() {
+  mapView.zoom = 1;
+  mapView.panX = 0;
+  mapView.panY = 0;
+}
 
 /* chart cursor -> map marker: drawMap caches its finished frame plus the
    world->canvas projection, so hovering a chart only blits the cache and
-   paints a dot where lap A was at that track position */
-const mapCursor = { idx: null, proj: null, snap: null, dpr: 1 };
+   paints a dot where lap A was at that track position. pin = a clicked-in
+   position (same index space): the raw table and the map marker fall back to
+   it whenever the cursor is off the charts; without one, the old behavior
+   (values freeze at the last hovered spot) still applies. */
+const mapCursor = { idx: null, pin: null, proj: null, snap: null, dpr: 1 };
 
 function setMapCursor(idx) {
   if (idx === mapCursor.idx) return;
   mapCursor.idx = idx;
   drawMapMarker();
-  updateRawTable(idx);
+  updateRawTable(idx ?? mapCursor.pin);
+}
+
+/* chart click: pin the hovered spot (click it again to unpin) */
+function togglePin(idx) {
+  if (idx == null) return;
+  mapCursor.pin = mapCursor.pin === idx ? null : idx;
+  drawMapMarker();
+  updateRawTable(mapCursor.idx ?? mapCursor.pin);
+  for (const c of state.charts) c.redraw(); // pin line on every chart
 }
 
 function lowerBound(xs, x) {
@@ -634,31 +679,36 @@ function drawMapMarker() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(mapCursor.snap, 0, 0);
   ctx.setTransform(mapCursor.dpr, 0, 0, mapCursor.dpr, 0, 0);
-  if (mapCursor.idx == null || !ref) return;
-  // the cursor index lives on the reference lap's arrays; every other lap is
-  // marked at the same track position (its own lower bound on dist), so the
-  // dots' spread IS the racing-line difference at that spot
-  const ri = Math.min(mapCursor.idx, ref.data.channels.pos_x.length - 1);
-  const dist = ref.data.dist[ri];
-  const dot = (p, i, r) => {
-    const c = p.data.channels;
-    const j = Math.min(i, c.pos_x.length - 1);
-    const [x, y] = mapCursor.proj(c.pos_x[j], c.pos_y ? c.pos_y[j] : 0, c.pos_z[j], false);
-    ctx.save();
-    ctx.shadowColor = p.color;
-    ctx.shadowBlur = 10;
-    ctx.fillStyle = p.color;
-    ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.restore();
+  if (!ref) return;
+  // an index lives on the reference lap's arrays; every other lap is marked
+  // at the same track position (its own lower bound on dist), so the dots'
+  // spread IS the racing-line difference at that spot. filled = live hover,
+  // hollow ring = the pinned point (both when hovering the pinned spot).
+  const markAt = (idx, filled) => {
+    const ri = Math.min(idx, ref.data.channels.pos_x.length - 1);
+    const dist = ref.data.dist[ri];
+    const dot = (p, i, r) => {
+      const c = p.data.channels;
+      const j = Math.min(i, c.pos_x.length - 1);
+      const [x, y] = mapCursor.proj(c.pos_x[j], c.pos_y ? c.pos_y[j] : 0, c.pos_z[j], false);
+      ctx.save();
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = 10;
+      ctx.fillStyle = filled ? p.color : "#0b1520";
+      ctx.strokeStyle = filled ? "#fff" : p.color;
+      ctx.lineWidth = filled ? 2 : 2.5;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    };
+    for (const p of state.picks)
+      if (p.data && p !== ref) dot(p, lowerBound(p.data.dist, dist), 4.5);
+    dot(ref, ri, 6);  // reference last, on top
   };
-  for (const p of state.picks)
-    if (p.data && p !== ref) dot(p, lowerBound(p.data.dist, dist), 4.5);
-  dot(ref, ri, 6);  // reference last, on top
+  if (mapCursor.pin != null) markAt(mapCursor.pin, false);
+  if (mapCursor.idx != null) markAt(mapCursor.idx, true);
 }
 
 /* screen-space contact markers of the last drawMap, for right-click hit
@@ -700,22 +750,52 @@ function bindMapContext(canvas) {
   });
 }
 
+function updateMapHint() {
+  const el = $("#map-hint");
+  if (!el) return;
+  el.style.display = "";
+  el.textContent = state.mapMode === "3d"
+    ? "↔ drag to rotate · scroll to zoom · shift-drag to pan · double-click resets"
+    : "scroll to zoom · drag to pan · double-click resets";
+}
+
 function bindMapDrag(canvas) {
   canvas.addEventListener("pointerdown", (e) => {
-    if (state.mapMode !== "3d") return;
-    map3d.dragging = true;
-    map3d.dragX = e.clientX;
-    map3d.dragYaw = map3d.yaw;
+    const rotate = state.mapMode === "3d" && !e.shiftKey;
+    if (!rotate && mapView.zoom <= 1) return; // nothing to pan at full fit
+    map3d.drag = {
+      rotate, x: e.clientX, y: e.clientY,
+      yaw: map3d.yaw, panX: mapView.panX, panY: mapView.panY,
+    };
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener("pointermove", (e) => {
-    if (!map3d.dragging) return;
-    map3d.yaw = map3d.dragYaw + (e.clientX - map3d.dragX) * 0.008;
+    const d = map3d.drag;
+    if (!d) return;
+    if (d.rotate) {
+      map3d.yaw = d.yaw + (e.clientX - d.x) * 0.008;
+    } else {
+      mapView.panX = d.panX + (e.clientX - d.x);
+      mapView.panY = d.panY + (e.clientY - d.y);
+    }
     drawMap();
   });
-  const stop = () => { map3d.dragging = false; };
+  const stop = () => { map3d.drag = null; };
   canvas.addEventListener("pointerup", stop);
   canvas.addEventListener("pointercancel", stop);
+  // wheel: zoom about the cursor, so what you point at stays put
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const zoom = Math.min(12, Math.max(1, mapView.zoom * Math.exp(-e.deltaY * 0.002)));
+    if (zoom === mapView.zoom) return;
+    const k = zoom / mapView.zoom;
+    mapView.panX = e.offsetX - (e.offsetX - mapView.panX) * k;
+    mapView.panY = e.offsetY - (e.offsetY - mapView.panY) * k;
+    mapView.zoom = zoom;
+    if (zoom === 1) { mapView.panX = 0; mapView.panY = 0; }
+    drawMap();
+  }, { passive: false });
+  canvas.addEventListener("dblclick", () => { resetMapView(); drawMap(); });
 }
 
 function drawMap() {
@@ -737,15 +817,12 @@ function drawMap() {
   const ref = refPick();
   const multi = state.picks.length >= 2;  // overlay mode: solid distinct colors
   const three = state.mapMode === "3d";
-  canvas.style.cursor = three ? "grab" : "default";
+  canvas.style.cursor = three || mapView.zoom > 1 ? "grab" : "default";
   // the speed/slip gradient only exists for a lone lap; in an overlay the
-  // colors identify laps (issue #30) and the select would mislead
-  const colorSel = $("#color-mode");
-  if (colorSel) {
-    colorSel.disabled = multi;
-    colorSel.title = multi
-      ? "colors identify laps while comparing — keep a single lap to color by telemetry" : "";
-  }
+  // colors identify laps (issue #30), so the select disappears entirely — a
+  // merely-disabled control still looked clickable and confused people
+  const colorWrap = $("#color-wrap");
+  if (colorWrap) colorWrap.style.display = multi ? "none" : "";
   if (!ref) { // the side stats and color legend describe the reference lap -
     $("#map-side").innerHTML = "";      // don't let them show a lap that was untagged
     $("#legend-scale").innerHTML = "";
@@ -815,7 +892,9 @@ function drawMap() {
   const offY = (cssH - (pMaxY - pMinY) * scale) / 2 - pMinY * scale;
   const P = (x, y, z, ground) => {
     const [sx, sy] = raw(x, y, z, ground);
-    return [sx * scale + offX, sy * scale + offY];
+    // the user viewport (wheel zoom + pan) sits on top of the full fit
+    return [(sx * scale + offX) * mapView.zoom + mapView.panX,
+            (sy * scale + offY) * mapView.zoom + mapView.panY];
   };
   const at = (d, i, ground) => {
     const c = d.channels;
@@ -1048,7 +1127,7 @@ function drawMap() {
   mapCursor.snap.width = canvas.width;
   mapCursor.snap.height = canvas.height;
   mapCursor.snap.getContext("2d").drawImage(canvas, 0, 0);
-  if (mapCursor.idx != null) drawMapMarker();
+  if (mapCursor.idx != null || mapCursor.pin != null) drawMapMarker();
 }
 
 /* ---------------- export (issue #29) ---------------- */
@@ -1157,6 +1236,25 @@ function syncZoom(u) {
   }
 }
 
+/* dashed vertical marker on every chart at the pinned track position */
+function drawPinLine(u) {
+  const ref = refPick();
+  if (mapCursor.pin == null || !ref || !ref.data.dist.length) return;
+  const x = ref.data.dist[Math.min(mapCursor.pin, ref.data.dist.length - 1)];
+  const cx = u.valToPos(x, "x", true);
+  if (cx < u.bbox.left || cx > u.bbox.left + u.bbox.width) return; // zoomed out of view
+  const ctx = u.ctx;
+  ctx.save();
+  ctx.strokeStyle = "rgba(255,255,255,0.55)";
+  ctx.setLineDash([4, 4]);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(cx, u.bbox.top);
+  ctx.lineTo(cx, u.bbox.top + u.bbox.height);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function makeChart(el, title, xVals, seriesDefs, height = 150) {
   const opts = {
     title, width: el.clientWidth, height,
@@ -1166,6 +1264,24 @@ function makeChart(el, title, xVals, seriesDefs, height = 150) {
     hooks: {
       setCursor: [(u) => setMapCursor(u.cursor.idx ?? null)],
       setScale: [(u, key) => { if (key === "x") syncZoom(u); }],
+      draw: [drawPinLine],
+      ready: [(u) => {
+        // click pins the hovered spot; a drag is uPlot's zoom, not a click,
+        // and the second click of a double is skipped (dblclick = reset both)
+        let downX = null;
+        u.over.addEventListener("mousedown", (e) => { downX = e.clientX; });
+        u.over.addEventListener("click", (e) => {
+          if (e.detail > 1) return;
+          if (downX != null && Math.abs(e.clientX - downX) > 3) return;
+          togglePin(u.cursor.idx ?? null);
+        });
+        u.over.addEventListener("dblclick", () => {
+          if (mapCursor.pin == null) return;
+          mapCursor.pin = null;
+          drawMapMarker();
+          for (const c of state.charts) c.redraw();
+        });
+      }],
     },
     scales: { x: { time: false } },
     // x is DistanceTraveled progress: on real FH6 circuits it is a per-route
@@ -1321,7 +1437,8 @@ function renderRawSection() {
     }
   }
   holder.appendChild(table);
-  if (mapCursor.idx != null) updateRawTable(mapCursor.idx);
+  const idx = mapCursor.idx ?? mapCursor.pin;
+  if (idx != null) updateRawTable(idx);
 }
 
 /* Fill every cell with the values at the hovered track position. The cursor
@@ -1335,7 +1452,8 @@ function updateRawTable(idx) {
   rawView.lastIdx = idx;
   const ri = Math.min(idx, ref.data.dist.length - 1);
   const dist = ref.data.dist[ri];
-  $("#raw-pos").textContent = `— @ track position ${Math.round(dist)}`;
+  const pinned = mapCursor.idx == null && idx === mapCursor.pin;
+  $("#raw-pos").textContent = `— @ track position ${Math.round(dist)}${pinned ? " · pinned" : ""}`;
   const at = rawView.cols.map((p) =>
     p === ref ? ri : Math.min(lowerBound(p.data.dist, dist), p.data.dist.length - 1));
   for (const row of rawView.rows) {
