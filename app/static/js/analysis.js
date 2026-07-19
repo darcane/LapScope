@@ -139,7 +139,15 @@ async function selectSession(id) {
   const s = payload.session;
   $("#session-title").textContent = displayName(s);
   $("#header-badges").innerHTML = classBadge(s.car_class_letter, s.car_pi) + dtBadge(s.drivetrain);
-  $("#header-car").textContent = s.car_name + (s.route_name ? "" : "  ·  route not identified yet (complete a lap)");
+  // Hint off route_id (not name): routes are created nameless until the user
+  // names them. A missing name is "unnamed", not "not identified yet".
+  let routeHint = "";
+  if (!s.route_id) {
+    routeHint = "  ·  route not identified yet (complete a lap)";
+  } else if (!s.route_name) {
+    routeHint = "  ·  unnamed route — use Name route";
+  }
+  $("#header-car").textContent = s.car_name + routeHint;
   if (!s.car_known) {
     // community list doesn't know this ordinal yet: make it one click to fix
     const help = document.createElement("button");
