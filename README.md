@@ -92,7 +92,7 @@ the packet's elevation and is drag-to-rotate; the ✦ markers are detected conta
 
 ![Track map in 2D, colored by speed](docs/media/track-map.png)
 
-![Track map in 3D, drag-to-rotate](docs/media/track-map-3d.png)
+![Track map in 3D, drag-to-rotate](docs/media/track-map-3d-animated.gif)
 
 **Jumps, drawn as jumps** — takeoff ○, dashed flight line, touchdown ▸, an amber
 glow + impact ring on hard landings; the red ✦ is a real contact:
