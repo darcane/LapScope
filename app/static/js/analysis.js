@@ -161,6 +161,7 @@ async function selectSession(id) {
   if (seq !== selectSeq) return;  // a newer selection landed; drop this payload
   state.laps = payload.laps;
   state.session = payload.session;  // PNG export captions from it
+  resetMapView();  // stale zoom/pan aimed at the old track's geometry (#48)
 
   const detail = $("#detail");
   detail.innerHTML = "";
