@@ -30,13 +30,29 @@ const shiftLights = document.querySelectorAll("#shift-lights i");
 const LIVEMAP_CAP = 4000;
 // ground-plane acceleration (m/s^2) that counts as a contact/collision, plus
 // the airborne/jump-landing discrimination (a spike while airborne or right
-// after touchdown is a landing, not contact); mirrors IMPACT_ACCEL /
-// AIRBORNE_* / LANDING_GRACE_S in app/recorder/laps.py (keep in lockstep).
+// after touchdown is a landing, not contact) and the impulse test that keeps
+// a downforce car's cornering load from reading as a wall (issue #49);
+// mirrors IMPACT_* / AIRBORNE_* / LANDING_GRACE_S and impulsive() in
+// app/recorder/laps.py (keep in lockstep).
 const IMPACT_ACCEL = 45;
+const IMPACT_JERK = 30;
+const IMPACT_JERK_DT_MAX = 0.05;
+const IMPACT_PEAK = 98;
 const AIRBORNE_SUSP_MAX = 0.15;
 const AIRBORNE_SLIP_MAX = 0.05;
 const AIRBORNE_MIN_S = 0.12;
 const LANDING_GRACE_S = 0.35;
+
+// mirrors impulsive() in laps.py: an impact either jumps IMPACT_JERK in one
+// frame (only trustworthy across a sane frame gap) or reaches IMPACT_PEAK,
+// which no measured aero cornering approaches. prev = [t, g] or null.
+function impulsive(t, g, prev) {
+  if (g >= IMPACT_PEAK) return true;
+  if (!prev) return false;
+  const dt = t - prev[0];
+  return dt > 0 && dt <= IMPACT_JERK_DT_MAX && g - prev[1] >= IMPACT_JERK;
+}
+
 const liveMap = {
   pts: [],         // [x, z] world points
   last: null,      // last stored point
@@ -46,6 +62,8 @@ const liveMap = {
   hits: [],        // [x, z] world points where a contact spike fired
   jumps: [],       // {x0, z0, x1, z1, hard} takeoff -> touchdown segments
   overImpact: false, // above the threshold last frame (edge-detect one hit/impact)
+  burstSparked: false, // this burst already pushed its marker (one per impact)
+  prevG: null,     // previous frame's [t, ground-plane g], for the impulse test
   airSince: null,  // when the current all-wheels-unloaded stretch began
   airStart: null,  // [x, z] where that stretch began (the takeoff point)
   graceUntil: 0,   // spikes before this time are jump landings, not contact
@@ -62,6 +80,8 @@ function resetLiveMap(sessionId) {
   liveMap.hits = [];
   liveMap.jumps = [];
   liveMap.overImpact = false;
+  liveMap.burstSparked = false;
+  liveMap.prevG = null;
   liveMap.airSince = null;
   liveMap.airStart = null;
   liveMap.graceUntil = 0;
@@ -80,6 +100,8 @@ function mapActive(f) {
 function feedCollision(f) {
   if (f.session_id == null || !mapActive(f) || f.session_id !== liveMap.session) {
     liveMap.overImpact = false;
+    liveMap.burstSparked = false;
+    liveMap.prevG = null;
     liveMap.airSince = null;
     liveMap.airStart = null;
     liveMap.pendingHard = false;
@@ -105,24 +127,34 @@ function feedCollision(f) {
     liveMap.airSince = null;
   }
   const flying = liveMap.airSince != null && t - liveMap.airSince >= AIRBORNE_MIN_S;
-  if (Math.hypot(f.accel_x, f.accel_z) >= IMPACT_ACCEL) {
+  const g = Math.hypot(f.accel_x, f.accel_z);
+  if (g >= IMPACT_ACCEL) {
     if (!liveMap.overImpact) {
+      liveMap.burstSparked = false;
       if (flying) {
         // mid-flight spike: its jump isn't pushed until touchdown - hold it
         // instead of marking the previous jump hard (issue #41)
         liveMap.pendingHard = true;
+        liveMap.burstSparked = true;   // a landing never sparks
       } else if (t < liveMap.graceUntil) {
         // the landing of the jump that just ended: mark its glyph hard, no spark
         const j = liveMap.jumps[liveMap.jumps.length - 1];
         if (j) j.hard = true;
-      } else {
-        liveMap.hits.push([f.pos_x, f.pos_z]);
+        liveMap.burstSparked = true;
       }
+    }
+    // the spark waits for the frame that actually looks like an impact, which
+    // may not be the burst's first: a hit taken mid-corner starts out looking
+    // like the aero load it is riding on top of (issue #49)
+    if (!liveMap.burstSparked && impulsive(t, g, liveMap.prevG)) {
+      liveMap.hits.push([f.pos_x, f.pos_z]);
+      liveMap.burstSparked = true;
     }
     liveMap.overImpact = true;
   } else {
     liveMap.overImpact = false;
   }
+  liveMap.prevG = [t, g];
 }
 
 function feedLiveMap(f) {
