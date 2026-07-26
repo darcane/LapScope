@@ -135,8 +135,25 @@ The packet has no lap-invalidated field, so LapScope infers dirtiness:
   mark misses gradual scrubbing — that bug shipped once.) Rewound-over
   stretches are trimmed from the charts and the map, so only the
   finally-driven line remains.
-- **💥 Contact** — a ground-plane acceleration spike ≥ 45 m/s², beyond
-  anything tires can generate.
+- **💥 Contact** — a ground-plane acceleration spike ≥ 45 m/s² that also
+  *arrives* like an impact (below), rather than building up like cornering
+  load.
+
+**Downforce cars corner harder than tires alone can.** 45 m/s² is ~4.6 g, and
+that was assumed to be past any car's grip — but ground-effect prototypes pull
+**5–7.7 g of pure lateral g** through fast corners at full throttle. On those
+cars every quick corner used to register as a contact: a Group C Alfa logged
+530 markers across 39 laps and had *every* lap flagged 💥, including its
+cleanest one.
+
+So magnitude alone isn't enough — the spike also has to *arrive* like an
+impact. Aero load builds over several tenths of a second; a wall arrives in a
+single frame. A spike therefore only counts as contact when it jumps by
+≥ 30 m/s² between two consecutive frames, or reaches 98 m/s² (~10 g) outright,
+a level no measured cornering came close to. Swept over every stored session:
+of the 1,300-odd bursts that built up gradually, not one ever reached 10 g.
+Fast corners stop drawing markers while genuine hits — including the
+low-speed, low-g ones on dirt and cross-country — are untouched.
 
 **Jump landings are excused.** Horizon being Horizon, hard landings spike the
 accelerometer exactly like a wall. A spike while **airborne** — all four
@@ -158,6 +175,11 @@ but its lateral force is far below the contact threshold — and there is no
 packet field to cross-check against. Light scrapes are therefore missed (and a
 wall hit inside the 0.35 s post-landing grace is excused). Accepted trade-offs,
 tracked in [issue #27](https://github.com/darcane/LapScope/issues/27).
+
+**Already recorded a session before this landed?** The map markers are worked
+out as you open a lap, so they clean themselves up right away. The 💥 flag in
+the lap table is what the recorder decided at the time — hit **Reprocess** on
+the session to have it re-decided.
 
 Flags reset when a lap re-anchors (a WTA launch, a mid-session lap-timer
 start), so pre-launch junk frames never dirty lap 1.

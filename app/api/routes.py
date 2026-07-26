@@ -17,7 +17,8 @@ from pydantic import BaseModel
 from .. import __version__, cars
 from ..cars import CAR_NAMES
 from ..recorder.laps import (AIRBORNE_MIN_S, AIRBORNE_SLIP_MAX,
-                             AIRBORNE_SUSP_MAX, IMPACT_ACCEL, LANDING_GRACE_S)
+                             AIRBORNE_SUSP_MAX, IMPACT_ACCEL, LANDING_GRACE_S,
+                             impulsive)
 from ..recorder.reprocess import reprocess_session
 from ..recorder.store import lap_anchor, lap_span
 from ..telemetry.packet import FIELDS, empty_fields, pack, parse
@@ -377,7 +378,10 @@ def _scan_lap(rows: list[tuple[float, bytes]], start_dist: float):
     the peak's frame time t is the handle a dismissal edit anchors to.
     Spikes while airborne or right after touchdown are jump landings, not
     contact (same classification as the recorder) - tagged, not dropped, so
-    the map can still show where a jump bottomed out.
+    the map can still show where a jump bottomed out. Every other burst must
+    also look like an impact rather than aero load (impulsive(), laps.py) or
+    it is dropped: downforce cars cross the threshold in fast corners and
+    used to bury the map in false markers (issue #49).
 
     Jump segments: the same airborne classifier also yields explicit flights
     (every wheel unloaded for >= AIRBORNE_MIN_S). Each is returned as a
@@ -397,6 +401,8 @@ def _scan_lap(rows: list[tuple[float, bytes]], start_dist: float):
     jumps: list[dict] = []
     peak: tuple | None = None  # (g, t, d, frame) of the current impact burst
     burst_landing = True       # all frames of the burst classified as landing
+    burst_impact = False       # some frame of the burst looked like an impact
+    prev_g: tuple[float, float] | None = None  # previous frame's (t, g)
     air_since: float | None = None
     air_start: tuple | None = None  # (t, d, frame) of the first airborne frame
     grace_until = 0.0
@@ -421,6 +427,16 @@ def _scan_lap(rows: list[tuple[float, bytes]], start_dist: float):
             elif jumps:
                 jumps[-1]["hard"] = True
                 jumps[-1]["g"] = max(jumps[-1]["g"] or 0.0, peak_g)
+
+    def emit_burst() -> None:
+        """Close the burst that just ended. Landings are always emitted (the
+        map draws them amber and they mark their jump hard); a non-landing
+        burst only counts when it looked like an impact rather than a
+        downforce car leaning on its aero - see impulsive() in laps.py.
+        Rejected bursts are dropped outright: they are ordinary cornering,
+        not an event with anything to inspect (issue #49)."""
+        if burst_landing or burst_impact:
+            emit(peak, burst_landing)
 
     def emit_jump(start: tuple, land: tuple) -> None:
         nonlocal pending_hard
@@ -451,17 +467,19 @@ def _scan_lap(rows: list[tuple[float, bytes]], start_dist: float):
         g = math.hypot(p["accel_x"], p["accel_z"])
         if g >= IMPACT_ACCEL:
             if peak is None:
-                peak, burst_landing = (g, t, d, p), True
+                peak, burst_landing, burst_impact = (g, t, d, p), True, False
             elif g > peak[0]:
                 peak = (g, t, d, p)
             burst_landing = burst_landing and (flying or t < grace_until)
+            burst_impact = burst_impact or impulsive(t, g, prev_g)
         elif peak is not None:
-            emit(peak, burst_landing)
+            emit_burst()
             peak = None
+        prev_g = (t, g)
     # resolve a trailing burst BEFORE a trailing flight: a trace ending
     # mid-burst mid-flight must hand its peak to the segment emitted next
     if peak is not None:  # impact ran to the last kept frame
-        emit(peak, burst_landing)
+        emit_burst()
     if air_since is not None and kept and kept[-1][0] - air_since >= AIRBORNE_MIN_S:
         emit_jump(air_start, kept[-1])  # lap trace ended mid-flight
 

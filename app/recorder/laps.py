@@ -123,6 +123,28 @@ WET_FRAME_FRACTION = 0.02     # fraction of wet frames to auto-tag "wet"
 REWIND_TIME_JUMP = 0.5        # lap clock going back by this much = rewind
 IMPACT_ACCEL = 45.0           # m/s^2 in the ground plane (~4.6 g) = contact
 
+# Aero-cornering discrimination (issue #49, calibrated on the stored captures:
+# same dump/hand-classify/DB-sweep method as the landing classifier). 45 m/s^2
+# assumed no car corners that hard on tires alone - false for downforce cars,
+# which sustain 5-7.7 g of pure lateral g through fast corners and so flagged
+# EVERY lap (session 187: 530 markers in 39 laps). Magnitude alone can't
+# separate them; the shape of the burst can. Aero load ramps in over hundreds
+# of ms, an impact is an impulse: swept over 1813 real bursts, jerk and peak
+# agree almost perfectly (of the 1334 bursts rising slower than 1 g/frame, not
+# one reached 10 g). Jerk needs only the previous frame, so the live recorder
+# and dashboard.js apply it with no buffering - unlike burst duration or speed
+# delta, which need the burst to finish. Mirrored in dashboard.js (lockstep).
+IMPACT_JERK = 30.0            # m/s^2 of ground-plane g gained in ONE frame
+                              # (~3 g): the empty valley between the aero
+                              # population and real hits (flat either side;
+                              # past ~3.5 g real cross-country hits drop out)
+IMPACT_JERK_DT_MAX = 0.05     # s: a jerk measured across a stream gap is the
+                              # gap's doing, not an impact's - 2 of the swept
+                              # detections came from >100 ms gaps
+IMPACT_PEAK = 98.0            # m/s^2 (~10 g): no swept aero burst passed
+                              # ~7.7 g, so this floor stands alone as contact
+                              # even when the impulse got smeared over frames
+
 # Airborne / jump-landing discrimination (verified on real cross-country,
 # session 55: 5 of its 12 contact spikes were hard jump-landings). In flight
 # every wheel hangs at full droop with zero tire force; on the ground even a
@@ -178,6 +200,24 @@ TRACK_MIN_DRIVE_S = 30.0       # too little driving to judge a surface
 # keep sessions that would otherwise be discarded (no completed laps) - for
 # capturing event types the segmentation doesn't recognize yet
 KEEP_DISCARDED = os.environ.get("LS_KEEP_DISCARDED", "0").lower() not in ("", "0", "false")
+
+
+def impulsive(t: float, g: float, prev: tuple[float, float] | None) -> bool:
+    """Does this over-threshold frame look like an impact rather than a
+    downforce car simply cornering? Either the ground-plane g jumped by
+    IMPACT_JERK in a single frame, or it reached IMPACT_PEAK - a level no
+    measured aero cornering approaches. `prev` is the previous frame's
+    (t, ground-plane g), or None when there isn't one (a session opening
+    mid-spike stays conservative: peak floor only). Shared by the recorder
+    and _scan_lap (api/routes.py) so the live flag and the map markers can
+    never disagree; dashboard.js mirrors it for the live map."""
+    if g >= IMPACT_PEAK:
+        return True
+    if prev is None:
+        return False
+    dt = t - prev[0]
+    # a jerk measured across a stream gap is the gap's doing, not an impact's
+    return 0.0 < dt <= IMPACT_JERK_DT_MAX and g - prev[1] >= IMPACT_JERK
 
 
 def suggest_track_type(*, geometric_laps: int, drive_s: float, drive_n: int,
@@ -256,6 +296,7 @@ class SessionTracker:
         self._air_since: float | None = None   # start of the current flight
         self._landing_grace_until = 0.0        # spikes before this t = landing
         self._over_impact = False              # inside a spike burst (log once)
+        self._prev_g: tuple[float, float] | None = None  # (t, ground-plane g)
         self._route_assigned = False
         self._route_id: int | None = None
         self._geometric_laps = 0
@@ -361,7 +402,10 @@ class SessionTracker:
                 if not self._over_impact:
                     log.info("Session %s: jump landing (%.0f m/s^2) - not contact",
                              self.session_id, g)
-            else:
+            elif impulsive(t, g, self._prev_g):
+                # tested every frame of the burst, not just its rising edge: a
+                # hit taken while the car is ALREADY loaded up mid-corner
+                # starts the burst gently and only spikes later
                 if "contact" not in self._lap_flags:
                     log.info("Session %s: contact spike (%.0f m/s^2), flagging lap",
                              self.session_id, g)
@@ -369,6 +413,7 @@ class SessionTracker:
             self._over_impact = True
         else:
             self._over_impact = False
+        self._prev_g = (t, g)
         delta = self._lap_logic(t, frame)
         if t - self._last_flush >= FLUSH_INTERVAL:
             self.flush()
@@ -446,6 +491,7 @@ class SessionTracker:
         self._air_since = None
         self._landing_grace_until = 0.0
         self._over_impact = False
+        self._prev_g = None
         self._route_assigned = False
         self._route_id = None
         self._geometric_laps = 0
@@ -571,6 +617,7 @@ class SessionTracker:
         self._air_since = None
         self._landing_grace_until = 0.0
         self._over_impact = False
+        self._prev_g = None
         self._route_id = None
         self._geometric_laps = 0
         self._prev_on_line = True

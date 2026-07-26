@@ -181,6 +181,54 @@ def test_mid_flight_spike_marks_its_own_jump_hard():
     assert collisions and all(c["landing"] for c in collisions)
 
 
+def test_aero_cornering_bursts_are_dropped_impacts_kept():
+    """Issue #49: a downforce car's cornering load crosses the contact
+    threshold and used to draw a marker per fast corner. Only a burst that
+    looks like an impulse survives - here one long aero corner (dropped) and
+    one wall hit (kept), so exactly one marker comes back."""
+    from app.api.routes import _scan_lap
+    from app.telemetry.packet import empty_fields, pack
+
+    def frame(d, gx):
+        f = empty_fields()
+        f["is_race_on"] = 1
+        f["distance_traveled"] = d
+        f["pos_x"] = d
+        f["norm_susp_travel"] = [0.5] * 4     # grounded: not a jump landing
+        f["tire_combined_slip"] = [0.3] * 4
+        f["accel_x"] = gx
+        return pack(f)
+
+    rows: list[tuple[float, bytes]] = []
+    t, d = 0.0, 0.0
+
+    def add(gs):
+        nonlocal t, d
+        for gx in gs:
+            rows.append((t, frame(d, gx)))
+            t += 1 / 60
+            d += 0.7
+
+    add([0.0] * 10)
+    add([2.0 * i for i in range(31)])   # aero builds to 60 m/s^2 over 0.5 s...
+    add([60.0] * 30)                    # ...holds through the corner...
+    add([60.0 - 2.0 * i for i in range(31)])  # ...and unwinds. No impulse.
+    add([0.0] * 10)
+    aero_only = len(rows)
+    assert _scan_lap(rows, 0.0)[1] == []          # not one marker so far
+
+    add([0.0, 70.0, 65.0, 50.0])        # a wall: 0 -> 70 m/s^2 in one frame
+    add([0.0] * 10)
+
+    _, collisions, jumps = _scan_lap(rows, 0.0)
+    assert jumps == []
+    assert len(collisions) == 1                    # the wall, not the corner
+    hit = collisions[0]
+    assert not hit["landing"] and hit["g"] > 7.0   # 70 m/s^2 peak, ~7.1 g
+    # and it is the late burst, not anything from the aero stretch
+    assert hit["t"] > rows[aero_only - 1][0]
+
+
 def test_lap_data_no_jumps_on_a_flat_lap(tmp_path):
     """A plain circuit lap never leaves the ground: jumps must be empty."""
     from app.api.routes import lap_data

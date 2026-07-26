@@ -223,12 +223,16 @@ assert them here.
 - Teleport threshold 250 m: `WTA_TELEPORT_JUMP` (laps.py) = live-map jump reset
   (dashboard.js) = `POS_JUMP` (inspect_session.py).
 - Contact spike threshold + landing discrimination: `IMPACT_ACCEL`,
-  `AIRBORNE_SUSP_MAX`, `AIRBORNE_SLIP_MAX`, `AIRBORNE_MIN_S` and
+  `IMPACT_JERK`, `IMPACT_JERK_DT_MAX`, `IMPACT_PEAK`, `AIRBORNE_SUSP_MAX`,
+  `AIRBORNE_SLIP_MAX`, `AIRBORNE_MIN_S` and
   `LANDING_GRACE_S` (laps.py) drive the per-lap `contact` flag and the map
   collision markers (spikes while airborne / just after touchdown are jump
-  landings, not contact) — the `/laps/{id}/data` endpoint imports them and
-  tags each collision `landing: true/false`; `dashboard.js` duplicates all
-  five constants for the live map (keep the two in lockstep). The same
+  landings, not contact; everything else must also pass `impulsive()`, or it
+  is a downforce car cornering rather than a wall — issue #49) — the
+  `/laps/{id}/data` endpoint imports them **and `impulsive()` itself**, so the
+  live flag and the markers can't drift; `dashboard.js` duplicates all
+  eight constants *and* re-implements `impulsive()` for the live map (keep the
+  two in lockstep). The same
   airborne classifier also yields explicit jump segments (takeoff →
   touchdown): `/laps/{id}/data` returns them as `jumps`, `dashboard.js`
   tracks them live in `feedCollision`, and both maps render them through the

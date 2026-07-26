@@ -227,8 +227,33 @@ All the rules exist because some real behavior broke a naive version:
   (LS_KEEP_DISCARDED captures and reprocessed sessions set it).
 - Dirty-lap inference: rewind = lap clock below its high-water mark while
   distance doesn't grow (per-frame comparison misses gradual scrubs — that bug
-  shipped once); contact = ground-plane |accel| ≥ 45 m/s². Stored as
-  `laps.flags` ("rewind,contact"). **Jump landings are excused:** a spike while
+  shipped once); contact = ground-plane |accel| ≥ 45 m/s² **that also looks
+  like an impulse** (below). Stored as `laps.flags` ("rewind,contact").
+- **45 m/s² alone is not contact — the burst must have an impact's *shape*.**
+  That threshold assumed no car corners that hard on tires; downforce cars
+  break the assumption, sustaining 5–7.7 g of pure lateral g through fast
+  corners, so they used to flag *every* lap (session 187, Alfa Group C: 530
+  markers in 39 laps, 13.6/lap, all 39 flagged including the clean best).
+  Magnitude can't separate the two; the rise can. Aero load builds over
+  hundreds of ms, an impact is an impulse — so a non-landing burst counts only
+  when some frame of it either gained `IMPACT_JERK` (30 m/s², ~3 g) over the
+  previous frame, or reached `IMPACT_PEAK` (98 m/s², ~10 g). `impulsive()` in
+  laps.py is the one implementation, imported by `_scan_lap`; dashboard.js
+  mirrors it. Swept over all 70 stored sessions / 1813 bursts (2026-07-26,
+  same dump/hand-classify method as the landing classifier): of the 1334
+  bursts rising slower than 1 g/frame **not one** reached 10 g, and the
+  histogram has an empty valley at 1.5–3 g/frame. Effect is *selective*, not
+  merely stricter — 187: 530→46, 129 (Furai): 338→7, A-641 session 117: 82→0,
+  while cross-country/dirt sessions barely move (55: 7→6, 103: 5→5, 8: 13→9)
+  and the low-downforce control (146, Diablo SV) was 0 before and after.
+  Only jerk is *causal* (one frame of history), which is why it and not burst
+  duration or speed-delta drives the live recorder and dashboard.js.
+  `IMPACT_JERK_DT_MAX` (0.05 s) ignores a jerk read across a stream gap or a
+  rewind splice — the gap manufactures it. Rejected bursts are dropped
+  outright (issue #49).
+  **Jump landings are excused** and are classified *first*, so the impulse
+  gate never sees them (a touchdown slam is an impulse and would pass it):
+  a spike while
   airborne (all four `NormalizedSuspensionTravel` < 0.15 **and** all four
   `TireCombinedSlip` < 0.05 for ≥ 0.12 s — in flight wheels hang at full droop
   with zero tire force) or within 0.35 s of touchdown is a landing, not contact
@@ -242,7 +267,10 @@ All the rules exist because some real behavior broke a naive version:
   ones. **Known remaining limit:** light Rivals wall-scrapes stay below the
   threshold (false negatives; there is no lap-invalidated packet field to
   cross-check against) — tracked in
-  [issue #27](https://github.com/darcane/LapScope/issues/27). A wall hit inside the 0.35 s post-landing grace is also excused
+  [issue #27](https://github.com/darcane/LapScope/issues/27), and now more
+  tractable: with contact qualified by *shape*, `IMPACT_ACCEL` could be
+  lowered to reach light scrapes without re-flooding downforce cars (still
+  needs labeled scrape captures first). A wall hit inside the 0.35 s post-landing grace is also excused
   (accepted trade-off). Flags reset when a lap re-anchors (the WTA launch, a
   mid-session lap-timer start): pre-launch junk frames must not dirty lap 1.
   Test-fixture gotcha: `empty_fields()` zeroes suspension and slip, which
@@ -343,4 +371,5 @@ a row here, a test, and usually a simulator flag.
 | Track type: WTA | `--wta 3` | auto-tagged `wtc` (geometric laps) |
 | Track type: route inheritance | two events, same route | a tag set on the route's earlier session wins over telemetry for later ones |
 | Landing vs contact | `--duration 180 --dirty --jumps` | lap 2 `contact` (wall hit), all other laps clean despite hard jump landings; `/laps/{id}/data` tags landing bursts `landing: true` (amber on the map) |
+| Aero cornering vs contact | hand-built frames (`test_tracker.py`, `test_api.py`) | a burst that ramps past 45 m/s² and holds is *not* contact (no flag, no marker); a one-frame jump of `IMPACT_JERK` is, even mid-burst on top of aero load (issue #49) |
 | Race-mode gating | `--freeroam 35 --race 3` | chip FREE ROAM then RACE MODE; timer dashed in free roam; live map draws the race only |

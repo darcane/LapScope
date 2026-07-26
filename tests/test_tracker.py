@@ -31,11 +31,12 @@ class Driver:
                       norm_susp_travel=[0.5] * 4, tire_combined_slip=[0.3] * 4)
         self.t = 0.0
 
-    def send(self, **kw) -> dict:
+    def send(self, *, dt: float = 1 / 60, **kw) -> dict:
         """Advance one frame (race clock included unless overridden) and
-        return the tracker extras for it."""
-        self.t += 1 / 60
-        self.f["current_race_time"] += 1 / 60
+        return the tracker extras for it. dt widens the step to stage a
+        stream gap."""
+        self.t += dt
+        self.f["current_race_time"] += dt
         self.f.update(**kw)
         raw = pack(self.f)
         return self.tracker.on_frame(self.t, raw, parse(raw))
@@ -49,10 +50,12 @@ class Driver:
 
 
 def drive_circle(d: Driver, radius: float = 120.0, v: float = 40.0,
-                 laps: float = 1.3) -> None:
+                 laps: float = 1.3, accel=None) -> None:
     """Drive a circle through the launch point: one geometric (WTA) lap,
-    then far enough past it that the crossing finalizes on circle exit."""
+    then far enough past it that the crossing finalizes on circle exit.
+    accel(n) supplies the frame's lateral acceleration when given."""
     dist, total = 0.0, 2 * math.pi * radius * laps
+    n = 0
     while dist < total:
         dist += v / 60
         ang = dist / radius
@@ -60,7 +63,8 @@ def drive_circle(d: Driver, radius: float = 120.0, v: float = 40.0,
         # the car moves along (sin yaw, cos yaw), so yaw = pi/2 - angle
         d.send(pos_x=radius * math.sin(ang), pos_z=radius * (1 - math.cos(ang)),
                distance_traveled=dist, speed=v, yaw=math.pi / 2 - ang,
-               accel_x=0.0)
+               accel_x=accel(n) if accel else 0.0)
+        n += 1
 
 
 def test_pre_launch_contact_not_flagged_on_geometric_lap(tmp_path):
@@ -250,6 +254,62 @@ def test_off_line_roughness_cannot_fake_dirt(tmp_path):
         _course_drive(d, 8 * 60, rough=True, on_line=False)   # grass excursion
         _fly(d, 20, on_line=False)                            # ditch jump
     assert _finish_event_track_type(d) == "road"
+
+
+def test_sustained_aero_cornering_is_not_contact(tmp_path):
+    """Issue #49: a downforce car loading up through a fast corner crosses
+    IMPACT_ACCEL and stays there for most of a second, which used to flag
+    every such lap. Aero builds over hundreds of ms - no frame of it is an
+    impulse - so the lap must stay clean."""
+    d = Driver(tmp_path)
+
+    def aero(n):
+        if not 200 <= n < 290:
+            return 0.0
+        ramp = min(n - 200, 30) / 30          # 0 -> 1 over half a second
+        fade = min(289 - n, 30) / 30          # and back down again
+        return 60.0 * min(ramp, fade)         # peaks at 60 m/s^2, well over 45
+
+    drive_circle(d, accel=aero)
+    timed = [lap for lap in d.finish() if lap["lap_time"] is not None]
+    assert len(timed) == 1
+    assert "contact" not in (timed[0]["flags"] or "")
+
+
+def test_impact_on_top_of_aero_load_still_flags(tmp_path):
+    """The burst starts as ordinary cornering and only spikes several frames
+    in (a wall clipped mid-corner). The impulse test therefore has to run on
+    every frame of the burst, not just its rising edge - and the spike stays
+    under IMPACT_PEAK so only the jerk can catch it."""
+    d = Driver(tmp_path)
+
+    def hit_mid_corner(n):
+        if not 200 <= n < 290:
+            return 0.0
+        if n == 250:
+            return 90.0          # +30 m/s^2 in one frame, still below 98
+        return 60.0              # already over IMPACT_ACCEL either side of it
+
+    drive_circle(d, accel=hit_mid_corner)
+    timed = [lap for lap in d.finish() if lap["lap_time"] is not None]
+    assert len(timed) == 1
+    assert "contact" in (timed[0]["flags"] or "")
+
+
+def test_impulsive_gate(tmp_path):
+    """The shared gate itself (laps.py), pinned at its edges."""
+    from app.recorder.laps import (IMPACT_JERK, IMPACT_JERK_DT_MAX,
+                                   IMPACT_PEAK, impulsive)
+
+    prev = (1.0, 50.0)
+    t = 1.0 + 1 / 60
+    assert impulsive(t, 50.0 + IMPACT_JERK, prev)        # a sharp jump
+    assert not impulsive(t, 50.0 + IMPACT_JERK - 1, prev)  # ...but not gentle
+    # the same jump read across a stream gap is the gap's doing, not an impact
+    assert not impulsive(1.0 + 4 * IMPACT_JERK_DT_MAX, 50.0 + IMPACT_JERK, prev)
+    # the peak floor stands alone, even with no previous frame to compare to
+    assert impulsive(t, IMPACT_PEAK, None)
+    assert not impulsive(t, IMPACT_PEAK - 1, None)
 
 
 def test_listener_fallback_keeps_frame_contract(tmp_path):
