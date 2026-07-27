@@ -52,7 +52,7 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
   ended_t, start_distance, flags)` — `flags` is CSV: `rewind`, `contact`,
   `cutoff`. `lap_time NULL` = incomplete.
 - `routes(id, name, start_x, start_z, lap_length, span_x, span_z)` —
-  fingerprint: start within 80 m + length within 5 % + bounding-box
+  fingerprint: start within 120 m + length within 5 % + bounding-box
   dimensions within 15 % (floor 50 m). The span term is what separates
   courses sharing a start line; `lap_length` alone can't, because
   DistanceTraveled is normalized per route (~5950 for every completed one).

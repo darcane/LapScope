@@ -104,7 +104,14 @@ MIGRATIONS = (
 # course agree to within 3.5%, while different courses off a shared start
 # line differ by 30% or more. The floor keeps small courses (some are only
 # ~270 m across) from tripping on the tolerance alone.
-ROUTE_START_RADIUS_M = 80.0
+# The radius is generous because the span term now backstops it. At 80 m it
+# was splitting single courses in two whenever the grid moved the start a
+# little: in a real database routes 9/24 (81.5 m apart) and 37/59 (102 m)
+# are each one course on two rows. Scanned over every route pair in that
+# database, 120 m merges exactly those two pairs and nothing else - the
+# nearest genuinely different pair sits at 121 m and disagrees on span
+# anyway.
+ROUTE_START_RADIUS_M = 120.0
 ROUTE_LENGTH_TOLERANCE = 0.05
 ROUTE_SPAN_TOLERANCE = 0.15
 ROUTE_SPAN_FLOOR_M = 50.0
