@@ -30,6 +30,13 @@ def test_freeroam_then_two_events_wet_same_route(tmp_path):
         assert s["conditions"] == "wet"
     assert ss[0]["route_id"] is not None
     assert ss[0]["route_id"] == ss[1]["route_id"]  # same stadium loop
+    # the fingerprint's shape term, measured by the tracker over a full lap:
+    # the loop is 840 x 240 m (2 x 600 m straights, 120 m radius ends)
+    with store.reader() as conn:
+        route = conn.execute("SELECT * FROM routes WHERE id = ?",
+                             (ss[0]["route_id"],)).fetchone()
+    assert 830 < route["span_x"] < 845
+    assert 232 < route["span_z"] < 245
 
 
 def test_dirty_flags_contact_on_lap2_rewind_on_lap3(tmp_path):

@@ -258,6 +258,7 @@ class SessionTracker:
         self._lap_number: int | None = None
         self._lap_start_dist = 0.0
         self._lap_start_pos = (0.0, 0.0)
+        self._lap_bb = [0.0, 0.0, 0.0, 0.0]  # min x, max x, min z, max z
         self._cur_d: list[float] = []   # lap distance trace of the current lap
         self._cur_t: list[float] = []   # matching elapsed lap time
         self._ref_d: list[float] | None = None  # best lap reference
@@ -359,6 +360,10 @@ class SessionTracker:
             self._start_session(t, frame)
         self._buffer.append((t, raw))
         self._frame_count += 1
+        # grows the open lap's bbox before _lap_logic may close that lap and
+        # open the next one (which re-bases the box) - so nothing leaks across
+        # a lap boundary
+        self._bbox_add(frame["pos_x"], frame["pos_z"])
         if frame["race_position"] > 0:
             self._gridded = True
         if any(d > PUDDLE_DEPTH_MIN for d in frame["wheel_in_puddle"]):
@@ -472,6 +477,7 @@ class SessionTracker:
         self._prev_frame_t = None
         self._prev_pos = None
         self._prev_speed = 0.0
+        self._bbox_reset(frame["pos_x"], frame["pos_z"])
         self._lap_distances = []
         self._launch_rt = None
         self._first_rt = frame["current_race_time"]
@@ -542,7 +548,8 @@ class SessionTracker:
                 length = self._prev_dist - self._lap_start_dist
                 if length > 100.0:
                     rid = self.store.match_or_create_route(
-                        self._lap_start_pos[0], self._lap_start_pos[1], length)
+                        self._lap_start_pos[0], self._lap_start_pos[1], length,
+                        *self._lap_extents())
                     self.store.set_session_route(self.session_id, rid)
                     self._route_id = rid
             self.store.complete_lap(self._lap_id, end_t, lap_time, self._flags())
@@ -673,7 +680,8 @@ class SessionTracker:
             length = self._prev_dist - self._lap_start_dist
             if length > 100.0:
                 rid = self.store.match_or_create_route(
-                    self._lap_start_pos[0], self._lap_start_pos[1], length)
+                    self._lap_start_pos[0], self._lap_start_pos[1], length,
+                    *self._lap_extents())
                 self.store.set_session_route(self.session_id, rid)
                 self._route_assigned = True
                 self._route_id = rid
@@ -882,6 +890,7 @@ class SessionTracker:
             self._lap_opened_t = t
             self._lap_start_dist = dist
             self._lap_start_pos = (frame["pos_x"], frame["pos_z"])
+            self._bbox_reset(frame["pos_x"], frame["pos_z"])
             self._cur_d, self._cur_t = [], []
             self._lap_flags = set()  # the lap starts here; earlier flags aren't its
             self._lap_max_elapsed = 0.0
@@ -930,6 +939,7 @@ class SessionTracker:
                 self._lap_opened_t = t
                 self._lap_start_dist = dist
                 self._lap_start_pos = self._wta_anchor
+                self._bbox_reset(*self._wta_anchor)
                 self._cur_d, self._cur_t = [], []
                 self._lap_flags = set()  # pre-launch junk frames must not dirty lap 1
                 self._lap_max_elapsed = 0.0
@@ -993,6 +1003,7 @@ class SessionTracker:
                        stored_ln=self._completed_laps)
         # the reopen used the current frame; rebase it to the crossing itself
         self._lap_start_pos = (bx, bz)
+        self._bbox_reset(bx, bz)
         self._lap_open_rt = brt
 
     def _complete_current_lap(self, t: float, lap_time: float | None, ln: int) -> None:
@@ -1022,6 +1033,7 @@ class SessionTracker:
         self._lap_number = ln
         self._lap_start_dist = dist
         self._lap_start_pos = (frame["pos_x"], frame["pos_z"])
+        self._bbox_reset(frame["pos_x"], frame["pos_z"])
         self._cur_d, self._cur_t = [], []
         self._lap_flags = set()
         self._lap_max_elapsed = 0.0
@@ -1033,12 +1045,35 @@ class SessionTracker:
     def _flags(self) -> str | None:
         return ",".join(sorted(self._lap_flags)) or None
 
+    def _bbox_reset(self, x: float, z: float) -> None:
+        self._lap_bb = [x, x, z, z]
+
+    def _bbox_add(self, x: float, z: float) -> None:
+        b = self._lap_bb
+        if x < b[0]:
+            b[0] = x
+        elif x > b[1]:
+            b[1] = x
+        if z < b[2]:
+            b[2] = z
+        elif z > b[3]:
+            b[3] = z
+
+    def _lap_extents(self) -> tuple[float, float]:
+        """The lap's bounding-box dimensions - the route fingerprint's shape
+        term (see the fingerprint note in store.py). Dimensions rather than
+        corners: they don't move when the car starts from a different grid
+        slot on the same line."""
+        b = self._lap_bb
+        return b[1] - b[0], b[3] - b[2]
+
     def _assign_route(self) -> None:
-        """Fingerprint the just-completed lap's start point + length."""
+        """Fingerprint the just-completed lap's start point, length and shape."""
         if not self._cur_d:
             return
         route_id = self.store.match_or_create_route(
-            self._lap_start_pos[0], self._lap_start_pos[1], self._cur_d[-1])
+            self._lap_start_pos[0], self._lap_start_pos[1], self._cur_d[-1],
+            *self._lap_extents())
         self.store.set_session_route(self.session_id, route_id)
         self._route_assigned = True
         self._route_id = route_id
