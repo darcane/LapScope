@@ -101,11 +101,16 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
 - **`Velocity*` is car-local** like `Acceleration*`: ~`(0, 0, speed)` whatever
   the world direction — useless for heading. `Yaw` IS world-space: the car moves
   along `(sin yaw, cos yaw)` in world X/Z (verified against position deltas).
-- **`DistanceTraveled` is NOT meters** on real circuits: it advances by the same
-  fixed amount every lap of a given route (~2.4–2.5× the true driven length) —
-  a track-position parameter. Perfect for aligning laps and fingerprinting
-  routes; never display it as a length (integrate `Speed` for that). The
-  simulator emits true meters, so this quirk only shows on real-game data.
+- **`DistanceTraveled` is NOT meters** on real circuits: it is *normalized route
+  progress*, running 0 → ~5950 over a full route **whatever the route** — not a
+  per-route constant that scales with length. Swept over ~90 recorded sessions
+  on ~56 distinct routes (2026-07-27): every completed one lands in 5949–5959
+  while the true driven length ranges 2.1–6.9 km, so the ratio to real metres
+  swings 0.86×–2.84×. Partial runs land short of ~5950. Perfect for aligning
+  laps within a route; **useless for telling routes apart** (see the route
+  fingerprint below — this is what issue #53 tripped over), and never display
+  it as a length (integrate `Speed` for that). The simulator emits true
+  meters, so this quirk only shows on real-game data.
 - `DrivetrainType`: 0=FWD 1=RWD 2=AWD. `CarClass`: index into D,C,B,A,S1,S2,R,X
   (R is new in FH6: 901–998 PI; X is 999 only — verified on a real 998 car).
 - Wheel arrays are ordered FL, FR, RL, RR. `TireTemp` is Fahrenheit.
@@ -276,8 +281,17 @@ All the rules exist because some real behavior broke a naive version:
   Test-fixture gotcha: `empty_fields()` zeroes suspension and slip, which
   reads as *airborne* — hand-built test frames must set grounded values or
   every contact spike gets excused (Driver in test_tracker.py does).
-- Routes are fingerprinted (start pos within 80 m + length within 5%) and named
-  once by the user; names apply to every session on the route.
+- Routes are fingerprinted (start pos within 120 m + length within 5% + the
+  lap's bounding-box dimensions within 15%, floor 50 m) and named once by the
+  user; names apply to every session on the route. The **span term carries
+  it**: Horizon courses routinely share a start line and `DistanceTraveled`
+  can't separate them (see above), so start + length alone collapsed different
+  courses onto one row (#53). Spans are stable because they measure ground
+  covered, not the line driven — an excursion or rewind adds distance but
+  barely moves the extents (measured: ≤3.5% across laps of one course, ≥30%
+  between courses off a shared start line). `span_x`/`span_z` NULL = row
+  predates the term; the next matching lap adopts its shape, so reprocessing
+  **both** sessions of an already-merged route is what unpicks it.
 - Sessions with zero completed laps/runs are discarded at close and again at
   startup (`cleanup_sessions`). Every discard logs a `diag:` signal summary
   (duration, race-time range, max LapNumber/CurrentLap, finish seen, gridded,

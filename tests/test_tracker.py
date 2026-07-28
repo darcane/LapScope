@@ -312,6 +312,58 @@ def test_impulsive_gate(tmp_path):
     assert not impulsive(t, IMPACT_PEAK - 1, None)
 
 
+def test_route_fingerprint_separates_courses_sharing_a_start_line(tmp_path):
+    """Issue #53: Horizon courses routinely launch from the same spot, and
+    lap_length can't tell them apart - DistanceTraveled is normalized per
+    route, so every completed one reads ~5950 whatever ground it covered.
+    The bbox span term is what separates them. Numbers are the real capture:
+    "Ine Scramble" (session 313) and "Ito Trail" (session 347), 2.5 m apart
+    at the line with lengths within 0.2 m."""
+    store = Store(str(Path(tmp_path) / "telemetry.db"))
+
+    ine = store.match_or_create_route(5890.7, 1811.9, 5951.5, 738.0, 893.7)
+    ito = store.match_or_create_route(5892.9, 1813.2, 5951.7, 1083.1, 2056.0)
+    assert ine != ito
+
+    # ...and further laps of either still land on their own route
+    assert store.match_or_create_route(5891.2, 1812.0, 5953.4, 741.0, 890.2) == ine
+    assert store.match_or_create_route(5893.0, 1813.5, 5950.9, 1080.4, 2060.1) == ito
+    store.close()
+
+
+def test_legacy_route_adopts_a_span_then_splits(tmp_path):
+    """Routes recorded before the span term carry NULL: the next matching lap
+    stamps its shape on the row (name intact), so the other course off that
+    start line splits off instead of collapsing onto it. Reprocessing both
+    sessions of an already-merged route is what unpicks an existing DB."""
+    store = Store(str(Path(tmp_path) / "telemetry.db"))
+    store.db.execute(
+        "INSERT INTO routes (id, name, start_x, start_z, lap_length)"
+        " VALUES (54, 'Ine Scramble', 5890.7, 1811.9, 5951.5)")
+    store.db.commit()
+
+    assert store.match_or_create_route(5890.7, 1811.9, 5951.5, 738.0, 893.7) == 54
+    with store.reader() as conn:
+        row = conn.execute("SELECT * FROM routes WHERE id = 54").fetchone()
+    assert row["name"] == "Ine Scramble"  # the user's rename survives
+    assert (row["span_x"], row["span_z"]) == (738.0, 893.7)
+
+    assert store.match_or_create_route(5892.9, 1813.2, 5951.7, 1083.1, 2056.0) != 54
+    store.close()
+
+
+def test_route_span_tolerance_edges():
+    """Laps of one course drift a few percent (measured: <=3.5% over 100
+    recorded sessions), so the tolerance is wide; the absolute floor covers
+    small courses, where 15 % of a 270 m span is only 40 m."""
+    from app.recorder.store import ROUTE_SPAN_FLOOR_M, _spans_match
+
+    assert _spans_match(1000.0, 1000.0, 1035.0, 970.0)       # ~3.5 % drift
+    assert not _spans_match(1000.0, 1000.0, 1000.0, 1400.0)  # 40 % on one axis
+    assert _spans_match(270.0, 759.0, 270.0 + ROUTE_SPAN_FLOOR_M - 1, 759.0)
+    assert not _spans_match(270.0, 759.0, 270.0 + ROUTE_SPAN_FLOOR_M + 1, 759.0)
+
+
 def test_listener_fallback_keeps_frame_contract(tmp_path):
     """A recorder crash must not shrink the published frame: the extras keep
     the documented shape (session_id/delta/session_best/lap_elapsed/race_mode)."""

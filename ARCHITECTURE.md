@@ -51,8 +51,14 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
 - `laps(id, session_id→sessions CASCADE, lap_number, lap_time, started_t,
   ended_t, start_distance, flags)` — `flags` is CSV: `rewind`, `contact`,
   `cutoff`. `lap_time NULL` = incomplete.
-- `routes(id, name, start_x, start_z, lap_length)` — fingerprint: start within
-  80 m + length within 5 %.
+- `routes(id, name, start_x, start_z, lap_length, span_x, span_z)` —
+  fingerprint: start within 120 m + length within 5 % + bounding-box
+  dimensions within 15 % (floor 50 m). The span term is what separates
+  courses sharing a start line; `lap_length` alone can't, because
+  DistanceTraveled is normalized per route (~5950 for every completed one).
+  `span_x`/`span_z` NULL = row predates the span term; the next matching lap
+  adopts its shape (reprocess both sessions to unpick an already-collapsed
+  route).
 - `car_names(ordinal, name)` — user overrides of the bundled ordinal list.
 - `edits(id, session_id→sessions CASCADE, kind, anchor_t, value, created_at)`
   — manual session edits, applied at read time (raw frames and the recorder's

@@ -82,12 +82,47 @@ MIGRATIONS = (
     # kept=1 exempts a session from the no-completed-laps cleanup
     # (LS_KEEP_DISCARDED captures, reprocessed sessions)
     "ALTER TABLE sessions ADD COLUMN kept INTEGER NOT NULL DEFAULT 0",
+    # the lap's bounding-box dimensions (see the fingerprint note below);
+    # NULL on rows recorded before the span term existed
+    "ALTER TABLE routes ADD COLUMN span_x REAL",
+    "ALTER TABLE routes ADD COLUMN span_z REAL",
 )
 
-# route fingerprint tolerances: same start point within this radius and a
-# lap length within this fraction = same route
-ROUTE_START_RADIUS_M = 80.0
+# Route fingerprint: same start point within this radius, a lap length within
+# this fraction, and matching bounding-box dimensions = the same route.
+#
+# The span term carries the fingerprint. Horizon events routinely share a
+# start line, and lap_length can't tell them apart: DistanceTraveled is
+# normalized per route, reading ~5950 at the end of every completed route
+# whatever the true driven distance (3.0 km and 6.9 km courses both report
+# it). Start radius plus length alone therefore collapsed different courses
+# launching from one spot onto a single row.
+#
+# Bounding-box dimensions hold up because they measure the ground covered,
+# not the line driven - an off-track excursion or a rewind adds distance but
+# barely moves the extents. Measured over 100 recorded sessions: laps of one
+# course agree to within 3.5%, while different courses off a shared start
+# line differ by 30% or more. The floor keeps small courses (some are only
+# ~270 m across) from tripping on the tolerance alone.
+# The radius is generous because the span term now backstops it. At 80 m it
+# was splitting single courses in two whenever the grid moved the start a
+# little: in a real database routes 9/24 (81.5 m apart) and 37/59 (102 m)
+# are each one course on two rows. Scanned over every route pair in that
+# database, 120 m merges exactly those two pairs and nothing else - the
+# nearest genuinely different pair sits at 121 m and disagrees on span
+# anyway.
+ROUTE_START_RADIUS_M = 120.0
 ROUTE_LENGTH_TOLERANCE = 0.05
+ROUTE_SPAN_TOLERANCE = 0.15
+ROUTE_SPAN_FLOOR_M = 50.0
+
+
+def _spans_match(ax: float, az: float, bx: float, bz: float) -> bool:
+    """Do two laps cover the same ground? Both bbox dimensions must agree."""
+    return all(
+        abs(a - b) <= max(ROUTE_SPAN_TOLERANCE * max(a, b), ROUTE_SPAN_FLOOR_M)
+        for a, b in ((ax, bx), (az, bz))
+    )
 
 _SESSION_SELECT = """
 SELECT s.*, r.name AS route_name, cn.name AS car_name_override
@@ -258,15 +293,29 @@ class Store:
         self.db.commit()
 
     def match_or_create_route(self, start_x: float, start_z: float,
-                              lap_length: float) -> int:
-        for rid, rx, rz, rlen in self.db.execute(
-                "SELECT id, start_x, start_z, lap_length FROM routes"):
-            if (math.hypot(start_x - rx, start_z - rz) <= ROUTE_START_RADIUS_M
-                    and abs(lap_length - rlen) <= ROUTE_LENGTH_TOLERANCE * rlen):
+                              lap_length: float, span_x: float,
+                              span_z: float) -> int:
+        for rid, rx, rz, rlen, rsx, rsz in self.db.execute(
+                "SELECT id, start_x, start_z, lap_length, span_x, span_z FROM routes"):
+            if (math.hypot(start_x - rx, start_z - rz) > ROUTE_START_RADIUS_M
+                    or abs(lap_length - rlen) > ROUTE_LENGTH_TOLERANCE * rlen):
+                continue
+            if rsx is None:
+                # recorded before the span term existed: adopt this lap's
+                # shape, so the next course off this start line splits off
+                # instead of collapsing onto the row. Reprocessing the
+                # sessions of an already-collapsed route is what unpicks it.
+                self.db.execute(
+                    "UPDATE routes SET span_x = ?, span_z = ? WHERE id = ?",
+                    (span_x, span_z, rid))
+                self.db.commit()
+                return rid
+            if _spans_match(span_x, span_z, rsx, rsz):
                 return rid
         cur = self.db.execute(
-            "INSERT INTO routes (start_x, start_z, lap_length) VALUES (?, ?, ?)",
-            (start_x, start_z, lap_length),
+            "INSERT INTO routes (start_x, start_z, lap_length, span_x, span_z)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (start_x, start_z, lap_length, span_x, span_z),
         )
         self.db.commit()
         return cur.lastrowid
