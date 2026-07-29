@@ -20,7 +20,7 @@ from ..recorder.laps import (AIRBORNE_MIN_S, AIRBORNE_SLIP_MAX,
                              AIRBORNE_SUSP_MAX, IMPACT_ACCEL, LANDING_GRACE_S,
                              impulsive)
 from ..recorder.reprocess import reprocess_session
-from ..recorder.store import lap_anchor, lap_span
+from ..recorder.store import ROUTE_KINDS as store_kinds, lap_anchor, lap_span
 from ..telemetry.packet import FIELDS, empty_fields, pack, parse
 
 log = logging.getLogger("lapscope.api")
@@ -31,6 +31,9 @@ router = APIRouter()
 CAR_CLASSES = ["D", "C", "B", "A", "S1", "S2", "R", "X"]
 CONDITIONS = {"dry", "wet", "snow"}
 TRACK_TYPES = {"road", "street", "touge", "dirt", "cross", "drag", "wtc"}
+# a course either comes back to its start or it doesn't; decides whether the
+# UI says "lap" or "run" (store.ROUTE_KINDS is the source of truth)
+ROUTE_KINDS = set(store_kinds)
 DRIVETRAINS = ["FWD", "RWD", "AWD"]
 
 # channel name -> extractor over a parsed frame; used by /laps/{id}/data
@@ -186,13 +189,15 @@ class NameBody(BaseModel):
 class RoutePatch(BaseModel):
     name: str | None = None
     track_type: str | None = None
+    kind: str | None = None
 
 
 @router.patch("/routes/{route_id}")
 def patch_route(route_id: int, body: RoutePatch, request: Request):
-    """Rename a route and/or retag every session recorded on it in one go
-    (the analysis page offers the retag when a session's type is changed -
-    a route's surface doesn't change, so the tag belongs to all of them)."""
+    """Rename a route, correct its shape, and/or retag every session recorded
+    on it in one go (the analysis page offers the retag when a session's type
+    is changed - a route's surface doesn't change, so the tag belongs to all
+    of them)."""
     store = request.app.state.store
     if not store.route_exists(route_id):
         raise HTTPException(404, "route not found")
@@ -200,6 +205,10 @@ def patch_route(route_id: int, body: RoutePatch, request: Request):
         if not body.name.strip():
             raise HTTPException(400, "name must not be empty")
         store.rename_route(route_id, body.name.strip()[:80])
+    if body.kind is not None:  # "" clears the override back to the detected value
+        if body.kind and body.kind not in ROUTE_KINDS:
+            raise HTTPException(400, f"kind must be one of {sorted(ROUTE_KINDS)}")
+        store.set_route_kind_user(route_id, body.kind or None)
     if body.track_type is not None:  # "" clears the tag on every session
         if body.track_type and body.track_type not in TRACK_TYPES:
             raise HTTPException(400, f"track_type must be one of {sorted(TRACK_TYPES)}")

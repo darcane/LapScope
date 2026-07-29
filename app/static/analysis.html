@@ -79,9 +79,9 @@
     </div>
     <div class="car-line" id="header-car"></div>
     <section class="panel">
-      <h2>Laps</h2>
+      <h2 id="laps-heading">Laps</h2>
       <table class="laps">
-        <thead><tr><th>Compare</th><th>Lap</th><th>Time</th><th>Gap</th><th></th><th></th></tr></thead>
+        <thead><tr><th>Compare</th><th id="lap-col">Lap</th><th>Time</th><th>Gap</th><th></th><th></th></tr></thead>
         <tbody id="lap-rows"></tbody>
       </table>
     </section>
@@ -110,7 +110,7 @@
             <span id="map-hint" style="display:none">↔ drag the map to rotate</span>
           </div>
         </div>
-        <div id="map-side" class="empty-hint">Tag a lap to draw its racing line — add more to overlay them.</div>
+        <div id="map-side" class="empty-hint"></div>
       </div>
     </section>
     <section class="panel">

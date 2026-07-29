@@ -322,11 +322,74 @@ def test_route_patch_retags_every_session_on_the_route(tmp_path):
     assert exc.value.status_code == 404
 
 
+def test_route_patch_sets_and_clears_the_shape_override(tmp_path):
+    """PATCH /routes/{id} with kind is the manual correction for the
+    recorder's guess (it decides whether the UI says "lap" or "run").
+    "" clears it back to the detected shape."""
+    from app.api.routes import RoutePatch, patch_route
+
+    def scenario(sim):
+        sim.event(180, "race", race_laps=3)
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    sid = sessions(store)[0]["id"]
+    rid = sessions(store)[0]["route_id"]
+    req = _request_for(store)
+    assert sessions(store)[0]["route_kind"] == "circuit"  # detected
+
+    patch_route(rid, RoutePatch(kind="sprint"), req)
+    s = sessions(store)[0]
+    assert (s["route_kind"], s["route_kind_auto"]) == ("sprint", "circuit")
+
+    patch_route(rid, RoutePatch(kind=""), req)
+    assert sessions(store)[0]["route_kind"] == "circuit"
+
+    # a shape-only edit must not disturb the name (the dialog sends both)
+    patch_route(rid, RoutePatch(name="Bandai Azuma"), req)
+    patch_route(rid, RoutePatch(kind="sprint"), req)
+    assert sessions(store)[0]["route_name"] == "Bandai Azuma"
+
+    with pytest.raises(HTTPException) as exc:
+        patch_route(rid, RoutePatch(kind="rallycross"), req)
+    assert exc.value.status_code == 400
+    assert sid is not None
+
+
+def test_route_kind_reaches_both_session_payloads(tmp_path):
+    """list_sessions and _SESSION_SELECT are separate hand-written joins:
+    the sidebar cards come from one and the detail view from the other, so a
+    field added to only one of them silently goes missing on the other."""
+    from app.api.routes import session_laps, sessions as sessions_ep
+
+    def scenario(sim):
+        sim.sprint(60)
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    req = _request_for(store)
+
+    card = sessions_ep(req)[0]
+    detail = session_laps(card["id"], req)["session"]
+    assert card["route_kind"] == "sprint"
+    assert detail["route_kind"] == "sprint"
+    assert "route_kind_auto" in card and "route_kind_auto" in detail
+
+
 def test_suggestions_are_valid_track_types():
     """Cross-file invariant: everything the classifier can suggest must be a
     member of the API's TRACK_TYPES (= TRACK_META = #track-select)."""
     from app.api.routes import TRACK_TYPES
     assert {"road", "dirt", "cross", "wtc"} <= TRACK_TYPES
+
+
+def test_route_kinds_invariant():
+    """Cross-file invariant: ROUTE_KINDS (store.py, re-exported by the API)
+    = the shape picker's options (analysis.js renameRoute) = the branches of
+    lapWord / lapLabel (common.js). Adding a third shape means touching all
+    three."""
+    from app.api.routes import ROUTE_KINDS
+    assert ROUTE_KINDS == {"circuit", "sprint"}
 
 
 def test_reprocess_blocked_while_any_session_records(tmp_path):

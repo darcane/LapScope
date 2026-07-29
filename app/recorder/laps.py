@@ -549,7 +549,7 @@ class SessionTracker:
                 if length > 100.0:
                     rid = self.store.match_or_create_route(
                         self._lap_start_pos[0], self._lap_start_pos[1], length,
-                        *self._lap_extents())
+                        *self._lap_extents(), kind=self._route_kind())
                     self.store.set_session_route(self.session_id, rid)
                     self._route_id = rid
             self.store.complete_lap(self._lap_id, end_t, lap_time, self._flags())
@@ -681,7 +681,7 @@ class SessionTracker:
             if length > 100.0:
                 rid = self.store.match_or_create_route(
                     self._lap_start_pos[0], self._lap_start_pos[1], length,
-                    *self._lap_extents())
+                    *self._lap_extents(), kind=self._route_kind())
                 self.store.set_session_route(self.session_id, rid)
                 self._route_assigned = True
                 self._route_id = rid
@@ -1067,13 +1067,29 @@ class SessionTracker:
         b = self._lap_bb
         return b[1] - b[0], b[3] - b[2]
 
+    def _route_kind(self) -> str:
+        """Is this course a circuit (repeatable laps) or a point-to-point
+        sprint (one run per visit)? Derived, not hardcoded per call site:
+        _complete_current_lap also handles the LastLap-changed-while-
+        LapNumber-stood-still branch, which is a circuit's final lap AND a
+        point-to-point finish, so a literal there would mislabel every sprint
+        that finishes that way.
+
+        A LapNumber increment or a geometric loop closure can only happen on
+        a course that comes back to its start. Everything else - including a
+        one-lap circuit race that never incremented - reads as a sprint here
+        and is corrected by the never-downgrade rule in set_route_kind the
+        first time the route does produce a lap."""
+        return "circuit" if (self._diag_max_ln > 0
+                             or self._geometric_laps > 0) else "sprint"
+
     def _assign_route(self) -> None:
         """Fingerprint the just-completed lap's start point, length and shape."""
         if not self._cur_d:
             return
         route_id = self.store.match_or_create_route(
             self._lap_start_pos[0], self._lap_start_pos[1], self._cur_d[-1],
-            *self._lap_extents())
+            *self._lap_extents(), kind=self._route_kind())
         self.store.set_session_route(self.session_id, route_id)
         self._route_assigned = True
         self._route_id = route_id

@@ -51,14 +51,24 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
 - `laps(id, session_id→sessions CASCADE, lap_number, lap_time, started_t,
   ended_t, start_distance, flags)` — `flags` is CSV: `rewind`, `contact`,
   `cutoff`. `lap_time NULL` = incomplete.
-- `routes(id, name, start_x, start_z, lap_length, span_x, span_z)` —
-  fingerprint: start within 120 m + length within 5 % + bounding-box
+- `routes(id, name, start_x, start_z, lap_length, span_x, span_z, kind,
+  kind_user)` — fingerprint: start within 120 m + length within 5 % + bounding-box
   dimensions within 15 % (floor 50 m). The span term is what separates
   courses sharing a start line; `lap_length` alone can't, because
   DistanceTraveled is normalized per route (~5950 for every completed one).
   `span_x`/`span_z` NULL = row predates the span term; the next matching lap
   adopts its shape (reprocess both sessions to unpick an already-collapsed
-  route).
+  route). `kind` (`circuit`/`sprint`) decides whether the UI says "lap" or
+  "run": a Horizon sprint is point-to-point, so one visit produces exactly one
+  timed run. The recorder derives it from which lap machinery fired
+  (`_route_kind`, laps.py) and may only promote `NULL → any` and
+  `sprint → circuit` — circuit evidence (a LapNumber increment, a geometric
+  loop closure) is strong, "only ever produced one run" is also what a
+  single-lap circuit race looks like. `kind_user` is the manual override from
+  `PATCH /routes/{id}` and always wins (`COALESCE(kind_user, kind)`); routes
+  driven before the column existed are classified once by
+  `Store.backfill_route_kinds()` from the index tables alone, and routes with
+  no sessions left stay NULL.
 - `car_names(ordinal, name)` — user overrides of the bundled ordinal list.
 - `edits(id, session_id→sessions CASCADE, kind, anchor_t, value, created_at)`
   — manual session edits, applied at read time (raw frames and the recorder's
@@ -78,7 +88,7 @@ New tables go straight into `SCHEMA` (`CREATE TABLE IF NOT EXISTS` is idempotent
 |---|---|
 | `GET /status` | Packet counters, last-packet age/size, active session, session best, `version` (`app.__version__`), and `udp_error` (non-null when the UDP port could not be bound). First stop when "nothing works". |
 | `GET /version` | `{"version": app.__version__}` — the running build. The frontend compares it (client-side) against the latest GitHub Release for the update notice; `"0.0.0"` (dev/source run) suppresses the check. |
-| `GET /sessions` | List with route/car-name joins, lap counts, best lap. |
+| `GET /sessions` | List with route/car-name joins, lap counts, best lap, and the route's effective `route_kind` + detected `route_kind_auto`. No query params by design — the analysis browse bar filters this payload client-side. |
 | `PATCH /sessions/{id}` | `name` (`""` clears → display falls back to route/date), `conditions` (`dry/wet/snow`, `""` clears), `track_type` (`road/street/touge/dirt/cross/drag/wtc`, `""` clears). |
 | `POST /sessions/{id}/reprocess` | Rebuild laps from stored frames (async def — event-loop writes). 409 while **any** session records: the synchronous replay would stall the event loop and freeze live telemetry. Manual edits survive (time-keyed — see the `edits` table). |
 | `DELETE /sessions/{id}` | Cascades frames+laps. 409 while recording. |
@@ -89,7 +99,7 @@ New tables go straight into `SCHEMA` (`CREATE TABLE IF NOT EXISTS` is idempotent
 | `GET /laps/{id}/data?channels=&max_points=` | Distance-indexed channel arrays; drops rewound-over samples; decimates to `max_points`. Channel names = `CHANNELS` keys in routes.py. `lap_time` falls back to time-since-lap-start when the packet lap clock never ran (WTA / bare sprints keep `CurrentLap` at 0), so the Δ-time chart works for those events. Also returns `collisions` (contact-spike peaks, `landing: true/false`, `t` = the peak's frame time — the dismissal handle — and `dismissed: true` when a manual edit matched it) and `jumps` (airborne segments: takeoff → touchdown world coords + `dist0/dist1`, `air_s`, `hard` + peak `g` when the landing spiked) — both computed on the full-resolution trace, never decimated away. |
 | `GET /laps/{id}/export.csv`, `GET /sessions/{id}/export.csv` | CSV download (streamed per lap, `Content-Disposition` filename built from the session's display name — sanitized ASCII, Windows-safe). Full resolution: every kept frame of the same rewind-trimmed trace `/data` serves, **no decimation**; canonical metric units with unit-suffixed headers (`speed_kmh`, `pos_x_m`, `boost_psi`, `lap_time_s` incl. the dead-lap-clock fallback). The session variant concatenates the **timed, non-excluded** laps (`lap` column) — exclusions honored like bests/counts, the untimed post-finish coast skipped because a re-import would mint a time for it; the per-lap variant exports either kind — asking for one lap is explicit. |
 | `POST /import/csv?name=` | The reverse trip: raw body = a LapScope CSV export (text/csv — no multipart, no new dependency). Rebuilds a session: frames synthesized via `packet.pack()` (CSV channels real, rest neutral filler — suspension parked grounded so the airborne classifier can't fire, `NormalizedDrivingLine` saturated so the flat fake suspension is never read as surface evidence, and each lap group's final frame carries the group's lap time as `LastLap` so a reprocess re-times every lap through the LastLap-change finish instead of wiping them), lap groups become completed laps timed by the clock's high-water mark, laid end-to-end on fresh time/distance axes. No car/route metadata (`car_ordinal` NULL → "Unknown car", `car_known` true so the unknown-car affordances stay quiet). `async def` like reprocess (event-loop Store writes) incl. the 409-while-recording guard; 400s name the offending line, nothing written unless the whole file parses. |
-| `PATCH /routes/{id}`, `GET/PATCH /cars/{ordinal}` | Route: `name` renames, `track_type` retags **every session on the route** at once (the analysis page offers this when a session's type is changed; `""` clears them all). Car override (`name: ""` reverts to the bundled/downloaded name). `GET` also returns `known` (ordinal resolvable without the `Car #<id>` fallback). |
+| `PATCH /routes/{id}`, `GET/PATCH /cars/{ordinal}` | Route: `name` renames, `kind` (`circuit`/`sprint`, `""` clears back to the detected shape) overrides the route's shape, `track_type` retags **every session on the route** at once (the analysis page offers this when a session's type is changed; `""` clears them all). Car override (`name: ""` reverts to the bundled/downloaded name). `GET` also returns `known` (ordinal resolvable without the `Car #<id>` fallback). |
 | `GET /cars`, `POST /cars/refresh` | Car-list metadata (`total`, `fetched_at`) / re-download the community list (see app/cars.py row above; 502 with a readable `detail` on failure — the current list stays). Registered before `/cars/{ordinal}` so `refresh` isn't parsed as an ordinal. |
 
 ## WebSocket `/ws/live` frame
@@ -205,6 +215,10 @@ assert them here.
 
 ## Cross-file invariants (change one → change all)
 
+- Route shapes: `ROUTE_KINDS` (store.py, re-exported by api/routes.py) = the
+  shape picker's options (`renameRoute`, analysis.js) = the branches of
+  `lapWord` / `lapLabel` (common.js), which every "lap"/"run" string on the
+  analysis page goes through (locked by a test in test_api.py).
 - Track-type set: `TRACK_TYPES` (api/routes.py) = `TRACK_META` (common.js)
   = `#track-select` options (analysis.html); everything `suggest_track_type`
   (laps.py) can return must be a member of `TRACK_TYPES` (locked by a test

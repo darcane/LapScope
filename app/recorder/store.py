@@ -86,7 +86,23 @@ MIGRATIONS = (
     # NULL on rows recorded before the span term existed
     "ALTER TABLE routes ADD COLUMN span_x REAL",
     "ALTER TABLE routes ADD COLUMN span_z REAL",
+    # does one visit produce laps, or a single run? (see ROUTE_KINDS below)
+    "ALTER TABLE routes ADD COLUMN kind TEXT",       # recorder + backfill guess
+    "ALTER TABLE routes ADD COLUMN kind_user TEXT",  # manual override; wins
 )
+
+# Route shape. A Horizon sprint is point-to-point: one visit produces exactly
+# one timed run, so calling it a "lap" is wrong everywhere in the UI. The
+# packet says nothing about it, so the recorder infers it from which lap
+# machinery fired (laps.py `_route_kind`) and stores it on the route - it's a
+# property of the course, not of a session.
+#
+# Two columns for the same reason `laps.flags` has an `edits` overlay: `kind`
+# is the machine's guess (recorder, plus a one-off backfill for routes driven
+# before this existed) and `kind_user` is the user's correction. Effective
+# value is COALESCE(kind_user, kind), so a wrong guess is repairable by the
+# next real lap and a manual override is never in the blast radius.
+ROUTE_KINDS = ("circuit", "sprint")
 
 # Route fingerprint: same start point within this radius, a lap length within
 # this fraction, and matching bounding-box dimensions = the same route.
@@ -125,7 +141,8 @@ def _spans_match(ax: float, az: float, bx: float, bz: float) -> bool:
     )
 
 _SESSION_SELECT = """
-SELECT s.*, r.name AS route_name, cn.name AS car_name_override
+SELECT s.*, r.name AS route_name, cn.name AS car_name_override,
+       COALESCE(r.kind_user, r.kind) AS route_kind, r.kind AS route_kind_auto
 FROM sessions s
 LEFT JOIN routes r ON r.id = s.route_id
 LEFT JOIN car_names cn ON cn.ordinal = s.car_ordinal
@@ -162,11 +179,44 @@ class Store:
             except sqlite3.OperationalError:
                 pass  # column already exists
         self.db.commit()
+        self.backfill_route_kinds()
         # session ids must never be reused: discarding a session deletes the
         # max rowid, which plain INTEGER PRIMARY KEY would hand out again -
         # and the live dashboard detects "new event" by the id changing
         self._next_session_id = self.db.execute(
             "SELECT COALESCE(MAX(id), 0) + 1 FROM sessions").fetchone()[0]
+
+    def backfill_route_kinds(self) -> int:
+        """Classify routes driven before `kind` existed, from evidence already
+        in the index tables - no frame reads, so the size of `frames` doesn't
+        matter. Idempotent (NULL rows only), so it belongs in __init__ rather
+        than the lifespan or a tools script: the packaged Windows exe has no
+        shell step, and without this every pre-existing route would stay NULL
+        forever and read as "lap".
+
+        A route that ever produced more than one timed lap, or that carries a
+        World Time Attack tag, is a circuit; anything else only ever produced
+        single runs. Routes with no sessions left (their captures were
+        deleted) stay NULL rather than get a fabricated guess."""
+        if not self.db.execute(
+                "SELECT 1 FROM routes WHERE kind IS NULL LIMIT 1").fetchone():
+            return 0
+        cur = self.db.execute("""
+            UPDATE routes SET kind = (
+                SELECT CASE
+                    WHEN MAX(s.track_type = 'wtc') = 1 THEN 'circuit'
+                    WHEN MAX(COALESCE(n.c, 0)) > 1     THEN 'circuit'
+                    ELSE 'sprint' END
+                FROM sessions s
+                LEFT JOIN (SELECT session_id, COUNT(*) c FROM laps
+                           WHERE lap_time IS NOT NULL GROUP BY session_id) n
+                  ON n.session_id = s.id
+                WHERE s.route_id = routes.id)
+            WHERE kind IS NULL
+              AND EXISTS (SELECT 1 FROM sessions WHERE route_id = routes.id)
+        """)
+        self.db.commit()
+        return cur.rowcount
 
     def close(self) -> None:
         self.db.commit()
@@ -294,7 +344,7 @@ class Store:
 
     def match_or_create_route(self, start_x: float, start_z: float,
                               lap_length: float, span_x: float,
-                              span_z: float) -> int:
+                              span_z: float, kind: str | None = None) -> int:
         for rid, rx, rz, rlen, rsx, rsz in self.db.execute(
                 "SELECT id, start_x, start_z, lap_length, span_x, span_z FROM routes"):
             if (math.hypot(start_x - rx, start_z - rz) > ROUTE_START_RADIUS_M
@@ -309,16 +359,32 @@ class Store:
                     "UPDATE routes SET span_x = ?, span_z = ? WHERE id = ?",
                     (span_x, span_z, rid))
                 self.db.commit()
+                self.set_route_kind(rid, kind)
                 return rid
             if _spans_match(span_x, span_z, rsx, rsz):
+                self.set_route_kind(rid, kind)
                 return rid
         cur = self.db.execute(
-            "INSERT INTO routes (start_x, start_z, lap_length, span_x, span_z)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (start_x, start_z, lap_length, span_x, span_z),
+            "INSERT INTO routes (start_x, start_z, lap_length, span_x, span_z, kind)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (start_x, start_z, lap_length, span_x, span_z, kind),
         )
         self.db.commit()
         return cur.lastrowid
+
+    def set_route_kind(self, route_id: int, kind: str | None) -> None:
+        """Recorder write. Circuit evidence is strong and sprint evidence is
+        weak: a LapNumber increment or a geometric loop closure can only
+        happen on a circuit, while "only ever produced one timed run" is also
+        what a single-lap circuit race looks like. So NULL -> anything and
+        sprint -> circuit, never circuit -> sprint. Event-loop connection."""
+        if kind is None:
+            return
+        self.db.execute(
+            "UPDATE routes SET kind = ? WHERE id = ?"
+            " AND (kind IS NULL OR (kind = 'sprint' AND ? = 'circuit'))",
+            (kind, route_id, kind))
+        self.db.commit()
 
     def set_session_route(self, session_id: int, route_id: int) -> None:
         self.db.execute("UPDATE sessions SET route_id = ? WHERE id = ?",
@@ -339,7 +405,12 @@ class Store:
     def list_sessions(self) -> list[dict]:
         with self.reader() as conn:
             rows = conn.execute(
+                # keep the projection in step with _SESSION_SELECT: this query
+                # feeds the sidebar cards, that one feeds the detail view, and
+                # a field added to only one of them goes missing on the other
                 "SELECT s.*, r.name AS route_name, cn.name AS car_name_override,"
+                " COALESCE(r.kind_user, r.kind) AS route_kind,"
+                " r.kind AS route_kind_auto,"
                 " COUNT(l.lap_time) AS lap_count, MIN(l.lap_time) AS best_lap"
                 " FROM sessions s"
                 " LEFT JOIN routes r ON r.id = s.route_id"
@@ -382,6 +453,15 @@ class Store:
             cur = conn.execute("UPDATE routes SET name = ? WHERE id = ?", (name, route_id))
             conn.commit()
             return cur.rowcount > 0
+
+    def set_route_kind_user(self, route_id: int, kind: str | None) -> None:
+        """Manual override from the analysis page; None clears it so the
+        recorder's own value shows again. Unconditional - the whole point is
+        that the user outranks the guess."""
+        with self.reader() as conn:
+            conn.execute("UPDATE routes SET kind_user = ? WHERE id = ?",
+                         (kind, route_id))
+            conn.commit()
 
     def route_exists(self, route_id: int) -> bool:
         with self.reader() as conn:

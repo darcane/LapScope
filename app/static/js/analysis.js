@@ -52,8 +52,10 @@ function shortName(session) {
 /* tray chips / captions: the plain lap number is enough while every pick is
    from the displayed session; session names only appear once picks cross */
 function chipLabel(pick, crossSession) {
-  const lapN = `Lap ${pick.lap.lap_number + 1}`;
-  return crossSession ? `${shortName(pick.session)} · L${pick.lap.lap_number + 1}` : lapN;
+  const n = pick.lap.lap_number + 1;
+  return crossSession
+    ? `${shortName(pick.session)} · ${pick.session.route_kind === "sprint" ? "R" : "L"}${n}`
+    : lapLabel(pick.session.route_kind, n);
 }
 
 /* dirty-lap markers inferred by the recorder (the game sends no official flag) */
@@ -157,7 +159,7 @@ function sessionCard(s) {
     <div class="title"></div>
     <div class="meta-row">${classBadge(s.car_class_letter, s.car_pi)}${dtBadge(s.drivetrain)}${trackBadge(s.track_type)}${condBadge(s.conditions)}</div>
     <div class="car-line"></div>
-    <div class="sub">${fmtDate(s.started_at)} · ${s.lap_count} laps · best ${fmtLap(s.best_lap)}</div>`;
+    <div class="sub">${fmtDate(s.started_at)} · ${s.lap_count} ${lapWord(s.route_kind, s.lap_count)} · best ${fmtLap(s.best_lap)}</div>`;
   $(".title", card).textContent = displayName(s);
   $(".car-line", card).textContent = s.car_name;
   if (!s.car_known) {
@@ -170,7 +172,7 @@ function sessionCard(s) {
     // best lap per attempt, without opening each session (issue #30)
     const add = document.createElement("button");
     add.className = "card-add";
-    add.title = "Add this session's best lap to the comparison (click again to remove)";
+    add.title = `Add this session's best ${lapWord(s.route_kind)} to the comparison (click again to remove)`;
     add.textContent = "＋";
     add.onclick = async (e) => {
       e.stopPropagation();
@@ -271,6 +273,7 @@ async function selectSession(id) {
     };
   }
   updateMapHint();
+  renderLapHeader();
   bindMapDrag($("#trackmap"));
   bindMapContext($("#trackmap"));
 
@@ -288,10 +291,25 @@ async function selectSession(id) {
   renderPicks();
 }
 
+/* Sprint routes produce one timed run per visit, so the whole lap panel
+   renames itself off the route's kind. Runs on mount, before the first
+   renderLapRows / drawMap. */
+function renderLapHeader() {
+  const kind = state.session && state.session.route_kind;
+  const one = lapWord(kind), many = lapWord(kind, 2);
+  $("#laps-heading").textContent = many.replace(/^./, (c) => c.toUpperCase());
+  $("#lap-col").textContent = one.replace(/^./, (c) => c.toUpperCase());
+  const side = $("#map-side");
+  if (side.classList.contains("empty-hint"))
+    side.textContent =
+      `Tag a ${one} to draw its racing line — add more to overlay them.`;
+}
+
 function renderLapRows() {
   const tbody = $("#lap-rows");
   if (!tbody) return;
   tbody.innerHTML = "";
+  const word = lapWord(state.session && state.session.route_kind);
   for (const l of state.laps) {
     const tr = document.createElement("tr");
     if (l.is_best) tr.className = "best";
@@ -310,9 +328,9 @@ function renderLapRows() {
       <td>${l.gap_to_best != null && l.gap_to_best > 0 ? "+" + l.gap_to_best.toFixed(3) : (l.is_best ? "best" : "")}</td>
       <td style="color:var(--muted)">${flagIcons(l.flags)}${edited ? `<span class="lap-flag" title="flags edited by you — ✎ to change, Reset edits to undo">✎</span>` : ""}${l.lap_time ? "" : " incomplete"}${l.excluded ? " excluded" : ""}</td>
       <td class="lap-actions">
-        <button class="lap-act act-csv" title="Download this lap's telemetry as CSV">⬇</button>
-        <button class="lap-act act-flags" title="Edit this lap's flags">✎</button>
-        <button class="lap-act act-exclude" title="${l.excluded ? "Restore the lap into bests and counts" : "Exclude the lap from bests and counts"}">${l.excluded ? "↩" : "🗑"}</button>
+        <button class="lap-act act-csv" title="Download this ${word}'s telemetry as CSV">⬇</button>
+        <button class="lap-act act-flags" title="Edit this ${word}'s flags">✎</button>
+        <button class="lap-act act-exclude" title="${l.excluded ? `Restore the ${word} into bests and counts` : `Exclude the ${word} from bests and counts`}">${l.excluded ? "↩" : "🗑"}</button>
       </td>`;
     $(".pick", tr).onclick = () => pickLap(l.id);
     $(".act-csv", tr).onclick = () => { window.location = `/api/laps/${l.id}/export.csv`; };
@@ -364,6 +382,7 @@ const lapPatch = (lapId, body) => fetch(`/api/laps/${lapId}`, {
 /* checkbox editor over the recorder's dirty-lap markers; stored as a
    read-time override, so Reprocess keeps it and Reset edits undoes it */
 async function editLapFlags(lap) {
+  const kind = state.session && state.session.route_kind;
   const extra = document.createElement("div");
   extra.className = "flag-editor";
   const current = new Set((lap.flags || "").split(",").filter(Boolean));
@@ -385,8 +404,9 @@ async function editLapFlags(lap) {
   hint.textContent = `Detected by the recorder: ${detected}. Matching it removes your override.`;
   extra.appendChild(hint);
   const ok = await showModal({
-    title: `Lap ${lap.lap_number + 1} — flags`,
-    message: "Detection is heuristic; correct this lap's markers here. Reprocess keeps your choice.",
+    title: `${lapLabel(kind, lap.lap_number + 1)} — flags`,
+    message: `Detection is heuristic; correct this ${lapWord(kind)}'s markers here.`
+      + " Reprocess keeps your choice.",
     extra, okText: "Save",
   });
   if (!ok) return;
@@ -588,22 +608,57 @@ async function renameSession(session) {
   selectSession(session.id);
 }
 
+/* Name the route and correct its shape in one dialog. The shape decides
+   whether the whole page says "lap" or "run", and the recorder's guess can
+   be wrong (a circuit you only ever drove one lap of reads as a sprint until
+   you drive two), so an override belongs next to the name. showModal renders
+   `extra` above its input, so the picker is built here and read from the
+   closure — same pattern as the lap flags editor. */
 async function renameRoute(session) {
   if (!session.route_id) {
     await uiAlert("No route identified yet",
       "Routes are fingerprinted from the first completed lap — finish a lap on this route first.");
     return;
   }
+  const detected = session.route_kind_auto;
+  let kind = session.route_kind || "";
+  const extra = document.createElement("div");
+  const label = document.createElement("div");
+  label.className = "modal-hint";
+  label.textContent = detected
+    ? `Shape (detected: ${detected === "sprint" ? "sprint" : "circuit"})`
+    : "Shape";
+  const seg = document.createElement("span");
+  seg.className = "seg route-kind";
+  for (const [value, text] of [["circuit", "Circuit — laps"],
+                               ["sprint", "Sprint — runs"]]) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = text;
+    b.classList.toggle("active", kind === value);
+    b.onclick = () => {
+      // clicking the active choice clears the override back to the guess
+      kind = kind === value ? "" : value;
+      for (const x of seg.children) x.classList.toggle("active", x === b && kind);
+    };
+    seg.appendChild(b);
+  }
+  extra.append(label, seg);
+
   const name = await uiPrompt("Name route / circuit", {
     value: session.route_name || "",
     message: "Applies to every session recorded on this route.",
+    extra,
   });
-  if (name === null || !name.trim()) return;
+  if (name === null) return;  // cancelled: neither the name nor the shape changes
+  const body = { kind };  // "" clears the override back to the detected shape
+  if (name.trim()) body.name = name.trim();
   await fetch(`/api/routes/${session.route_id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: name.trim() }),
+    body: JSON.stringify(body),
   });
+  await loadSessions();  // the shape renames every card on this route
   selectSession(session.id);
 }
 
@@ -669,7 +724,8 @@ async function reprocessSession(session) {
     return;
   }
   const { laps } = await res.json();
-  await uiAlert("Reprocess complete", `${laps} completed lap${laps === 1 ? "" : "s"} found.`);
+  await uiAlert("Reprocess complete",
+    `${laps} completed ${lapWord(session.route_kind, laps)} found.`);
   // the replay recreates lap rows under recycled rowids: a kept pick could
   // silently point at a different lap - drop this session's picks instead
   state.picks = state.picks.filter((p) => p.session.id !== session.id);
@@ -1141,7 +1197,7 @@ function drawMap() {
     // letters and numbers only - session names stay in the tray, which
     // renders them via textContent (user-named sessions must not hit innerHTML)
     const lapCells = state.picks.map((p) => `
-      <div><div class="label"><span class="swatch" style="background:${p.color}"></span> ${pickLetter(p)} · Lap ${p.lap.lap_number + 1}</div>
+      <div><div class="label"><span class="swatch" style="background:${p.color}"></span> ${pickLetter(p)} · ${lapLabel(p.session.route_kind, p.lap.lap_number + 1)}</div>
       <div class="value">${fmtLap(p.lap.lap_time)}</div></div>`).join("");
     side.innerHTML = `<div class="lap-grid" style="text-align:left">
       ${lapCells}
@@ -1268,7 +1324,7 @@ function exportMapPng() {
   // every picked lap, in tray order; laps from other sessions carry their
   // session's name so a cross-session overlay stays readable
   const lapsTxt = state.picks.map((p) => {
-    const t = `Lap ${p.lap.lap_number + 1} — ${fmtLap(p.lap.lap_time)}`;
+    const t = `${lapLabel(p.session.route_kind, p.lap.lap_number + 1)} — ${fmtLap(p.lap.lap_time)}`;
     return p.session.id !== s.id ? `${shortName(p.session)} ${t}` : t;
   }).join("  ·  ");
   ctx.fillStyle = color("--muted", "#8494a7");
@@ -1499,7 +1555,7 @@ function renderRawSection() {
   head.appendChild(document.createElement("th"));
   for (const p of rawView.cols) {
     const th = document.createElement("th");
-    th.textContent = `${pickLetter(p)} · Lap ${p.lap.lap_number + 1}`;
+    th.textContent = `${pickLetter(p)} · ${lapLabel(p.session.route_kind, p.lap.lap_number + 1)}`;
     th.style.color = p.color;
     head.appendChild(th);
   }

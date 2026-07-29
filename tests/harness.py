@@ -102,3 +102,14 @@ def completed_laps(store: Store, session_id: int) -> list[dict]:
 
 def flags_of(lap: dict) -> str:
     return lap["flags"] or ""
+
+
+def route_of(store: Store, session_id: int) -> dict | None:
+    """The route row a session was fingerprinted onto (incl. `kind`)."""
+    route_id = store.get_session(session_id)["route_id"]
+    if route_id is None:
+        return None
+    with store.reader() as conn:
+        row = conn.execute("SELECT * FROM routes WHERE id = ?",
+                           (route_id,)).fetchone()
+    return dict(row) if row else None

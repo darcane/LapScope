@@ -102,6 +102,21 @@ function trackBadge(type) {
   return `<span class="cond-badge track-${type}">${icon} ${label}</span>`;
 }
 
+/* A point-to-point sprint produces exactly one timed run per visit, so
+   calling it a "lap" is wrong. The noun comes from the route's kind
+   (routes.kind / kind_user, see store.py) — a NULL kind means the route was
+   never identified, or the session was imported, so fall back to "lap"
+   rather than guess. Keep the two branches in step with ROUTE_KINDS. */
+function lapWord(kind, n = 1) {
+  const w = kind === "sprint" ? "run" : "lap";
+  return n === 1 ? w : `${w}s`;
+}
+
+/* "Lap 3" / "Run 2" — a specific numbered entry in a lap table or tray */
+function lapLabel(kind, n) {
+  return `${kind === "sprint" ? "Run" : "Lap"} ${n}`;
+}
+
 /* DrivetrainType is in every packet: 0=FWD 1=RWD 2=AWD */
 const DRIVETRAINS = ["FWD", "RWD", "AWD"];
 
