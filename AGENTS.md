@@ -344,6 +344,14 @@ server joining mid-lap, event restart.
   Rajdhani (OFL) in `app/static/fonts` — the app must work fully offline.
 - Shared UI helpers (badges: class/PI, drivetrain, conditions, track type) live in
  `common.js` and are used by both pages.
+- The analysis browse bar (`browse.js`) filters, searches and sorts **client-side**
+ over the `/api/sessions` payload — the endpoint takes no query params on purpose.
+ Keep it that way while the list is a few hundred rows; past a few thousand
+ sessions add `?since=` / `?limit=` rather than more facets. Facets persist under
+ their own `ls_browse` key, not in `ls_settings` (that one is display prefs).
+- `#session-list` is rebuilt only when its content signature changes and its
+ `scrollTop` is restored when it is — the list re-renders on a 15 s poll and after
+ every edit, and a naive `innerHTML = ""` scrolls the user back to the top.
 - User display preferences (units, map toggles) live in `settings.js`, stored
  **`localStorage`-only** under one `ls_settings` key — there is no backend for
  them and there should not be: the recorder stores raw packets and every

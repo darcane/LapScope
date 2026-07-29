@@ -28,6 +28,7 @@ let PICK_COLORS = accentPickPalette();
 const state = {
   sessionId: null,
   session: null,  // resolved session object of the *displayed* session
+  allSessions: [],  // last /api/sessions payload; browse.js filters over it
   laps: [],
   // comparison tray, ordered; picks[0] is the reference lap ("A") the Δ chart,
   // zoom window and map extras are based on. Picks persist across session
@@ -89,56 +90,104 @@ function displayName(s) {
 
 /* ---------------- sessions sidebar ---------------- */
 
+/* Overlapping polls can land out of order and paint a stale list (the same
+   rule selectSession applies to its payload). */
+let sessionsSeq = 0;
+
 async function loadSessions() {
+  const seq = ++sessionsSeq;
   let list;
   try {
     list = await (await fetch("/api/sessions")).json();
   } catch { return; }  // server briefly away (restart): keep the current list
+  if (seq !== sessionsSeq) return;  // an older poll landed late
+  state.allSessions = list;
+  browseIndex(list);   // the facet menus read the unfiltered list
+  renderSessionList();
+}
+
+/* Exactly the fields a card renders — nothing else may enter the signature.
+   state.sessionId in particular must stay out: selection is a class toggle
+   in markActive(), and folding it in here would rebuild (and so scroll to
+   the top of) the list on every click. */
+const cardSig = (s) =>
+  [s.id, s.name, s.route_name, s.lap_count, s.best_lap, s.car_name, s.car_known,
+   s.car_class_letter, s.car_pi, s.drivetrain, s.track_type, s.conditions].join("");
+
+let lastListSig = null;
+
+/* Rebuilding #session-list empties a scrolled overflow container, which
+   clamps scrollTop to 0 — and this runs on a 15 s poll plus after every
+   edit. Rebuild only when the rendered content actually changed, and keep
+   the scroll offset when it does. */
+function renderSessionList() {
   const el = $("#session-list");
-  el.innerHTML = "";
-  if (!list.length) {
-    el.innerHTML = `<div class="empty-hint">No sessions recorded yet.</div>`;
-    return;
+  if (!el) return;
+  const total = state.allSessions.length;
+  const rows = browseApply(state.allSessions);
+  browseStatus(rows.length, total);
+  const sig = rows.map(cardSig).join("");
+  if (sig === lastListSig) { markActive(el); return; }
+  lastListSig = sig;
+  const top = el.scrollTop;
+  el.replaceChildren(...(rows.length ? rows.map(sessionCard) : [emptyHint(total)]));
+  el.scrollTop = top;
+  markActive(el);
+}
+
+function emptyHint(total) {
+  const el = document.createElement("div");
+  el.className = "empty-hint";
+  el.textContent = total
+    ? "No sessions match these filters."
+    : "No sessions recorded yet.";
+  return el;
+}
+
+function markActive(el) {
+  for (const card of el.querySelectorAll(".session-card"))
+    card.classList.toggle("active", Number(card.dataset.sid) === state.sessionId);
+}
+
+function sessionCard(s) {
+  const card = document.createElement("div");
+  card.className = "session-card";
+  card.dataset.sid = s.id;
+  card.innerHTML = `
+    <div class="title"></div>
+    <div class="meta-row">${classBadge(s.car_class_letter, s.car_pi)}${dtBadge(s.drivetrain)}${trackBadge(s.track_type)}${condBadge(s.conditions)}</div>
+    <div class="car-line"></div>
+    <div class="sub">${fmtDate(s.started_at)} · ${s.lap_count} laps · best ${fmtLap(s.best_lap)}</div>`;
+  $(".title", card).textContent = displayName(s);
+  $(".car-line", card).textContent = s.car_name;
+  if (!s.car_known) {
+    $(".car-line", card).classList.add("car-unknown");
+    $(".car-line", card).title = "Unknown car — open the session to name or report it";
   }
-  for (const s of list) {
-    const card = document.createElement("div");
-    card.className = "session-card" + (s.id === state.sessionId ? " active" : "");
-    card.innerHTML = `
-      <div class="title"></div>
-      <div class="meta-row">${classBadge(s.car_class_letter, s.car_pi)}${dtBadge(s.drivetrain)}${trackBadge(s.track_type)}${condBadge(s.conditions)}</div>
-      <div class="car-line"></div>
-      <div class="sub">${fmtDate(s.started_at)} · ${s.lap_count} laps · best ${fmtLap(s.best_lap)}</div>`;
-    $(".title", card).textContent = displayName(s);
-    $(".car-line", card).textContent = s.car_name;
-    if (!s.car_known) {
-      $(".car-line", card).classList.add("car-unknown");
-      $(".car-line", card).title = "Unknown car — open the session to name or report it";
-    }
-    card.onclick = () => selectSession(s.id);
-    if (s.best_lap) {
-      // grind workflow: build the overlay straight from the sidebar, one
-      // best lap per attempt, without opening each session (issue #30)
-      const add = document.createElement("button");
-      add.className = "card-add";
-      add.title = "Add this session's best lap to the comparison (click again to remove)";
-      add.textContent = "＋";
-      add.onclick = async (e) => {
-        e.stopPropagation();
-        try {
-          const payload = await (await fetch(`/api/sessions/${s.id}/laps`)).json();
-          const best = payload.laps.find((l) => l.is_best);
-          if (!best) return;
-          const existing = pickOf(best.id);
-          if (existing) { promoteManual(); removePick(existing); }
-          else await addPick(best, payload.session);
-        } catch (err) {
-          uiAlert("Couldn't load session", String(err.message || err));
-        }
-      };
-      card.appendChild(add);
-    }
-    el.appendChild(card);
+  card.onclick = () => selectSession(s.id);
+  if (s.best_lap) {
+    // grind workflow: build the overlay straight from the sidebar, one
+    // best lap per attempt, without opening each session (issue #30)
+    const add = document.createElement("button");
+    add.className = "card-add";
+    add.title = "Add this session's best lap to the comparison (click again to remove)";
+    add.textContent = "＋";
+    add.onclick = async (e) => {
+      e.stopPropagation();
+      try {
+        const payload = await (await fetch(`/api/sessions/${s.id}/laps`)).json();
+        const best = payload.laps.find((l) => l.is_best);
+        if (!best) return;
+        const existing = pickOf(best.id);
+        if (existing) { promoteManual(); removePick(existing); }
+        else await addPick(best, payload.session);
+      } catch (err) {
+        uiAlert("Couldn't load session", String(err.message || err));
+      }
+    };
+    card.appendChild(add);
   }
+  return card;
 }
 
 /* rapid clicks race their fetches: only the latest selection may render its
@@ -225,7 +274,7 @@ async function selectSession(id) {
   bindMapDrag($("#trackmap"));
   bindMapContext($("#trackmap"));
 
-  loadSessions();
+  renderSessionList();  // move the active highlight; no refetch, no scroll jump
 
   // preselect: best lap as A — but only while the tray holds no deliberate
   // picks. A manually built comparison must survive browsing other sessions
@@ -1554,5 +1603,6 @@ onSettingsChange(() => {
   drawMap(); drawCharts(); syncRawSection();
 });
 bindImport();
+bindBrowse();
 loadSessions();
 setInterval(loadSessions, 15000); // pick up newly finished sessions

@@ -20,6 +20,19 @@
   <div id="settings-btn" class="chip clickable" title="Settings" aria-label="Settings">⚙ Settings</div>
 </header>
 
+<div class="browse-bar">
+  <div class="browse-row">
+    <label class="browse-search">
+      <span aria-hidden="true">⌕</span>
+      <input id="browse-q" type="search" autocomplete="off"
+             placeholder="Search route, car, or session name">
+    </label>
+    <span class="browse-facets" id="browse-facets"></span>
+    <select id="browse-sort" class="browse-sort" title="Sort sessions"></select>
+  </div>
+  <div class="browse-row browse-chips" id="browse-chips"></div>
+</div>
+
 <div class="analysis-layout">
   <aside class="sidebar">
     <div class="sidebar-actions">
@@ -118,6 +131,7 @@
 <script src="js/vendor/uplot.iife.min.js"></script>
 <script src="js/common.js"></script>
 <script src="js/settings.js"></script>
+<script src="js/browse.js"></script>
 <script src="js/analysis.js"></script>
 </body>
 </html>

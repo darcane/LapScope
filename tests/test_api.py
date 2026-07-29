@@ -383,6 +383,29 @@ def test_sessions_expose_car_known(tmp_path, monkeypatch):
     assert out["car_known"] is True and out["car_name"] == "Porsche 959"
 
 
+def test_sessions_payload_carries_every_browse_facet(tmp_path):
+    """The analysis browse bar filters client-side over this payload - there
+    are no query params by design (app/static/js/browse.js). Every field a
+    facet, the search box or a sort option reads must be present, or the
+    facet silently empties with nothing to point at."""
+    from app.api.routes import sessions as sessions_ep
+
+    def scenario(sim):
+        sim.event(120, "event")
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    out = sessions_ep(_request_for(store))[0]
+
+    for field in ("id", "started_at", "name", "display_name",     # search + sort
+                  "route_id", "route_name",                       # Route facet
+                  "car_class_letter", "car_pi",                   # Class facet
+                  "car_ordinal", "car_name", "car_known",         # Car facet
+                  "track_type", "conditions", "drivetrain",       # Type / More
+                  "lap_count", "best_lap"):                       # card + sort
+        assert field in out, f"browse bar reads {field}"
+
+
 def test_car_override_set_and_clear(tmp_path):
     """``name: ""`` on PATCH /cars deletes the override so the bundled name
     (or "Car #<ordinal>") shows again (issue #11, optional revert path)."""

@@ -756,6 +756,166 @@ main.grid .lap-grid { margin-bottom: auto; }
   text-shadow: 0 0 8px rgba(47, 230, 168, 0.55);
 }
 
+/* ---------- analysis browse bar ---------- *
+
+   Full width under the header, in normal flow. Deliberately not sticky: the
+   header already is, and it wraps at narrow widths, so a second sticky
+   element with a hardcoded top would overlap or gap as the header's height
+   changes. --browse-h is measured by browse.js so the sidebar's viewport
+   math below stays right whatever the chip row does. */
+
+.browse-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 20px;
+  max-width: 1500px;
+  margin: 0 auto;
+  border-bottom: 1px solid var(--panel-edge-soft);
+}
+.browse-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.browse-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 11px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 999px;
+  background: var(--panel-lo);
+  color: var(--muted);
+  min-width: 260px;
+}
+.browse-search:focus-within { border-color: var(--accent); }
+.browse-search input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 2px 0;
+}
+.browse-search input::-webkit-search-cancel-button { filter: invert(0.6); }
+
+.browse-facets { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.browse-facets button {
+  font-family: var(--display);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 4px 11px;
+  border-radius: 999px;
+}
+.browse-facets button .caret { color: var(--muted); margin-left: 5px; font-size: 0.7rem; }
+/* a pill, not a suffix: "Route 2" would read as a route number */
+.browse-facets button .facet-n:not(:empty) {
+  display: inline-block;
+  min-width: 15px;
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #001018;
+  font-size: 0.68rem;
+  line-height: 15px;
+  text-align: center;
+}
+.browse-facets button.on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel-lo));
+}
+.browse-facets button.on .caret { color: inherit; }
+.browse-facets button.open { border-color: var(--accent); }
+.browse-sort { margin-left: auto; }
+
+.browse-chips { gap: 6px; min-height: 24px; }
+.fchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  font-size: 0.8rem;
+}
+.fchip b { font-weight: 500; }
+.fchip button {
+  background: none;
+  border: none;
+  padding: 0 3px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1;
+}
+.fchip button:hover { color: var(--bad); }
+.browse-status { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
+.browse-status.warn { color: var(--warn); cursor: help; }
+.browse-clear { padding: 2px 10px; font-size: 0.8rem; }
+
+/* facet menus: one floating list per button, above the sticky header */
+.facet-pop {
+  position: fixed;
+  z-index: 30;
+  min-width: 210px;
+  max-width: 320px;
+  padding: 6px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 10px;
+  background: var(--panel-hi);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
+  animation: fade-in 0.12s ease;
+}
+.facet-search { display: block; padding: 2px 4px 6px; }
+.facet-search input {
+  width: 100%;
+  border: 1px solid var(--panel-edge);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 3px 8px;
+  outline: none;
+}
+.facet-search input:focus { border-color: var(--accent); }
+.facet-body { max-height: 320px; overflow-y: auto; }
+.facet-group {
+  font-family: var(--display);
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 8px 6px 3px;
+}
+.facet-group:first-child { padding-top: 2px; }
+.facet-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.facet-row:hover { background: var(--panel-lo); }
+.facet-row.on { background: #131c27; color: var(--accent); }
+.facet-row.on .facet-label::before { content: "✓ "; }
+.facet-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.facet-count { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 0.78rem; }
+.facet-clear { width: 100%; margin-top: 6px; font-size: 0.8rem; }
+.cls-only {
+  display: inline-block;
+  min-width: 22px;
+  text-align: center;
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: #160a1e;
+  font-weight: 700;
+  font-size: 0.75rem;
+}
+
 /* ---------- analysis page ---------- */
 
 .analysis-layout {
@@ -767,7 +927,14 @@ main.grid .lap-grid { margin-bottom: auto; }
   margin: 0 auto;
   align-items: start;
 }
-.sidebar { display: flex; flex-direction: column; gap: 8px; max-height: calc(100vh - 92px); }
+/* 92px = header + layout padding; --browse-h is the browse bar, measured by
+   browse.js because the chip row wraps at narrow widths */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(100vh - 92px - var(--browse-h, 0px));
+}
 .sidebar-actions { display: flex; }
 .sidebar-actions button { flex: 1; }
 #session-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
