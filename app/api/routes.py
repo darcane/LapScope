@@ -273,6 +273,165 @@ def session_laps(session_id: int, request: Request):
     return {"session": session, "laps": laps}
 
 
+# ------------------------- merged run groups (issue #57) -------------------------
+# A point-to-point route can only be re-attempted by restarting the event, so a
+# grind is N one-run sessions. A group browses and scores them as one thing
+# without touching a single stored row - see the session_groups note in store.py.
+
+
+def _group_out(group: dict, members: list[dict]) -> dict:
+    """Group + the aggregate the sidebar card and detail header show. Mirrors
+    _session_out; members arrive oldest first."""
+    out = dict(group)
+    lead = members[0] if members else {}
+    bests = [m["best_lap"] for m in members if m["best_lap"]]
+    started = group["created_at"] if not members else members[0]["started_at"]
+    out["session_count"] = len(members)
+    out["run_count"] = sum(m["lap_count"] for m in members)
+    out["best_lap"] = min(bests, default=None)
+    out["started_at"] = started
+    out["ended_at"] = max((m["ended_at"] or m["started_at"] for m in members),
+                          default=None)
+    out["route_name"] = lead.get("route_name")
+    out["route_kind"] = lead.get("route_kind")
+    out["car_name"] = lead.get("car_name")
+    out["car_class_letter"] = lead.get("car_class_letter")
+    out["car_pi"] = lead.get("car_pi")
+    out["drivetrain"] = lead.get("drivetrain")
+    out["display_name"] = (
+        group["name"] or lead.get("route_name")
+        or time.strftime("%Y-%m-%d %H:%M", time.localtime(started)))
+    # membership is only validated on write: a reprocess can re-fingerprint a
+    # member onto another route, and a group the user can't open is worse than
+    # one that says so
+    out["mixed"] = (len({m["route_id"] for m in members}) > 1
+                    or len({m["car_ordinal"] for m in members}) > 1)
+    return out
+
+
+def _check_members(store, session_ids: list[int], group: dict | None = None):
+    """Same route and same car, both known, and nothing already grouped.
+    Returns (route_id, car_ordinal)."""
+    if not session_ids:
+        raise HTTPException(400, "no sessions given")
+    rows = []
+    for sid in session_ids:
+        s = store.get_session(sid)
+        if s is None:
+            raise HTTPException(404, f"session {sid} not found")
+        if s["group_id"] is not None and (group is None
+                                          or s["group_id"] != group["id"]):
+            raise HTTPException(409, f"session {sid} is already in a group")
+        rows.append(s)
+    routes = {s["route_id"] for s in rows} | (
+        {group["route_id"]} if group else set())
+    cars = {s["car_ordinal"] for s in rows} | (
+        {group["car_ordinal"]} if group else set())
+    if None in routes:
+        raise HTTPException(400, "every session must be on an identified route")
+    if None in cars:
+        raise HTTPException(400, "every session must have a known car")
+    if len(routes) > 1:
+        raise HTTPException(400, "sessions must be on the same route")
+    if len(cars) > 1:
+        raise HTTPException(400, "sessions must use the same car")
+    return routes.pop(), cars.pop()
+
+
+class GroupCreate(BaseModel):
+    name: str | None = None
+    session_ids: list[int]
+
+
+class GroupPatch(BaseModel):
+    name: str | None = None
+
+
+class GroupMember(BaseModel):
+    session_id: int
+
+
+@router.post("/groups")
+def create_group(body: GroupCreate, request: Request):
+    """Merge attempts at one route into a single browsable run group."""
+    store = request.app.state.store
+    route_id, car_ordinal = _check_members(store, body.session_ids)
+    name = (body.name or "").strip()[:80] or None
+    gid = store.create_group(name, route_id, car_ordinal, body.session_ids)
+    return {"ok": True, "group": _group_out(store.get_group(gid),
+                                            store.group_sessions(gid))}
+
+
+@router.get("/groups/{group_id}/laps")
+def group_laps(group_id: int, request: Request):
+    """The group's runs as one scored list. Mirrors GET /sessions/{id}/laps:
+    the best is the best of the whole group, so gaps compare attempts against
+    each other. `run_index` is added for display and `lap_number` is left
+    alone - it names the CSV column and the export filename, and every sprint
+    member's is 0, so numbering by it would print "Run 1" for every row."""
+    store = request.app.state.store
+    group = store.get_group(group_id)
+    if group is None:
+        raise HTTPException(404, "group not found")
+    members = [_session_out(s) for s in store.group_sessions(group_id)]
+    laps = store.group_laps(group_id)
+    best = min((lap["lap_time"] for lap in laps
+                if lap["lap_time"] and not lap["excluded"]), default=None)
+    edits = 0
+    for i, lap in enumerate(laps):
+        lap["run_index"] = i + 1
+        timed = bool(lap["lap_time"]) and not lap["excluded"]
+        lap["is_best"] = timed and lap["lap_time"] == best
+        lap["gap_to_best"] = (lap["lap_time"] - best) if timed and best else None
+    for s in members:
+        s["edit_count"] = len(store.session_edits(s["id"]))
+        edits += s["edit_count"]
+    out = _group_out(group, members)
+    out["edit_count"] = edits
+    return {"group": out, "sessions": members, "laps": laps}
+
+
+@router.patch("/groups/{group_id}")
+def patch_group(group_id: int, body: GroupPatch, request: Request):
+    store = request.app.state.store
+    if store.get_group(group_id) is None:
+        raise HTTPException(404, "group not found")
+    if body.name is not None:  # "" clears back to the route/date fallback
+        store.set_group_name(group_id, body.name.strip()[:80] or None)
+    return {"ok": True}
+
+
+@router.post("/groups/{group_id}/sessions")
+def add_group_session(group_id: int, body: GroupMember, request: Request):
+    store = request.app.state.store
+    group = store.get_group(group_id)
+    if group is None:
+        raise HTTPException(404, "group not found")
+    _check_members(store, [body.session_id], group)
+    store.set_session_group(body.session_id, group_id)
+    return {"ok": True}
+
+
+@router.delete("/groups/{group_id}/sessions/{session_id}")
+def remove_group_session(group_id: int, session_id: int, request: Request):
+    """Take one session back out. The group goes with it if it was the last."""
+    store = request.app.state.store
+    if store.get_group(group_id) is None:
+        raise HTTPException(404, "group not found")
+    store.set_session_group(session_id, None)
+    return {"ok": True, "pruned": store.prune_empty_groups() > 0}
+
+
+@router.delete("/groups/{group_id}")
+def delete_group(group_id: int, request: Request):
+    """Ungroup. The sessions survive untouched - a group never owned them."""
+    store = request.app.state.store
+    if store.get_group(group_id) is None:
+        raise HTTPException(404, "group not found")
+    store.delete_group(group_id)
+    return {"ok": True}
+
+
 LAP_FLAGS = {"rewind", "contact", "cutoff"}
 
 

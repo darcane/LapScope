@@ -965,6 +965,53 @@ main.grid .lap-grid { margin-bottom: auto; }
 .session-card .card-add:hover { color: var(--accent); }
 .session-card .sub { color: var(--muted); font-size: 0.8rem; margin-top: 3px; }
 
+/* merged run groups: several attempts at one route, browsed as one card */
+.session-card.group-card { border-left-color: var(--good); }
+.session-card.group-card.active { border-left-color: var(--accent); }
+.session-card .title { display: flex; align-items: baseline; gap: 6px; }
+.group-mark { color: var(--good); font-size: 0.85rem; }
+.group-badge {
+  margin-left: 6px;
+  border: 1px solid #1d5c46;
+  border-radius: 999px;
+  padding: 1px 9px;
+  font-size: 0.75rem;
+  color: var(--good);
+  white-space: nowrap;
+}
+table.laps .run-when { white-space: nowrap; }
+table.laps .run-when .lap-act {
+  opacity: 0.75;
+  padding: 1px 4px;
+  font-variant-numeric: tabular-nums;
+}
+.merge-list { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow-y: auto; }
+.merge-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.merge-list label:hover { background: var(--panel-lo); }
+
+/* the merge suggestion sits above the list, amber like every other "we
+   noticed something, you decide" surface */
+.merge-hint {
+  border: 1px solid #3b3016;
+  border-radius: 10px;
+  background: var(--panel-hi);
+  padding: 9px 11px;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+.merge-hint-actions { display: flex; gap: 6px; margin-top: 7px; }
+.merge-hint-actions button { flex: 1; font-size: 0.8rem; }
+.merge-hint-actions button:first-child { border-color: var(--warn); color: var(--warn); }
+
 .detail { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .detail-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .detail-header h1 {

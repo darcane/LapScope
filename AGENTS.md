@@ -349,6 +349,10 @@ server joining mid-lap, event restart.
  Keep it that way while the list is a few hundred rows; past a few thousand
  sessions add `?since=` / `?limit=` rather than more facets. Facets persist under
  their own `ls_browse` key, not in `ls_settings` (that one is display prefs).
+- A merged run group is an **index over sessions**, never a rewrite of them:
+ `session_groups` + `sessions.group_id` only. Ungrouping must always be free,
+ and a member's frames, laps and manual edits must survive every group
+ operation untouched. Membership is validated on write, never on read.
 - `#session-list` is rebuilt only when its content signature changes and its
  `scrollTop` is restored when it is — the list re-renders on a 15 s poll and after
  every edit, and a naive `innerHTML = ""` scrolls the user back to the top.

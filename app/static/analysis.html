@@ -39,6 +39,7 @@
       <button id="btn-import" title="Import a LapScope CSV export — rebuilds the session (laps, charts, map) from the file">Import CSV</button>
       <input type="file" id="import-file" accept=".csv,text/csv" hidden>
     </div>
+    <div id="merge-hint" class="merge-hint" style="display:none"></div>
     <div id="session-list"><div class="empty-hint">loading…</div></div>
   </aside>
 
@@ -72,6 +73,7 @@
       <button id="btn-rename">Rename</button>
       <button id="btn-route">Name route</button>
       <button id="btn-car">Name car</button>
+      <button id="btn-merge" style="display:none" title="Merge attempts at this route in this car into one run group — nothing is rewritten">Merge runs</button>
       <button id="btn-reprocess" title="Re-run lap detection over the stored telemetry (manual edits are kept)">Reprocess</button>
       <button id="btn-reset-edits" style="display:none" title="Remove every manual edit — dismissed contacts, flag overrides, excluded laps">Reset edits</button>
       <button id="btn-export" title="Download the whole session as CSV — full-rate telemetry, one lap column (excluded laps are skipped)">Export CSV</button>
@@ -81,7 +83,7 @@
     <section class="panel">
       <h2 id="laps-heading">Laps</h2>
       <table class="laps">
-        <thead><tr><th>Compare</th><th id="lap-col">Lap</th><th>Time</th><th>Gap</th><th></th><th></th></tr></thead>
+        <thead><tr id="lap-head"></tr></thead>
         <tbody id="lap-rows"></tbody>
       </table>
     </section>

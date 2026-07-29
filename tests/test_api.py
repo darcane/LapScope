@@ -947,3 +947,186 @@ def test_edits_survive_reprocess_and_reset_reverts(tmp_path):
         assert row["flags"] == row["flags_auto"] and not row["excluded"]
     data = lap_data(redone["id"], req, "speed_kmh", 500)
     assert not any(c["dismissed"] for c in data["collisions"])
+
+
+# ------------------------- merged run groups (issue #57) -------------------------
+# A group is an index over sessions, never a rewrite of them: creating,
+# ungrouping and removing members must all leave laps, frames and edits alone.
+
+
+def _two_sessions_on_one_route(tmp_path):
+    """Two events on the stadium loop: same route, same car - the shape a
+    real sprint grind has, minus the wall-clock wait."""
+    def scenario(sim):
+        for i in range(2):
+            sim.event(75, f"event {i + 1}")
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    ss = sorted(sessions(store), key=lambda s: s["started_at"])
+    return store, [s["id"] for s in ss]
+
+
+def test_group_create_validates_route_and_car(tmp_path):
+    """Same route AND same car, both known, and nothing already grouped -
+    anything else and the run table's best/gap column compares laps of
+    different courses."""
+    from app.api.routes import GroupCreate, create_group
+
+    store, ids = _two_sessions_on_one_route(tmp_path)
+    req = _request_for(store)
+
+    out = create_group(GroupCreate(name="  Rivals grind  ", session_ids=ids), req)
+    assert out["group"]["name"] == "Rivals grind"
+    assert out["group"]["session_count"] == 2 and out["group"]["mixed"] is False
+    gid = out["group"]["id"]
+    assert all(s["group_id"] == gid for s in sessions(store))
+
+    with pytest.raises(HTTPException) as exc:  # already grouped
+        create_group(GroupCreate(session_ids=ids), req)
+    assert exc.value.status_code == 409
+
+    with pytest.raises(HTTPException) as exc:
+        create_group(GroupCreate(session_ids=[max(ids) + 99]), req)
+    assert exc.value.status_code == 404
+
+    with pytest.raises(HTTPException) as exc:
+        create_group(GroupCreate(session_ids=[]), req)
+    assert exc.value.status_code == 400
+
+    # a different route on either side is refused, as is an unidentified one
+    with store.reader() as conn:
+        conn.execute("UPDATE sessions SET group_id = NULL")
+        conn.execute("UPDATE sessions SET route_id = 9999 WHERE id = ?", (ids[1],))
+        conn.commit()
+    with pytest.raises(HTTPException) as exc:
+        create_group(GroupCreate(session_ids=ids), req)
+    assert exc.value.status_code == 400 and "same route" in exc.value.detail
+
+    with store.reader() as conn:
+        conn.execute("UPDATE sessions SET route_id = NULL WHERE id = ?", (ids[1],))
+        conn.commit()
+    with pytest.raises(HTTPException) as exc:
+        create_group(GroupCreate(session_ids=ids), req)
+    assert exc.value.status_code == 400 and "identified route" in exc.value.detail
+
+
+def test_group_laps_scores_across_the_whole_group(tmp_path):
+    """The point of merging: one best over every attempt, gaps measured
+    against it, and runs numbered in the order they were driven (each sprint
+    member's own lap_number is 0, so run_index has to come from the group)."""
+    from app.api.routes import GroupCreate, create_group, group_laps
+
+    store, ids = _two_sessions_on_one_route(tmp_path)
+    req = _request_for(store)
+    gid = create_group(GroupCreate(session_ids=ids), req)["group"]["id"]
+
+    payload = group_laps(gid, req)
+    laps = payload["laps"]
+    assert [s["id"] for s in payload["sessions"]] == ids  # oldest first
+    # every row each session would list on its own, incomplete laps included
+    assert len(laps) == sum(len(store.session_laps(i)) for i in ids)
+    assert [lap["id"] for lap in laps] == sorted(
+        (lap["id"] for lap in laps), key=lambda i: i)  # driven order
+    assert [lap["run_index"] for lap in laps] == list(range(1, len(laps) + 1))
+    assert sum(lap["is_best"] for lap in laps) == 1  # one best over the group
+
+    best = min(lap["lap_time"] for lap in laps if lap["lap_time"])
+    for lap in laps:
+        if lap["lap_time"]:
+            assert lap["gap_to_best"] == pytest.approx(lap["lap_time"] - best)
+    assert payload["group"]["best_lap"] == pytest.approx(best)
+    # the best is genuinely cross-session, not each session's own
+    assert len({lap["session_id"] for lap in laps}) == 2
+
+
+def test_group_laps_honors_excluded_laps(tmp_path):
+    """group_laps must run the same read-time edit overlay session_laps does,
+    or an excluded lap would come back and win the group."""
+    from app.api.routes import (GroupCreate, LapPatch, create_group, group_laps,
+                                patch_lap)
+
+    store, ids = _two_sessions_on_one_route(tmp_path)
+    req = _request_for(store)
+    gid = create_group(GroupCreate(session_ids=ids), req)["group"]["id"]
+
+    was_best = next(lap for lap in group_laps(gid, req)["laps"] if lap["is_best"])
+    patch_lap(was_best["id"], LapPatch(excluded=True), req)
+
+    laps = group_laps(gid, req)["laps"]
+    now = {lap["id"]: lap for lap in laps}
+    assert now[was_best["id"]]["excluded"] is True
+    assert now[was_best["id"]]["is_best"] is False
+    assert sum(lap["is_best"] for lap in laps) == 1
+    assert group_laps(gid, req)["group"]["edit_count"] == 1
+
+
+def test_ungroup_clears_group_id_on_every_member(tmp_path):
+    """DELETE /groups/{id} is two statements in one transaction on purpose:
+    reader() doesn't enable foreign keys, so an ON DELETE SET NULL would
+    leave every member pointing at a row that no longer exists."""
+    from app.api.routes import GroupCreate, create_group, delete_group
+
+    store, ids = _two_sessions_on_one_route(tmp_path)
+    req = _request_for(store)
+    gid = create_group(GroupCreate(session_ids=ids), req)["group"]["id"]
+
+    delete_group(gid, req)
+    assert store.get_group(gid) is None
+    assert all(s["group_id"] is None for s in sessions(store))
+    assert all(completed_laps(store, i) for i in ids)  # nothing was rewritten
+
+
+def test_deleting_a_member_keeps_the_group_and_prunes_when_empty(tmp_path):
+    """A group outlives one member being deleted, and goes away with the
+    last one rather than lingering as an orphan."""
+    from app.api.routes import GroupCreate, create_group, delete_session
+
+    store, ids = _two_sessions_on_one_route(tmp_path)
+    req = _request_for(store, tracker=SimpleNamespace(session_id=None))
+    gid = create_group(GroupCreate(session_ids=ids), req)["group"]["id"]
+
+    delete_session(ids[0], req)
+    assert store.get_group(gid) is not None
+    assert [s["id"] for s in store.group_sessions(gid)] == [ids[1]]
+
+    delete_session(ids[1], req)
+    assert store.get_group(gid) is None
+
+
+def test_group_membership_edits_and_mixed_reporting(tmp_path):
+    """Add and remove a member through the endpoints, and check that a group
+    whose member later moved route reads as mixed with a 200 - never a 409
+    the user cannot get out of."""
+    from app.api.routes import (GroupCreate, GroupMember, add_group_session,
+                                create_group, group_laps, remove_group_session)
+
+    store, ids = _two_sessions_on_one_route(tmp_path)
+    req = _request_for(store)
+    gid = create_group(GroupCreate(session_ids=[ids[0]]), req)["group"]["id"]
+
+    add_group_session(gid, GroupMember(session_id=ids[1]), req)
+    assert group_laps(gid, req)["group"]["session_count"] == 2
+
+    out = remove_group_session(gid, ids[1], req)
+    assert out["pruned"] is False
+    assert group_laps(gid, req)["group"]["session_count"] == 1
+
+    add_group_session(gid, GroupMember(session_id=ids[1]), req)
+    with store.reader() as conn:  # as a reprocess re-fingerprinting it would
+        conn.execute("UPDATE sessions SET route_id = 9999 WHERE id = ?", (ids[1],))
+        conn.commit()
+    assert group_laps(gid, req)["group"]["mixed"] is True
+
+
+def test_list_sessions_aggregates_survive_the_group_join(tmp_path):
+    """list_sessions grew a LEFT JOIN for group_name; it is 1:1, so the
+    lap_count / best_lap aggregates beside it must not change."""
+    from app.api.routes import GroupCreate, create_group
+
+    store, ids = _two_sessions_on_one_route(tmp_path)
+    before = {s["id"]: (s["lap_count"], s["best_lap"]) for s in sessions(store)}
+    create_group(GroupCreate(name="grind", session_ids=ids), _request_for(store))
+    after = sessions(store)
+    assert {s["id"]: (s["lap_count"], s["best_lap"]) for s in after} == before
+    assert all(s["group_name"] == "grind" for s in after)
