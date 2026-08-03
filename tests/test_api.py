@@ -999,7 +999,7 @@ def test_edits_survive_reprocess_and_reset_reverts(tmp_path):
     assert not any(c["dismissed"] for c in data["collisions"])
 
 
-# ------------------------- merged run groups (issue #57) -------------------------
+# ------------------------- merged run groups -------------------------
 # A group is an index over sessions, never a rewrite of them: creating,
 # ungrouping and removing members must all leave laps, frames and edits alone.
 

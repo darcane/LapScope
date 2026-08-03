@@ -334,7 +334,7 @@ def session_laps(session_id: int, request: Request):
     return {"session": session, "laps": laps}
 
 
-# ------------------------- merged run groups (issue #57) -------------------------
+# ------------------------- merged run groups -------------------------
 # A point-to-point route can only be re-attempted by restarting the event, so a
 # grind is N one-run sessions. A group browses and scores them as one thing
 # without touching a single stored row - see the session_groups note in store.py.

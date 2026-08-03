@@ -1,4 +1,4 @@
-/* Analysis browse bar: client-side session facets (issue #55).
+/* Analysis browse bar: client-side session facets.
 
    Every field the bar filters on is already in the /api/sessions payload, so
    there is no query API and no second fetch - browseApply() runs over the
