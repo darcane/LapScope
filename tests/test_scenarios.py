@@ -9,7 +9,7 @@ container, no real-time wait.
 
 from __future__ import annotations
 
-from harness import completed_laps, flags_of, run, sessions
+from harness import completed_laps, flags_of, route_of, run, sessions
 
 
 def test_freeroam_then_two_events_wet_same_route(tmp_path):
@@ -292,3 +292,46 @@ def test_jump_landings_clean_but_wall_contact_still_flags(tmp_path):
     for n, fl in by_number.items():
         if n != 1:  # every other lap only landed jumps - clean
             assert "contact" not in fl, f"lap {n} flagged by a jump landing: {fl}"
+
+
+# ------------------------- route shape (routes.kind) -------------------------
+# Decides whether the UI says "lap" or "run". The tracker derives it from
+# which lap machinery fired (`_route_kind`), so these cover all three route
+# assignment sites plus the geometric branch, using the scenarios above.
+
+
+def test_route_kind_circuit_when_laps_repeat(tmp_path):
+    """A course the car comes back to the start of is a circuit: LapNumber
+    increments, so _assign_route tags it that way."""
+    def scenario(sim):
+        sim.event(180, "race", race_laps=3)
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    assert route_of(store, sessions(store)[0]["id"])["kind"] == "circuit"
+
+
+def test_route_kind_sprint_for_point_to_point(tmp_path):
+    """Point-to-point finishes: the DistanceTraveled reset (sprint / dirt
+    sprint) and the cut-dead-at-the-line recovery (touge) all produce one
+    run, never a LapNumber increment."""
+    for i, drive in enumerate((lambda sim: sim.sprint(60),
+                               lambda sim: sim.dirt_sprint(60),
+                               lambda sim: sim.sprint(60, cut=True))):
+        def scenario(sim, drive=drive):
+            drive(sim)
+            sim.race_off()
+
+        store = run(scenario, tmp_path / f"ptp{i}")
+        assert route_of(store, sessions(store)[0]["id"])["kind"] == "sprint"
+
+
+def test_route_kind_circuit_for_geometric_laps(tmp_path):
+    """World Time Attack sends no lap fields at all - laps are detected
+    geometrically, which is still evidence the course loops."""
+    def scenario(sim):
+        sim.wta(3)
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    assert route_of(store, sessions(store)[0]["id"])["kind"] == "circuit"

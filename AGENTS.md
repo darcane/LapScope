@@ -344,6 +344,24 @@ server joining mid-lap, event restart.
   Rajdhani (OFL) in `app/static/fonts` — the app must work fully offline.
 - Shared UI helpers (badges: class/PI, drivetrain, conditions, track type) live in
  `common.js` and are used by both pages.
+- The analysis browse bar (`browse.js`) filters, searches and sorts **client-side**
+ over the `/api/sessions` payload — the endpoint takes no query params on purpose.
+ Keep it that way while the list is a few hundred rows; past a few thousand
+ sessions add `?since=` / `?limit=` rather than more facets. Facets persist under
+ their own `ls_browse` key, not in `ls_settings` (that one is display prefs).
+- A merged run group is an **index over sessions**, never a rewrite of them:
+ `session_groups` + `sessions.group_id` only. Ungrouping must always be free,
+ and a member's frames, laps and manual edits must survive every group
+ operation untouched. Membership is validated on write, never on read.
+- `#session-list` is rebuilt only when its content signature changes and its
+ `scrollTop` is restored when it is — the list re-renders on a 15 s poll and after
+ every edit, and a naive `innerHTML = ""` scrolls the user back to the top.
+- Menus, bars and other chrome get `cursor` and `user-select` set explicitly.
+ `cursor: auto` over a block with text in it draws a text caret, so a popover's
+ own padding shows an I-beam between its rows unless the popover says otherwise.
+- Style modal fields by input **type**. A bare `.modal input` rule also hits the
+ checkboxes callers put in `extra` (lap flags, merge list) and stretches them to
+ `width: 100%`, which reads as a centred box with wrapped labels.
 - User display preferences (units, map toggles) live in `settings.js`, stored
  **`localStorage`-only** under one `ls_settings` key — there is no backend for
  them and there should not be: the recorder stores raw packets and every

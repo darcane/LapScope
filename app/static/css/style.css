@@ -505,6 +505,9 @@ main.grid .lap-grid { margin-bottom: auto; }
 }
 @keyframes modal-in { from { opacity: 0; transform: translateY(10px) scale(0.97); } }
 
+/* for dialogs that list rows rather than ask one question */
+.modal-wide { width: min(580px, calc(100vw - 40px)); }
+
 .modal h3 {
   margin: 0 0 10px;
   font-family: var(--display);
@@ -526,7 +529,11 @@ main.grid .lap-grid { margin-bottom: auto; }
 
 .modal p { margin: 0 0 14px; color: var(--muted); line-height: 1.5; font-size: 0.92rem; }
 
-.modal input {
+/* the type selector is load-bearing: showModal's own field is the only text
+   input, and a bare `.modal input` also stretched every checkbox a caller
+   puts in `extra` to full width - which is what squashed the merge list and
+   the lap-flag editor into a centred box with wrapped labels */
+.modal input[type="text"] {
   width: 100%;
   background: #0a0e14;
   border: 1px solid var(--panel-edge);
@@ -536,7 +543,8 @@ main.grid .lap-grid { margin-bottom: auto; }
   padding: 9px 12px;
   margin-bottom: 16px;
 }
-.modal input:focus {
+.modal input[type="checkbox"] { flex: none; accent-color: var(--accent); margin: 0; }
+.modal input[type="text"]:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.12);
@@ -551,10 +559,14 @@ main.grid .lap-grid { margin-bottom: auto; }
   padding: 5px 2px;
   cursor: pointer;
 }
-.flag-editor input[type="checkbox"] { accent-color: var(--accent); }
 .modal-hint { color: var(--muted); font-size: 0.8rem; margin: 8px 0 0; }
 
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+/* the opposite verdict, parked at the far end so a bulk dismissal is never
+   the button next to the one you were aiming for */
+.modal-actions .modal-alt { margin-right: auto; }
+.modal-actions button:disabled { opacity: 0.4; cursor: default; }
+.modal-actions button:disabled:hover { border-color: var(--panel-edge); }
 .modal-actions button {
   padding: 7px 16px;
   font-family: var(--display);
@@ -756,6 +768,222 @@ main.grid .lap-grid { margin-bottom: auto; }
   text-shadow: 0 0 8px rgba(47, 230, 168, 0.55);
 }
 
+/* ---------- analysis browse bar ---------- *
+
+   Full width under the header, in normal flow. Deliberately not sticky: the
+   header already is, and it wraps at narrow widths, so a second sticky
+   element with a hardcoded top would overlap or gap as the header's height
+   changes. --browse-h is measured by browse.js so the sidebar's viewport
+   math below stays right whatever the chip row does. */
+
+.browse-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 20px;
+  max-width: 1500px;
+  margin: 0 auto;
+  border-bottom: 1px solid var(--panel-edge-soft);
+}
+.browse-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* the bar is chrome: the only thing in it worth a text caret is the search
+   box, so the caret is granted back there rather than left on by default */
+.browse-bar { cursor: default; user-select: none; }
+.browse-search input { cursor: text; user-select: text; }
+.browse-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 11px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 999px;
+  background: var(--panel-lo);
+  color: var(--muted);
+  min-width: 260px;
+}
+.browse-search:focus-within { border-color: var(--accent); }
+.browse-search input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 2px 0;
+}
+.browse-search input::-webkit-search-cancel-button { filter: invert(0.6); }
+
+.browse-facets { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.browse-facets button {
+  font-family: var(--display);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 4px 11px;
+  border-radius: 999px;
+}
+.browse-facets button .caret { color: var(--muted); margin-left: 5px; font-size: 0.7rem; }
+/* a pill, not a suffix: "Route 2" would read as a route number */
+.browse-facets button .facet-n:not(:empty) {
+  display: inline-block;
+  min-width: 15px;
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #001018;
+  font-size: 0.68rem;
+  line-height: 15px;
+  text-align: center;
+}
+.browse-facets button.on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel-lo));
+}
+.browse-facets button.on .caret { color: inherit; }
+.browse-facets button.open { border-color: var(--accent); }
+.browse-sort { flex: none; }
+
+/* only rendered when something is filtered; an always-present empty row is
+   the same wasted line */
+.browse-chips { gap: 6px; }
+.fchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  font-size: 0.8rem;
+}
+.fchip b { font-weight: 500; }
+.fchip button {
+  background: none;
+  border: none;
+  padding: 0 3px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1;
+}
+.fchip button:hover { color: var(--bad); }
+/* the count rides at the right end of the FIRST row, next to the sort: given
+   a row of its own it doubles the bar's height for one short string */
+.browse-status {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-left: auto;
+  white-space: nowrap;
+}
+.browse-status.warn { color: var(--warn); cursor: help; }
+.browse-clear { padding: 2px 10px; font-size: 0.8rem; }
+
+/* facet menus: one floating list per button, above the sticky header */
+.facet-pop {
+  position: fixed;
+  z-index: 30;
+  min-width: 210px;
+  max-width: 320px;
+  padding: 6px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 10px;
+  background: var(--panel-hi);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
+  animation: fade-in 0.12s ease;
+  /* a menu is chrome, not prose: without this the popover's own padding
+     inherits cursor:auto and draws a text caret between the rows, and a
+     double-click on a value selects the label instead of ticking it */
+  cursor: default;
+  user-select: none;
+}
+.facet-search { display: block; padding: 2px 4px 6px; }
+.facet-search input {
+  width: 100%;
+  border: 1px solid var(--panel-edge);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 3px 8px;
+  outline: none;
+  cursor: text;
+  user-select: text;
+}
+.facet-search input:focus { border-color: var(--accent); }
+.facet-body { max-height: 320px; overflow-y: auto; }
+.facet-group {
+  font-family: var(--display);
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 8px 6px 3px;
+}
+.facet-group:first-child { padding-top: 2px; }
+.facet-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.facet-row:hover { background: var(--panel-lo); }
+.facet-row.on { background: #131c27; color: var(--accent); }
+.facet-row.on .facet-label::before { content: "✓ "; }
+.facet-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* route thumbnails: one flat stroke in the row's own color, so a selected
+   route's outline turns accent with its label and nothing else has to know */
+.route-outline {
+  /* a bare inline span ignores width/height, and the svg's 100%/100% then
+     resolves against nothing and renders the outline full-page tall */
+  display: block;
+  flex: none;
+  width: 48px;
+  height: 30px;
+  border-radius: 4px;
+  background: #0a0e14;
+  border: 1px solid var(--panel-edge);
+}
+.route-outline svg { display: block; width: 100%; height: 100%; }
+.route-outline path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  opacity: 0.85;
+}
+/* still loading, or a route whose captures were deleted: hold the space so
+   the list doesn't jump when the outlines land */
+.route-outline.empty { opacity: 0.35; }
+.route-outline.big {
+  width: 100%;
+  height: 130px;
+  margin-bottom: 12px;
+  color: var(--accent);
+}
+.route-outline.big path { stroke-width: 2; }
+/* a dialog showing an empty frame for a route with no frames left to draw
+   from says less than showing nothing at all */
+.route-outline.big.empty { display: none; }
+.facet-count { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 0.78rem; }
+.facet-clear { width: 100%; margin-top: 6px; font-size: 0.8rem; }
+.cls-only {
+  display: inline-block;
+  min-width: 22px;
+  text-align: center;
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: #160a1e;
+  font-weight: 700;
+  font-size: 0.75rem;
+}
+
 /* ---------- analysis page ---------- */
 
 .analysis-layout {
@@ -767,7 +995,14 @@ main.grid .lap-grid { margin-bottom: auto; }
   margin: 0 auto;
   align-items: start;
 }
-.sidebar { display: flex; flex-direction: column; gap: 8px; max-height: calc(100vh - 92px); }
+/* 92px = header + layout padding; --browse-h is the browse bar, measured by
+   browse.js because the chip row wraps at narrow widths */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(100vh - 92px - var(--browse-h, 0px));
+}
 .sidebar-actions { display: flex; }
 .sidebar-actions button { flex: 1; }
 #session-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
@@ -797,6 +1032,101 @@ main.grid .lap-grid { margin-bottom: auto; }
 }
 .session-card .card-add:hover { color: var(--accent); }
 .session-card .sub { color: var(--muted); font-size: 0.8rem; margin-top: 3px; }
+
+/* merged run groups: several attempts at one route, browsed as one card */
+.session-card.group-card { border-left-color: var(--good); }
+.session-card.group-card.active { border-left-color: var(--accent); }
+.session-card .title { display: flex; align-items: baseline; gap: 6px; }
+.group-mark { color: var(--good); font-size: 0.85rem; }
+.group-badge {
+  margin-left: 6px;
+  border: 1px solid #1d5c46;
+  border-radius: 999px;
+  padding: 1px 9px;
+  font-size: 0.75rem;
+  color: var(--good);
+  white-space: nowrap;
+}
+table.laps .run-when { white-space: nowrap; }
+table.laps .run-when .lap-act {
+  opacity: 0.75;
+  padding: 1px 4px;
+  font-variant-numeric: tabular-nums;
+}
+.merge-list { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow-y: auto; }
+.merge-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.merge-list label:hover { background: var(--panel-lo); }
+.merge-list label span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.merge-list + input { margin-top: 12px; }
+
+/* every pending suggestion at once: one row per sitting, ticked = included in
+   whichever verdict you press */
+.merge-review {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: min(46vh, 420px);
+  overflow-y: auto;
+  margin-bottom: 16px;
+  user-select: none;
+}
+.merge-review label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 7px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.merge-review label:hover { background: var(--panel-lo); }
+.merge-review .rv-all {
+  color: var(--muted);
+  font-size: 0.8rem;
+  border-bottom: 1px solid var(--panel-edge);
+  border-radius: 8px 8px 0 0;
+  margin-bottom: 2px;
+  padding-bottom: 7px;
+}
+.merge-review .rv-text { flex: 1; min-width: 0; }
+.merge-review .rv-title { display: flex; align-items: baseline; gap: 8px; font-size: 0.86rem; }
+.merge-review .rv-title > span:first-child {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.merge-review .rv-count { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+.merge-review .rv-sub {
+  display: block;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.merge-review .rv-edit { flex: none; font-size: 0.75rem; padding: 3px 9px; opacity: 0.75; }
+.merge-review label:hover .rv-edit { opacity: 1; }
+
+/* the merge suggestion sits above the list, amber like every other "we
+   noticed something, you decide" surface */
+.merge-hint {
+  border: 1px solid #3b3016;
+  border-radius: 10px;
+  background: var(--panel-hi);
+  padding: 9px 11px;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+.merge-hint-more { color: var(--muted); font-size: 0.8rem; margin-top: 3px; }
+.merge-hint-actions { display: flex; gap: 6px; margin-top: 7px; }
+.merge-hint-actions button { flex: 1; font-size: 0.8rem; }
+.merge-hint-actions button:first-child { border-color: var(--warn); color: var(--warn); }
 
 .detail { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .detail-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -830,6 +1160,8 @@ button.danger:hover { border-color: var(--bad); color: var(--bad); }
 .seg button:first-child { border-radius: 7px 0 0 7px; }
 .seg button:last-child { border-radius: 0 7px 7px 0; border-left: none; }
 .seg button.active { background: var(--accent); color: #001018; border-color: var(--accent); }
+.seg.route-kind { display: flex; margin: 2px 0 4px; }
+.seg.route-kind button { flex: 1; }
 
 table.laps { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 table.laps th, table.laps td { padding: 6px 10px; text-align: left; font-size: 0.9rem; }

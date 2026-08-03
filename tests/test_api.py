@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -322,11 +323,123 @@ def test_route_patch_retags_every_session_on_the_route(tmp_path):
     assert exc.value.status_code == 404
 
 
+def test_route_patch_sets_and_clears_the_shape_override(tmp_path):
+    """PATCH /routes/{id} with kind is the manual correction for the
+    recorder's guess (it decides whether the UI says "lap" or "run").
+    "" clears it back to the detected shape."""
+    from app.api.routes import RoutePatch, patch_route
+
+    def scenario(sim):
+        sim.event(180, "race", race_laps=3)
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    sid = sessions(store)[0]["id"]
+    rid = sessions(store)[0]["route_id"]
+    req = _request_for(store)
+    assert sessions(store)[0]["route_kind"] == "circuit"  # detected
+
+    patch_route(rid, RoutePatch(kind="sprint"), req)
+    s = sessions(store)[0]
+    assert (s["route_kind"], s["route_kind_auto"]) == ("sprint", "circuit")
+
+    patch_route(rid, RoutePatch(kind=""), req)
+    assert sessions(store)[0]["route_kind"] == "circuit"
+
+    # a shape-only edit must not disturb the name (the dialog sends both)
+    patch_route(rid, RoutePatch(name="Bandai Azuma"), req)
+    patch_route(rid, RoutePatch(kind="sprint"), req)
+    assert sessions(store)[0]["route_name"] == "Bandai Azuma"
+
+    with pytest.raises(HTTPException) as exc:
+        patch_route(rid, RoutePatch(kind="rallycross"), req)
+    assert exc.value.status_code == 400
+    assert sid is not None
+
+
+def test_route_outline_is_drawn_once_and_then_cached(tmp_path):
+    """GET /routes/{id}/outline is what the browse bar's thumbnails read.
+    It costs a lap's worth of frame parsing, so the first call fills
+    routes.outline and every call after that answers from the column."""
+    from app.api.routes import route_outline
+    from app.recorder.store import ROUTE_OUTLINE_BOX
+
+    def scenario(sim):
+        sim.event(120, "event")
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    rid = sessions(store)[0]["route_id"]
+    req = _request_for(store)
+    assert store.get_route(rid)["outline"] is None
+
+    out = route_outline(rid, req)
+    pts = out["outline"]
+    assert out["box"] == ROUTE_OUTLINE_BOX
+    assert len(pts) >= 8 and len(pts) % 2 == 0        # flat (x, y) pairs
+    assert all(isinstance(v, int) for v in pts)       # JSON-compact
+    assert all(0 <= v <= ROUTE_OUTLINE_BOX for v in pts)
+    # normalized on the longest axis, so one of the two must reach the box
+    assert (max(pts[0::2]) == ROUTE_OUTLINE_BOX
+            or max(pts[1::2]) == ROUTE_OUTLINE_BOX)
+
+    assert json.loads(store.get_route(rid)["outline"]) == pts
+    assert route_outline(rid, req)["outline"] == pts   # served from the cache
+
+    with pytest.raises(HTTPException) as exc:
+        route_outline(rid + 99, req)
+    assert exc.value.status_code == 404
+
+
+def test_route_outline_miss_is_not_cached(tmp_path):
+    """A route whose captures were all deleted has nothing to draw today but
+    may be driven again tomorrow, so a miss must leave the column NULL rather
+    than pin an empty outline on it forever."""
+    from app.api.routes import route_outline
+
+    store = Store(str(tmp_path / "outline.db"))
+    rid = store.match_or_create_route(0.0, 0.0, 1000.0, 100.0, 100.0)
+    req = _request_for(store)
+
+    assert route_outline(rid, req)["outline"] is None
+    assert store.get_route(rid)["outline"] is None
+    store.close()
+
+
+def test_route_kind_reaches_both_session_payloads(tmp_path):
+    """list_sessions and _SESSION_SELECT are separate hand-written joins:
+    the sidebar cards come from one and the detail view from the other, so a
+    field added to only one of them silently goes missing on the other."""
+    from app.api.routes import session_laps, sessions as sessions_ep
+
+    def scenario(sim):
+        sim.sprint(60)
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    req = _request_for(store)
+
+    card = sessions_ep(req)[0]
+    detail = session_laps(card["id"], req)["session"]
+    assert card["route_kind"] == "sprint"
+    assert detail["route_kind"] == "sprint"
+    assert "route_kind_auto" in card and "route_kind_auto" in detail
+
+
 def test_suggestions_are_valid_track_types():
     """Cross-file invariant: everything the classifier can suggest must be a
     member of the API's TRACK_TYPES (= TRACK_META = #track-select)."""
     from app.api.routes import TRACK_TYPES
     assert {"road", "dirt", "cross", "wtc"} <= TRACK_TYPES
+
+
+def test_route_kinds_invariant():
+    """Cross-file invariant: ROUTE_KINDS (store.py, re-exported by the API)
+    = the shape picker's options (analysis.js renameRoute) = the branches of
+    lapWord / lapLabel (common.js). Adding a third shape means touching all
+    three."""
+    from app.api.routes import ROUTE_KINDS
+    assert ROUTE_KINDS == {"circuit", "sprint"}
 
 
 def test_reprocess_blocked_while_any_session_records(tmp_path):
@@ -381,6 +494,29 @@ def test_sessions_expose_car_known(tmp_path, monkeypatch):
     set_car_name(269, NameBody(name="Porsche 959"), req)
     out = sessions_ep(req)[0]
     assert out["car_known"] is True and out["car_name"] == "Porsche 959"
+
+
+def test_sessions_payload_carries_every_browse_facet(tmp_path):
+    """The analysis browse bar filters client-side over this payload - there
+    are no query params by design (app/static/js/browse.js). Every field a
+    facet, the search box or a sort option reads must be present, or the
+    facet silently empties with nothing to point at."""
+    from app.api.routes import sessions as sessions_ep
+
+    def scenario(sim):
+        sim.event(120, "event")
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    out = sessions_ep(_request_for(store))[0]
+
+    for field in ("id", "started_at", "name", "display_name",     # search + sort
+                  "route_id", "route_name",                       # Route facet
+                  "car_class_letter", "car_pi",                   # Class facet
+                  "car_ordinal", "car_name", "car_known",         # Car facet
+                  "track_type", "conditions", "drivetrain",       # Type / More
+                  "lap_count", "best_lap"):                       # card + sort
+        assert field in out, f"browse bar reads {field}"
 
 
 def test_car_override_set_and_clear(tmp_path):
@@ -861,3 +997,186 @@ def test_edits_survive_reprocess_and_reset_reverts(tmp_path):
         assert row["flags"] == row["flags_auto"] and not row["excluded"]
     data = lap_data(redone["id"], req, "speed_kmh", 500)
     assert not any(c["dismissed"] for c in data["collisions"])
+
+
+# ------------------------- merged run groups -------------------------
+# A group is an index over sessions, never a rewrite of them: creating,
+# ungrouping and removing members must all leave laps, frames and edits alone.
+
+
+def _two_sessions_on_one_route(tmp_path):
+    """Two events on the stadium loop: same route, same car - the shape a
+    real sprint grind has, minus the wall-clock wait."""
+    def scenario(sim):
+        for i in range(2):
+            sim.event(75, f"event {i + 1}")
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    ss = sorted(sessions(store), key=lambda s: s["started_at"])
+    return store, [s["id"] for s in ss]
+
+
+def test_group_create_validates_route_and_car(tmp_path):
+    """Same route AND same car, both known, and nothing already grouped -
+    anything else and the run table's best/gap column compares laps of
+    different courses."""
+    from app.api.routes import GroupCreate, create_group
+
+    store, ids = _two_sessions_on_one_route(tmp_path)
+    req = _request_for(store)
+
+    out = create_group(GroupCreate(name="  Rivals grind  ", session_ids=ids), req)
+    assert out["group"]["name"] == "Rivals grind"
+    assert out["group"]["session_count"] == 2 and out["group"]["mixed"] is False
+    gid = out["group"]["id"]
+    assert all(s["group_id"] == gid for s in sessions(store))
+
+    with pytest.raises(HTTPException) as exc:  # already grouped
+        create_group(GroupCreate(session_ids=ids), req)
+    assert exc.value.status_code == 409
+
+    with pytest.raises(HTTPException) as exc:
+        create_group(GroupCreate(session_ids=[max(ids) + 99]), req)
+    assert exc.value.status_code == 404
+
+    with pytest.raises(HTTPException) as exc:
+        create_group(GroupCreate(session_ids=[]), req)
+    assert exc.value.status_code == 400
+
+    # a different route on either side is refused, as is an unidentified one
+    with store.reader() as conn:
+        conn.execute("UPDATE sessions SET group_id = NULL")
+        conn.execute("UPDATE sessions SET route_id = 9999 WHERE id = ?", (ids[1],))
+        conn.commit()
+    with pytest.raises(HTTPException) as exc:
+        create_group(GroupCreate(session_ids=ids), req)
+    assert exc.value.status_code == 400 and "same route" in exc.value.detail
+
+    with store.reader() as conn:
+        conn.execute("UPDATE sessions SET route_id = NULL WHERE id = ?", (ids[1],))
+        conn.commit()
+    with pytest.raises(HTTPException) as exc:
+        create_group(GroupCreate(session_ids=ids), req)
+    assert exc.value.status_code == 400 and "identified route" in exc.value.detail
+
+
+def test_group_laps_scores_across_the_whole_group(tmp_path):
+    """The point of merging: one best over every attempt, gaps measured
+    against it, and runs numbered in the order they were driven (each sprint
+    member's own lap_number is 0, so run_index has to come from the group)."""
+    from app.api.routes import GroupCreate, create_group, group_laps
+
+    store, ids = _two_sessions_on_one_route(tmp_path)
+    req = _request_for(store)
+    gid = create_group(GroupCreate(session_ids=ids), req)["group"]["id"]
+
+    payload = group_laps(gid, req)
+    laps = payload["laps"]
+    assert [s["id"] for s in payload["sessions"]] == ids  # oldest first
+    # every row each session would list on its own, incomplete laps included
+    assert len(laps) == sum(len(store.session_laps(i)) for i in ids)
+    assert [lap["id"] for lap in laps] == sorted(
+        (lap["id"] for lap in laps), key=lambda i: i)  # driven order
+    assert [lap["run_index"] for lap in laps] == list(range(1, len(laps) + 1))
+    assert sum(lap["is_best"] for lap in laps) == 1  # one best over the group
+
+    best = min(lap["lap_time"] for lap in laps if lap["lap_time"])
+    for lap in laps:
+        if lap["lap_time"]:
+            assert lap["gap_to_best"] == pytest.approx(lap["lap_time"] - best)
+    assert payload["group"]["best_lap"] == pytest.approx(best)
+    # the best is genuinely cross-session, not each session's own
+    assert len({lap["session_id"] for lap in laps}) == 2
+
+
+def test_group_laps_honors_excluded_laps(tmp_path):
+    """group_laps must run the same read-time edit overlay session_laps does,
+    or an excluded lap would come back and win the group."""
+    from app.api.routes import (GroupCreate, LapPatch, create_group, group_laps,
+                                patch_lap)
+
+    store, ids = _two_sessions_on_one_route(tmp_path)
+    req = _request_for(store)
+    gid = create_group(GroupCreate(session_ids=ids), req)["group"]["id"]
+
+    was_best = next(lap for lap in group_laps(gid, req)["laps"] if lap["is_best"])
+    patch_lap(was_best["id"], LapPatch(excluded=True), req)
+
+    laps = group_laps(gid, req)["laps"]
+    now = {lap["id"]: lap for lap in laps}
+    assert now[was_best["id"]]["excluded"] is True
+    assert now[was_best["id"]]["is_best"] is False
+    assert sum(lap["is_best"] for lap in laps) == 1
+    assert group_laps(gid, req)["group"]["edit_count"] == 1
+
+
+def test_ungroup_clears_group_id_on_every_member(tmp_path):
+    """DELETE /groups/{id} is two statements in one transaction on purpose:
+    reader() doesn't enable foreign keys, so an ON DELETE SET NULL would
+    leave every member pointing at a row that no longer exists."""
+    from app.api.routes import GroupCreate, create_group, delete_group
+
+    store, ids = _two_sessions_on_one_route(tmp_path)
+    req = _request_for(store)
+    gid = create_group(GroupCreate(session_ids=ids), req)["group"]["id"]
+
+    delete_group(gid, req)
+    assert store.get_group(gid) is None
+    assert all(s["group_id"] is None for s in sessions(store))
+    assert all(completed_laps(store, i) for i in ids)  # nothing was rewritten
+
+
+def test_deleting_a_member_keeps_the_group_and_prunes_when_empty(tmp_path):
+    """A group outlives one member being deleted, and goes away with the
+    last one rather than lingering as an orphan."""
+    from app.api.routes import GroupCreate, create_group, delete_session
+
+    store, ids = _two_sessions_on_one_route(tmp_path)
+    req = _request_for(store, tracker=SimpleNamespace(session_id=None))
+    gid = create_group(GroupCreate(session_ids=ids), req)["group"]["id"]
+
+    delete_session(ids[0], req)
+    assert store.get_group(gid) is not None
+    assert [s["id"] for s in store.group_sessions(gid)] == [ids[1]]
+
+    delete_session(ids[1], req)
+    assert store.get_group(gid) is None
+
+
+def test_group_membership_edits_and_mixed_reporting(tmp_path):
+    """Add and remove a member through the endpoints, and check that a group
+    whose member later moved route reads as mixed with a 200 - never a 409
+    the user cannot get out of."""
+    from app.api.routes import (GroupCreate, GroupMember, add_group_session,
+                                create_group, group_laps, remove_group_session)
+
+    store, ids = _two_sessions_on_one_route(tmp_path)
+    req = _request_for(store)
+    gid = create_group(GroupCreate(session_ids=[ids[0]]), req)["group"]["id"]
+
+    add_group_session(gid, GroupMember(session_id=ids[1]), req)
+    assert group_laps(gid, req)["group"]["session_count"] == 2
+
+    out = remove_group_session(gid, ids[1], req)
+    assert out["pruned"] is False
+    assert group_laps(gid, req)["group"]["session_count"] == 1
+
+    add_group_session(gid, GroupMember(session_id=ids[1]), req)
+    with store.reader() as conn:  # as a reprocess re-fingerprinting it would
+        conn.execute("UPDATE sessions SET route_id = 9999 WHERE id = ?", (ids[1],))
+        conn.commit()
+    assert group_laps(gid, req)["group"]["mixed"] is True
+
+
+def test_list_sessions_aggregates_survive_the_group_join(tmp_path):
+    """list_sessions grew a LEFT JOIN for group_name; it is 1:1, so the
+    lap_count / best_lap aggregates beside it must not change."""
+    from app.api.routes import GroupCreate, create_group
+
+    store, ids = _two_sessions_on_one_route(tmp_path)
+    before = {s["id"]: (s["lap_count"], s["best_lap"]) for s in sessions(store)}
+    create_group(GroupCreate(name="grind", session_ids=ids), _request_for(store))
+    after = sessions(store)
+    assert {s["id"]: (s["lap_count"], s["best_lap"]) for s in after} == before
+    assert all(s["group_name"] == "grind" for s in after)

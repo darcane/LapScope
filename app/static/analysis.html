@@ -20,12 +20,27 @@
   <div id="settings-btn" class="chip clickable" title="Settings" aria-label="Settings">⚙ Settings</div>
 </header>
 
+<div class="browse-bar">
+  <div class="browse-row">
+    <label class="browse-search">
+      <span aria-hidden="true">⌕</span>
+      <input id="browse-q" type="search" autocomplete="off"
+             placeholder="Search route, car, or session name">
+    </label>
+    <span class="browse-facets" id="browse-facets"></span>
+    <span class="browse-status" id="browse-status"></span>
+    <select id="browse-sort" class="browse-sort" title="Sort sessions"></select>
+  </div>
+  <div class="browse-row browse-chips" id="browse-chips"></div>
+</div>
+
 <div class="analysis-layout">
   <aside class="sidebar">
     <div class="sidebar-actions">
       <button id="btn-import" title="Import a LapScope CSV export — rebuilds the session (laps, charts, map) from the file">Import CSV</button>
       <input type="file" id="import-file" accept=".csv,text/csv" hidden>
     </div>
+    <div id="merge-hint" class="merge-hint" style="display:none"></div>
     <div id="session-list"><div class="empty-hint">loading…</div></div>
   </aside>
 
@@ -59,6 +74,7 @@
       <button id="btn-rename">Rename</button>
       <button id="btn-route">Name route</button>
       <button id="btn-car">Name car</button>
+      <button id="btn-merge" style="display:none" title="Merge attempts at this route in this car into one run group — nothing is rewritten">Merge runs</button>
       <button id="btn-reprocess" title="Re-run lap detection over the stored telemetry (manual edits are kept)">Reprocess</button>
       <button id="btn-reset-edits" style="display:none" title="Remove every manual edit — dismissed contacts, flag overrides, excluded laps">Reset edits</button>
       <button id="btn-export" title="Download the whole session as CSV — full-rate telemetry, one lap column (excluded laps are skipped)">Export CSV</button>
@@ -66,9 +82,9 @@
     </div>
     <div class="car-line" id="header-car"></div>
     <section class="panel">
-      <h2>Laps</h2>
+      <h2 id="laps-heading">Laps</h2>
       <table class="laps">
-        <thead><tr><th>Compare</th><th>Lap</th><th>Time</th><th>Gap</th><th></th><th></th></tr></thead>
+        <thead><tr id="lap-head"></tr></thead>
         <tbody id="lap-rows"></tbody>
       </table>
     </section>
@@ -97,7 +113,7 @@
             <span id="map-hint" style="display:none">↔ drag the map to rotate</span>
           </div>
         </div>
-        <div id="map-side" class="empty-hint">Tag a lap to draw its racing line — add more to overlay them.</div>
+        <div id="map-side" class="empty-hint"></div>
       </div>
     </section>
     <section class="panel">
@@ -118,6 +134,7 @@
 <script src="js/vendor/uplot.iife.min.js"></script>
 <script src="js/common.js"></script>
 <script src="js/settings.js"></script>
+<script src="js/browse.js"></script>
 <script src="js/analysis.js"></script>
 </body>
 </html>

@@ -26,8 +26,15 @@ function accentPickPalette() {
 let PICK_COLORS = accentPickPalette();
 
 const state = {
+  // exactly one of sessionId / groupId is set: the detail pane shows a single
+  // session or a merged run group, and the lap table, header and picks all
+  // key off which
   sessionId: null,
+  groupId: null,
   session: null,  // resolved session object of the *displayed* session
+  group: null,
+  allSessions: [],  // last /api/sessions payload; browse.js filters over it
+  sessionsById: {},  // every session the displayed laps came from, by id
   laps: [],
   // comparison tray, ordered; picks[0] is the reference lap ("A") the Δ chart,
   // zoom window and map extras are based on. Picks persist across session
@@ -51,8 +58,12 @@ function shortName(session) {
 /* tray chips / captions: the plain lap number is enough while every pick is
    from the displayed session; session names only appear once picks cross */
 function chipLabel(pick, crossSession) {
-  const lapN = `Lap ${pick.lap.lap_number + 1}`;
-  return crossSession ? `${shortName(pick.session)} · L${pick.lap.lap_number + 1}` : lapN;
+  // run_index numbers a pick within a merged group, where every sprint
+  // member's own lap_number is 0
+  const n = pick.lap.run_index ?? pick.lap.lap_number + 1;
+  return crossSession
+    ? `${shortName(pick.session)} · ${pick.session.route_kind === "sprint" ? "R" : "L"}${n}`
+    : lapLabel(pick.session.route_kind, n);
 }
 
 /* dirty-lap markers inferred by the recorder (the game sends no official flag) */
@@ -89,84 +100,449 @@ function displayName(s) {
 
 /* ---------------- sessions sidebar ---------------- */
 
+/* Overlapping polls can land out of order and paint a stale list (the same
+   rule selectSession applies to its payload). */
+let sessionsSeq = 0;
+
 async function loadSessions() {
+  const seq = ++sessionsSeq;
   let list;
   try {
     list = await (await fetch("/api/sessions")).json();
   } catch { return; }  // server briefly away (restart): keep the current list
+  if (seq !== sessionsSeq) return;  // an older poll landed late
+  state.allSessions = list;
+  browseIndex(list);   // the facet menus read the unfiltered list
+  renderSessionList();
+}
+
+/* Exactly the fields a card renders — nothing else may enter the signature.
+   state.sessionId in particular must stay out: selection is a class toggle
+   in markActive(), and folding it in here would rebuild (and so scroll to
+   the top of) the list on every click. */
+const cardSig = (s) =>
+  [s.id, s.name, s.route_name, s.lap_count, s.best_lap, s.car_name, s.car_known,
+   s.car_class_letter, s.car_pi, s.drivetrain, s.track_type, s.conditions,
+   s.route_kind, s.group_id, s.group_name].join("|");
+
+let lastListSig = null;
+
+/* Rebuilding #session-list empties a scrolled overflow container, which
+   clamps scrollTop to 0 — and this runs on a 15 s poll plus after every
+   edit. Rebuild only when the rendered content actually changed, and keep
+   the scroll offset when it does. */
+function renderSessionList() {
   const el = $("#session-list");
-  el.innerHTML = "";
-  if (!list.length) {
-    el.innerHTML = `<div class="empty-hint">No sessions recorded yet.</div>`;
+  if (!el) return;
+  const total = state.allSessions.length;
+  const rows = browseApply(state.allSessions);
+  browseStatus(rows.length, total);
+  const sig = rows.map(cardSig).join("/");
+  if (sig === lastListSig) { markActive(el); return; }
+  lastListSig = sig;
+  const top = el.scrollTop;
+  el.replaceChildren(...(rows.length ? collapseGroups(rows) : [emptyHint(total)]));
+  el.scrollTop = top;
+  markActive(el);
+  renderMergeHint();
+}
+
+/* A merged group is one card where its members would have been several, at
+   the position of its most recent member. Built from the FILTERED rows, so a
+   filter matching 3 of 5 members says so rather than misreporting the group. */
+function collapseGroups(rows) {
+  const seen = new Set();
+  const out = [];
+  for (const s of rows) {
+    if (s.group_id == null) { out.push(sessionCard(s)); continue; }
+    if (seen.has(s.group_id)) continue;
+    seen.add(s.group_id);
+    out.push(groupCard(rows.filter((x) => x.group_id === s.group_id),
+                       state.allSessions.filter((x) => x.group_id === s.group_id)));
+  }
+  return out;
+}
+
+function groupCard(shown, all) {
+  const lead = shown[0];
+  const runs = all.reduce((n, s) => n + s.lap_count, 0);
+  const bests = all.filter((s) => s.best_lap).map((s) => s.best_lap);
+  const times = all.map((s) => s.started_at);
+  const card = document.createElement("div");
+  card.className = "session-card group-card";
+  card.dataset.gid = lead.group_id;
+  card.innerHTML = `
+    <div class="title"><span class="group-mark" title="merged run group">⛓</span><span></span></div>
+    <div class="meta-row">${classBadge(lead.car_class_letter, lead.car_pi)}${dtBadge(lead.drivetrain)}${trackBadge(lead.track_type)}${condBadge(lead.conditions)}</div>
+    <div class="car-line"></div>
+    <div class="sub"></div>`;
+  $(".title span:last-child", card).textContent =
+    lead.group_name || lead.route_name || fmtDate(Math.min(...times));
+  $(".car-line", card).textContent = lead.car_name;
+  const partial = shown.length < all.length
+    ? ` (${shown.length} match)` : "";
+  $(".sub", card).textContent =
+    `${fmtDate(Math.max(...times))} · ${all.length} sessions${partial}`
+    + ` · ${runs} ${lapWord(lead.route_kind, runs)}`
+    + ` · best ${fmtLap(bests.length ? Math.min(...bests) : null)}`;
+  card.onclick = () => selectGroup(lead.group_id);
+  return card;
+}
+
+/* Sittings worth merging: two or more ungrouped attempts at one route in one
+   car, close together in time. Offered, never applied — dismissals are
+   remembered per cluster so a decision doesn't come back every 15 s. */
+function mergeSuggestions() {
+  const dismissed = new Set(JSON.parse(
+    localStorage.getItem("ls_merge_dismissed") || "[]"));
+  const byPair = {};
+  for (const s of state.allSessions) {
+    if (s.group_id != null || !s.route_id || s.car_ordinal == null) continue;
+    (byPair[`${s.route_id}:${s.car_ordinal}`] ||= []).push(s);
+  }
+  const out = [];
+  for (const rows of Object.values(byPair))
+    for (const cluster of timeClusters(rows)) {
+      const sig = cluster.map((s) => s.id).join(",");
+      if (!dismissed.has(sig)) out.push({ sig, cluster });
+    }
+  // sprint routes first (a circuit session already holds several laps), then
+  // the biggest sitting
+  return out.sort((a, b) =>
+    (b.cluster[0].route_kind === "sprint") - (a.cluster[0].route_kind === "sprint")
+    || b.cluster.length - a.cluster.length);
+}
+
+function dismissMerges(sigs) {
+  const seen = JSON.parse(localStorage.getItem("ls_merge_dismissed") || "[]");
+  localStorage.setItem("ls_merge_dismissed",
+                       JSON.stringify([...new Set([...seen, ...sigs])].slice(-200)));
+}
+
+function renderMergeHint() {
+  const host = $("#merge-hint");
+  if (!host) return;
+  const all = mergeSuggestions();
+  const [top] = all;
+  host.innerHTML = "";
+  host.style.display = top ? "" : "none";
+  if (!top) return;
+  const { cluster, sig } = top;
+  const s = cluster[0];
+  const text = document.createElement("div");
+  // laps, not sessions: on a circuit two sessions are rarely two laps, and the
+  // review list right behind this banner prints the real count
+  const runs = cluster.reduce((n, x) => n + x.lap_count, 0);
+  text.textContent =
+    `${runs} ${lapWord(s.route_kind, runs)} on `
+    + `${s.route_name || "this route"} in one sitting — merge them?`;
+  host.appendChild(text);
+  // the banner speaks for the newest sitting; the queue behind it is the
+  // reason the review list exists, so say how deep it is
+  if (all.length > 1) {
+    const more = document.createElement("div");
+    more.className = "merge-hint-more";
+    more.textContent = `and ${all.length - 1} more sitting`
+      + (all.length > 2 ? "s" : "");
+    host.appendChild(more);
+  }
+  const row = document.createElement("div");
+  row.className = "merge-hint-actions";
+  const go = document.createElement("button");
+  go.textContent = all.length > 1 ? "Review all" : "Review";
+  go.title = "Go through every suggestion in one list";
+  go.onclick = reviewMerges;
+  const no = document.createElement("button");
+  no.textContent = "Not now";
+  no.title = all.length > 1
+    ? "Hide this suggestion — the others stay" : "Hide this suggestion";
+  no.onclick = () => { dismissMerges([sig]); renderMergeHint(); };
+  row.append(go, no);
+  host.append(row);
+}
+
+/* Every pending suggestion in one list, with the two verdicts applied to
+   whatever is ticked: everything starts ticked, so the buttons read "merge
+   all" / "dismiss all" until you say otherwise. Unticking is neither — that
+   sitting stays pending and comes back. */
+async function reviewMerges() {
+  const all = mergeSuggestions();
+  if (!all.length) return;
+  const chosen = new Set(all.map((x) => x.sig));
+  let handOff = null;   // set by a row's Edit button, opened after we close
+
+  const extra = document.createElement("div");
+  extra.className = "merge-review";
+
+  const head = document.createElement("label");
+  head.className = "rv-all";
+  const headBox = document.createElement("input");
+  headBox.type = "checkbox";
+  headBox.checked = true;
+  const headText = document.createElement("span");
+  head.append(headBox, headText);
+  extra.appendChild(head);
+
+  /* showModal owns its buttons, so relabel them through the dialog we were
+     mounted into rather than growing a callback API for one caller */
+  const sync = () => {
+    const box = extra.closest(".modal");
+    const n = chosen.size;
+    headBox.checked = n > 0;
+    headBox.indeterminate = n > 0 && n < all.length;
+    headText.textContent = `All ${all.length} sitting`
+      + (all.length > 1 ? "s" : "") + (n < all.length ? ` (${n} picked)` : "");
+    if (!box) return;
+    $(".modal-ok", box).textContent = n ? `Merge ${n}` : "Merge";
+    $(".modal-alt", box).textContent = n ? `Dismiss ${n}` : "Dismiss";
+    for (const b of [$(".modal-ok", box), $(".modal-alt", box)]) b.disabled = !n;
+  };
+  headBox.onchange = () => {
+    chosen.clear();
+    if (headBox.checked) for (const x of all) chosen.add(x.sig);
+    for (const cb of extra.querySelectorAll(".rv-row input"))
+      cb.checked = headBox.checked;
+    sync();
+  };
+
+  for (const { sig, cluster } of all) {
+    const s = cluster[0];
+    const runs = cluster.reduce((n, x) => n + x.lap_count, 0);
+    const bests = cluster.filter((x) => x.best_lap).map((x) => x.best_lap);
+    const label = document.createElement("label");
+    label.className = "rv-row";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = true;
+    cb.onchange = () => {
+      cb.checked ? chosen.add(sig) : chosen.delete(sig);
+      sync();
+    };
+    label.appendChild(cb);
+    label.appendChild(routeOutline(s.route_id));   // never null: see the filter
+    const text = document.createElement("span");
+    text.className = "rv-text";
+    const title = document.createElement("span");
+    title.className = "rv-title";
+    const name = document.createElement("span");
+    name.textContent = s.route_name || "Unnamed route";
+    const count = document.createElement("span");
+    count.className = "rv-count";
+    count.textContent = `${cluster.length} sessions`;
+    title.append(name, count);
+    const sub = document.createElement("span");
+    sub.className = "rv-sub";
+    sub.textContent = `${fmtDate(Math.min(...cluster.map((x) => x.started_at)))}`
+      + ` · ${s.car_name} · ${runs} ${lapWord(s.route_kind, runs)}`
+      + ` · best ${fmtLap(bests.length ? Math.min(...bests) : null)}`;
+    text.append(title, sub);
+    label.append(text);
+    // the way back to the per-route dialog, which is where naming a group and
+    // pulling in an attempt from another sitting still live
+    const edit = document.createElement("button");
+    edit.className = "rv-edit";
+    edit.textContent = "Edit";
+    edit.title = "Merge this one by hand: pick the sessions and name the group";
+    edit.onclick = (e) => {
+      e.preventDefault();
+      handOff = s;
+      $(".modal-cancel", extra.closest(".modal")).click();
+    };
+    label.appendChild(edit);
+    extra.appendChild(label);
+  }
+  sync();
+
+  const verdict = await showModal({
+    title: "Merge suggestions",
+    message: "Each row is several attempts at one route in one car, driven in"
+      + " one sitting. Merging groups them into a single card — nothing is"
+      + " rewritten, and you can ungroup at any time.",
+    extra,
+    // sync() can only relabel these once the dialog exists, so they have to
+    // start out already counting
+    okText: `Merge ${all.length}`,
+    altText: `Dismiss ${all.length}`,
+    cancelText: "Close",
+    wide: true,
+  });
+  if (handOff) { await mergeRuns(handOff); return; }
+  const picked = all.filter((x) => chosen.has(x.sig));
+  if (verdict === null || !picked.length) return;
+  if (verdict === MODAL_ALT) {
+    dismissMerges(picked.map((x) => x.sig));
+    renderMergeHint();
     return;
   }
-  for (const s of list) {
-    const card = document.createElement("div");
-    card.className = "session-card" + (s.id === state.sessionId ? " active" : "");
-    card.innerHTML = `
-      <div class="title"></div>
-      <div class="meta-row">${classBadge(s.car_class_letter, s.car_pi)}${dtBadge(s.drivetrain)}${trackBadge(s.track_type)}${condBadge(s.conditions)}</div>
-      <div class="car-line"></div>
-      <div class="sub">${fmtDate(s.started_at)} · ${s.lap_count} laps · best ${fmtLap(s.best_lap)}</div>`;
-    $(".title", card).textContent = displayName(s);
-    $(".car-line", card).textContent = s.car_name;
-    if (!s.car_known) {
-      $(".car-line", card).classList.add("car-unknown");
-      $(".car-line", card).title = "Unknown car — open the session to name or report it";
+  // one POST per sitting: /api/groups takes one group at a time, and a failure
+  // on the third must not cost the two that already landed
+  const failed = [];
+  for (const { cluster } of picked) {
+    const res = await fetch("/api/groups", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_ids: cluster.map((s) => s.id) }),
+    });
+    if (!res.ok) {
+      const why = await res.json().catch(() => ({}));
+      failed.push(`${cluster[0].route_name || "Unnamed route"}: `
+        + (why.detail || `HTTP ${res.status}`));
     }
-    card.onclick = () => selectSession(s.id);
-    if (s.best_lap) {
-      // grind workflow: build the overlay straight from the sidebar, one
-      // best lap per attempt, without opening each session (issue #30)
-      const add = document.createElement("button");
-      add.className = "card-add";
-      add.title = "Add this session's best lap to the comparison (click again to remove)";
-      add.textContent = "＋";
-      add.onclick = async (e) => {
-        e.stopPropagation();
-        try {
-          const payload = await (await fetch(`/api/sessions/${s.id}/laps`)).json();
-          const best = payload.laps.find((l) => l.is_best);
-          if (!best) return;
-          const existing = pickOf(best.id);
-          if (existing) { promoteManual(); removePick(existing); }
-          else await addPick(best, payload.session);
-        } catch (err) {
-          uiAlert("Couldn't load session", String(err.message || err));
-        }
-      };
-      card.appendChild(add);
-    }
-    el.appendChild(card);
   }
+  await loadSessions();
+  if (failed.length)
+    await uiAlert(failed.length === picked.length
+      ? "Couldn't merge" : "Some sittings weren't merged",
+      `Merged ${picked.length - failed.length} of ${picked.length}. ${failed[0]}`
+      + (failed.length > 1 ? ` (and ${failed.length - 1} more)` : ""));
+}
+
+function emptyHint(total) {
+  const el = document.createElement("div");
+  el.className = "empty-hint";
+  el.textContent = total
+    ? "No sessions match these filters."
+    : "No sessions recorded yet.";
+  return el;
+}
+
+function markActive(el) {
+  for (const card of el.querySelectorAll(".session-card"))
+    card.classList.toggle("active", card.dataset.gid
+      ? Number(card.dataset.gid) === state.groupId
+      : Number(card.dataset.sid) === state.sessionId);
+}
+
+function sessionCard(s) {
+  const card = document.createElement("div");
+  card.className = "session-card";
+  card.dataset.sid = s.id;
+  card.innerHTML = `
+    <div class="title"></div>
+    <div class="meta-row">${classBadge(s.car_class_letter, s.car_pi)}${dtBadge(s.drivetrain)}${trackBadge(s.track_type)}${condBadge(s.conditions)}</div>
+    <div class="car-line"></div>
+    <div class="sub">${fmtDate(s.started_at)} · ${s.lap_count} ${lapWord(s.route_kind, s.lap_count)} · best ${fmtLap(s.best_lap)}</div>`;
+  $(".title", card).textContent = displayName(s);
+  $(".car-line", card).textContent = s.car_name;
+  if (!s.car_known) {
+    $(".car-line", card).classList.add("car-unknown");
+    $(".car-line", card).title = "Unknown car — open the session to name or report it";
+  }
+  card.onclick = () => selectSession(s.id);
+  if (s.best_lap) {
+    // grind workflow: build the overlay straight from the sidebar, one
+    // best lap per attempt, without opening each session (issue #30)
+    const add = document.createElement("button");
+    add.className = "card-add";
+    add.title = `Add this session's best ${lapWord(s.route_kind)} to the comparison (click again to remove)`;
+    add.textContent = "＋";
+    add.onclick = async (e) => {
+      e.stopPropagation();
+      try {
+        const payload = await (await fetch(`/api/sessions/${s.id}/laps`)).json();
+        const best = payload.laps.find((l) => l.is_best);
+        if (!best) return;
+        const existing = pickOf(best.id);
+        if (existing) { promoteManual(); removePick(existing); }
+        else await addPick(best, payload.session);
+      } catch (err) {
+        uiAlert("Couldn't load session", String(err.message || err));
+      }
+    };
+    card.appendChild(add);
+  }
+  return card;
 }
 
 /* rapid clicks race their fetches: only the latest selection may render its
    payload, or a slower response would show session A while state.sessionId
    is already B (same rule addPick applies to lap-data fetches) */
+/* one counter for both entry points: a slow group payload must not paint
+   over a session the user has already clicked, and vice versa */
 let selectSeq = 0;
+
+async function selectView(seq, url, onError) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const payload = await res.json();
+    return seq === selectSeq ? payload : null;  // newer selection landed
+  } catch (err) {
+    if (seq === selectSeq) uiAlert(onError, String(err.message || err));
+    return null;
+  }
+}
+
+/* Clone the detail pane and wire everything that doesn't care whether it is
+   showing one session or a merged group: the map, its controls, and the
+   lap-table header. */
+function mountDetail() {
+  const detail = $("#detail");
+  detail.innerHTML = "";
+  detail.appendChild($("#detail-template").content.cloneNode(true));
+  $("#btn-map-png").onclick = exportMapPng;
+  $("#color-mode").value = state.colorMode;
+  $("#color-mode").onchange = (e) => {
+    state.colorMode = e.target.value;
+    saveSettings({ defaultColor: state.colorMode });
+    drawMap();
+  };
+  for (const b of document.querySelectorAll("#map-mode button")) {
+    b.classList.toggle("active", b.dataset.mode === state.mapMode);
+    b.onclick = () => {
+      state.mapMode = b.dataset.mode;
+      saveSettings({ defaultMapMode: state.mapMode });
+      for (const x of document.querySelectorAll("#map-mode button"))
+        x.classList.toggle("active", x === b);
+      resetMapView(); // a 2D pan/zoom makes no sense under the 3D projection
+      updateMapHint();
+      drawMap();
+    };
+  }
+  updateMapHint();
+  bindMapDrag($("#trackmap"));
+  bindMapContext($("#trackmap"));
+}
+
+/* Laps + the sessions they came from (one for a session view, several for a
+   group). Every pick carries its own session, so this is what lets the tray,
+   map, charts and PNG caption work identically either way. */
+function applyPayload(laps, sessions) {
+  state.laps = laps;
+  state.sessionsById = Object.fromEntries(sessions.map((s) => [s.id, s]));
+  resetMapView();  // stale zoom/pan aimed at the old track's geometry (#48)
+  renderLapHeader();
+  renderSessionList();  // move the active highlight; no refetch, no scroll jump
+
+  // preselect: best lap as A — but only while the tray holds no deliberate
+  // picks. A manually built comparison must survive browsing other sessions
+  // (the whole point of the cross-session overlay); the lone auto pick from
+  // casual browsing is replaced like before.
+  if (!state.picks.some((p) => !p.auto)) {
+    state.picks.length = 0;
+    const best = laps.find((l) => l.is_best);
+    if (best) {
+      addPick(best, state.sessionsById[best.session_id], { auto: true });
+      return;  // renders itself
+    }
+  }
+  renderPicks();
+}
 
 async function selectSession(id) {
   const seq = ++selectSeq;
   state.sessionId = id;
-  let payload;
-  try {
-    const res = await fetch(`/api/sessions/${id}/laps`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    payload = await res.json();
-  } catch (err) {
-    if (seq === selectSeq) uiAlert("Couldn't load session", String(err.message || err));
-    return;
-  }
-  if (seq !== selectSeq) return;  // a newer selection landed; drop this payload
-  state.laps = payload.laps;
+  state.groupId = null;
+  const payload = await selectView(
+    seq, `/api/sessions/${id}/laps`, "Couldn't load session");
+  if (!payload) return;
   state.session = payload.session;  // PNG export captions from it
-  resetMapView();  // stale zoom/pan aimed at the old track's geometry (#48)
+  mountDetail();
+  wireSessionHeader(payload.session);
+  applyPayload(payload.laps, [payload.session]);
+}
 
-  const detail = $("#detail");
-  detail.innerHTML = "";
-  detail.appendChild($("#detail-template").content.cloneNode(true));
-  const s = payload.session;
+function wireSessionHeader(s) {
   $("#session-title").textContent = displayName(s);
   $("#header-badges").innerHTML = classBadge(s.car_class_letter, s.car_pi) + dtBadge(s.drivetrain);
   // route_id, not route_name: routes are created nameless, so an
@@ -201,48 +577,95 @@ async function selectSession(id) {
   $("#btn-reset-edits").style.display = s.edit_count ? "" : "none";
   $("#btn-reset-edits").onclick = () => resetEdits(s);
   $("#btn-export").onclick = () => { window.location = `/api/sessions/${s.id}/export.csv`; };
-  $("#btn-map-png").onclick = exportMapPng;
   $("#btn-delete").onclick = () => deleteSession(s);
-  $("#color-mode").value = state.colorMode;
-  $("#color-mode").onchange = (e) => {
-    state.colorMode = e.target.value;
-    saveSettings({ defaultColor: state.colorMode });
-    drawMap();
-  };
-  for (const b of document.querySelectorAll("#map-mode button")) {
-    b.classList.toggle("active", b.dataset.mode === state.mapMode);
-    b.onclick = () => {
-      state.mapMode = b.dataset.mode;
-      saveSettings({ defaultMapMode: state.mapMode });
-      for (const x of document.querySelectorAll("#map-mode button"))
-        x.classList.toggle("active", x === b);
-      resetMapView(); // a 2D pan/zoom makes no sense under the 3D projection
-      updateMapHint();
-      drawMap();
-    };
-  }
-  updateMapHint();
-  bindMapDrag($("#trackmap"));
-  bindMapContext($("#trackmap"));
+  $("#btn-merge").onclick = () => mergeRuns(s);
+  $("#btn-merge").style.display = mergeCandidates(s).length ? "" : "none";
+}
 
-  loadSessions();
+/* A merged group: several attempts at one route, browsed and scored as one.
+   The session-scoped controls (type/conditions tags, Reprocess, Reset edits,
+   Export CSV, Delete) act on exactly one session, so they are hidden here —
+   each run row opens its own session for those. */
+async function selectGroup(id) {
+  const seq = ++selectSeq;
+  state.sessionId = null;
+  state.groupId = id;
+  const payload = await selectView(
+    seq, `/api/groups/${id}/laps`, "Couldn't load group");
+  if (!payload) return;
+  const g = payload.group;
+  state.group = g;
+  state.session = payload.sessions[0];  // PNG export captions from it
+  mountDetail();
+  wireGroupHeader(g, payload.sessions);
+  applyPayload(payload.laps, payload.sessions);
+}
 
-  // preselect: best lap as A — but only while the tray holds no deliberate
-  // picks. A manually built comparison must survive browsing other sessions
-  // (the whole point of the cross-session overlay); the lone auto pick from
-  // casual browsing is replaced like before.
-  if (!state.picks.some((p) => !p.auto)) {
-    state.picks.length = 0;
-    const best = payload.laps.find((l) => l.is_best);
-    if (best) { addPick(best, s, { auto: true }); return; }  // renders itself
+function wireGroupHeader(g, members) {
+  $("#session-title").textContent = g.display_name;
+  $("#header-badges").innerHTML =
+    classBadge(g.car_class_letter, g.car_pi) + dtBadge(g.drivetrain)
+    + `<span class="group-badge" title="${members.length} sessions merged into one run group">⛓ merged</span>`;
+  $("#header-car").textContent =
+    `${g.car_name}  ·  ${members.length} sessions, ${g.run_count} ${lapWord(g.route_kind, g.run_count)}`;
+  if (g.mixed) {
+    const warn = document.createElement("span");
+    warn.className = "tray-warn";
+    warn.textContent = "⚠ members disagree on route or car";
+    warn.title = "A reprocess re-fingerprinted a member onto another route."
+      + " Times across it aren't comparable — remove it from the group.";
+    $("#header-car").appendChild(warn);
   }
-  renderPicks();
+  for (const sel of ["#track-select", "#cond-select"]) $(sel).style.display = "none";
+  for (const btn of ["#btn-car", "#btn-reprocess", "#btn-reset-edits",
+                     "#btn-export", "#btn-merge"])
+    $(btn).style.display = "none";
+  $("#btn-rename").onclick = () => renameGroup(g);
+  $("#btn-route").onclick = () => renameRoute(members[0]);
+  $("#btn-delete").textContent = "Ungroup";
+  $("#btn-delete").classList.remove("danger");
+  $("#btn-delete").title = "Split back into separate sessions — nothing is deleted";
+  $("#btn-delete").onclick = () => ungroup(g);
+}
+
+const cap = (s) => s.replace(/^./, (c) => c.toUpperCase());
+
+/* Sprint routes produce one timed run per visit, so the whole lap panel
+   renames itself off the route's kind; a group view gains a column naming
+   the session each run came from. Runs on mount, before the first
+   renderLapRows / drawMap. */
+function renderLapHeader() {
+  const kind = state.session && state.session.route_kind;
+  const one = lapWord(kind), many = lapWord(kind, 2);
+  const group = state.groupId !== null;
+  // timed rows only, so the heading agrees with the sidebar card's count
+  // (the table also lists incomplete laps, which never score)
+  const timed = state.laps.filter((l) => l.lap_time).length;
+  const n = Object.keys(state.sessionsById).length;
+  $("#laps-heading").textContent = group
+    ? `${cap(many)} · ${timed} across ${n} session${n === 1 ? "" : "s"}`
+    : cap(many);
+  const head = $("#lap-head");
+  head.innerHTML = "";
+  const cols = ["Compare", cap(one), ...(group ? ["Recorded"] : []),
+                "Time", "Gap", "", ""];
+  for (const label of cols) {
+    const th = document.createElement("th");
+    th.textContent = label;
+    head.appendChild(th);
+  }
+  const side = $("#map-side");
+  if (side.classList.contains("empty-hint"))
+    side.textContent =
+      `Tag a ${one} to draw its racing line — add more to overlay them.`;
 }
 
 function renderLapRows() {
   const tbody = $("#lap-rows");
   if (!tbody) return;
   tbody.innerHTML = "";
+  const word = lapWord(state.session && state.session.route_kind);
+  const group = state.groupId !== null;
   for (const l of state.laps) {
     const tr = document.createElement("tr");
     if (l.is_best) tr.className = "best";
@@ -254,21 +677,29 @@ function renderLapRows() {
     const pickChip = pick
       ? `<span class="pick on" style="color:${pick.color};border-color:${pick.color};background:${pick.color}26" title="Remove from the comparison">${pickLetter(pick)}</span>`
       : `<span class="pick" title="Add to the comparison (up to ${MAX_PICKS} laps, across sessions)">+</span>`;
+    // in a group every sprint member's own lap_number is 0, so the number
+    // has to come from the group's ordering
     tr.innerHTML = `
       <td>${pickChip}</td>
-      <td>${l.lap_number + 1}</td>
+      <td>${group ? l.run_index : l.lap_number + 1}</td>
+      ${group ? `<td class="run-when"><button class="lap-act act-open" title="Open this session on its own">${fmtDate(state.sessionsById[l.session_id].started_at)}</button></td>` : ""}
       <td class="lap-time">${fmtLap(l.lap_time)}</td>
       <td>${l.gap_to_best != null && l.gap_to_best > 0 ? "+" + l.gap_to_best.toFixed(3) : (l.is_best ? "best" : "")}</td>
       <td style="color:var(--muted)">${flagIcons(l.flags)}${edited ? `<span class="lap-flag" title="flags edited by you — ✎ to change, Reset edits to undo">✎</span>` : ""}${l.lap_time ? "" : " incomplete"}${l.excluded ? " excluded" : ""}</td>
       <td class="lap-actions">
-        <button class="lap-act act-csv" title="Download this lap's telemetry as CSV">⬇</button>
-        <button class="lap-act act-flags" title="Edit this lap's flags">✎</button>
-        <button class="lap-act act-exclude" title="${l.excluded ? "Restore the lap into bests and counts" : "Exclude the lap from bests and counts"}">${l.excluded ? "↩" : "🗑"}</button>
+        <button class="lap-act act-csv" title="Download this ${word}'s telemetry as CSV">⬇</button>
+        <button class="lap-act act-flags" title="Edit this ${word}'s flags">✎</button>
+        <button class="lap-act act-exclude" title="${l.excluded ? `Restore the ${word} into bests and counts` : `Exclude the ${word} from bests and counts`}">${l.excluded ? "↩" : "🗑"}</button>
+        ${group ? `<button class="lap-act act-unmerge" title="Take this session back out of the group">⛓</button>` : ""}
       </td>`;
     $(".pick", tr).onclick = () => pickLap(l.id);
     $(".act-csv", tr).onclick = () => { window.location = `/api/laps/${l.id}/export.csv`; };
     $(".act-flags", tr).onclick = () => editLapFlags(l);
     $(".act-exclude", tr).onclick = () => toggleLapExcluded(l);
+    if (group) {
+      $(".act-open", tr).onclick = () => selectSession(l.session_id);
+      $(".act-unmerge", tr).onclick = () => removeFromGroup(l.session_id);
+    }
     tbody.appendChild(tr);
   }
 }
@@ -286,15 +717,23 @@ async function refetchPickData() {
 /* Re-fetch the session's laps + every picked lap's data after a manual edit,
    keeping the comparison tray (unlike selectSession's auto-pick reset). */
 async function reloadSession() {
-  const payload = await (await fetch(`/api/sessions/${state.sessionId}/laps`)).json();
+  const group = state.groupId !== null;
+  const payload = await (await fetch(group
+    ? `/api/groups/${state.groupId}/laps`
+    : `/api/sessions/${state.sessionId}/laps`)).json();
+  const sessions = group ? payload.sessions : [payload.session];
   state.laps = payload.laps;
-  state.session = payload.session;
+  state.sessionsById = Object.fromEntries(sessions.map((x) => [x.id, x]));
+  state.session = sessions[0];
+  if (group) state.group = payload.group;
   const reset = $("#btn-reset-edits");
-  if (reset) reset.style.display = payload.session.edit_count ? "" : "none";
+  if (reset) reset.style.display =
+    (group ? payload.group.edit_count : payload.session.edit_count) ? "" : "none";
   for (const p of state.picks) {
-    // lap meta (flags / excluded / is_best) moved for picks of this session
-    if (p.session.id === state.sessionId) {
-      p.session = payload.session;
+    // lap meta (flags / excluded / is_best) moved for picks of the shown view
+    const fresh = state.sessionsById[p.session.id];
+    if (fresh) {
+      p.session = fresh;
       const lap = payload.laps.find((l) => l.id === p.lapId);
       if (lap) p.lap = lap;
     }
@@ -315,6 +754,7 @@ const lapPatch = (lapId, body) => fetch(`/api/laps/${lapId}`, {
 /* checkbox editor over the recorder's dirty-lap markers; stored as a
    read-time override, so Reprocess keeps it and Reset edits undoes it */
 async function editLapFlags(lap) {
+  const kind = state.session && state.session.route_kind;
   const extra = document.createElement("div");
   extra.className = "flag-editor";
   const current = new Set((lap.flags || "").split(",").filter(Boolean));
@@ -336,8 +776,9 @@ async function editLapFlags(lap) {
   hint.textContent = `Detected by the recorder: ${detected}. Matching it removes your override.`;
   extra.appendChild(hint);
   const ok = await showModal({
-    title: `Lap ${lap.lap_number + 1} — flags`,
-    message: "Detection is heuristic; correct this lap's markers here. Reprocess keeps your choice.",
+    title: `${lapLabel(kind, lap.lap_number + 1)} — flags`,
+    message: `Detection is heuristic; correct this ${lapWord(kind)}'s markers here.`
+      + " Reprocess keeps your choice.",
     extra, okText: "Save",
   });
   if (!ok) return;
@@ -424,7 +865,10 @@ function pickLap(lapId) {
     return;
   }
   const lap = state.laps.find((l) => l.id === lapId);
-  if (lap) addPick(lap, state.session);
+  // the lap's OWN session, not the displayed one: in a group view they differ
+  // per row, and the wrong one gives a wrong PNG caption and a bogus
+  // cross-route warning
+  if (lap) addPick(lap, state.sessionsById[lap.session_id] || state.session);
 }
 
 /* overlaying laps from different routes is allowed (route_id null = each
@@ -477,7 +921,10 @@ function renderTray() {
   label.className = "tray-label";
   label.textContent = "Comparing";
   el.appendChild(label);
-  const crossSession = state.picks.some((p) => p.session.id !== state.sessionId);
+  // a group's own members are "this view", so their chips keep the short run
+  // label — labelling them by session would print the same route name on
+  // every chip
+  const crossSession = state.picks.some((p) => !state.sessionsById[p.session.id]);
   for (const p of state.picks) {
     const chip = document.createElement("span");
     chip.className = "tray-chip";
@@ -524,6 +971,137 @@ function renderTray() {
   el.appendChild(clear);
 }
 
+/* ---------------- merged run groups ---------------- */
+
+/* Ungrouped sessions this one could be merged with: same route, same car,
+   both known. That is the whole rule — the time clustering below only decides
+   what gets *suggested*. */
+function mergeCandidates(session) {
+  if (!session.route_id || session.car_ordinal == null) return [];
+  return state.allSessions.filter(
+    (s) => s.group_id == null && s.route_id === session.route_id
+      && s.car_ordinal === session.car_ordinal);
+}
+
+/* One sitting. Measured over a real database, every gap between consecutive
+   attempts at the same route in the same car was under 19 minutes, and the
+   next gap up was 22 hours — anywhere in that gulf gives identical clusters,
+   so this is the value that reads sensibly to a human rather than a fitted
+   one. */
+const MERGE_GAP_S = 2 * 3600;
+
+function timeClusters(rows) {
+  const out = [];
+  let cur = [];
+  for (const s of [...rows].sort((a, b) => a.started_at - b.started_at)) {
+    if (cur.length && s.started_at - cur[cur.length - 1].started_at > MERGE_GAP_S) {
+      if (cur.length > 1) out.push(cur);
+      cur = [];
+    }
+    cur.push(s);
+  }
+  if (cur.length > 1) out.push(cur);
+  return out;
+}
+
+async function mergeRuns(session) {
+  const candidates = mergeCandidates(session);
+  if (candidates.length < 2) {
+    await uiAlert("Nothing to merge",
+      "Merging needs at least two ungrouped sessions on this route in this car.");
+    return;
+  }
+  // preselect the sitting this session belongs to; everything else is listed
+  // and one click away
+  const sitting = timeClusters(candidates).find(
+    (c) => c.some((s) => s.id === session.id)) || [session];
+  const chosen = new Set(sitting.map((s) => s.id));
+
+  const extra = document.createElement("div");
+  extra.className = "merge-list";
+  for (const s of [...candidates].sort((a, b) => b.started_at - a.started_at)) {
+    const label = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = chosen.has(s.id);
+    cb.onchange = () => (cb.checked ? chosen.add(s.id) : chosen.delete(s.id));
+    const text = document.createElement("span");
+    text.textContent =
+      `${fmtDate(s.started_at)} — ${s.lap_count} ${lapWord(s.route_kind, s.lap_count)}, best ${fmtLap(s.best_lap)}`;
+    label.append(cb, text);
+    extra.appendChild(label);
+  }
+  // "runs" as in attempts at the route, matching the header button — NOT
+  // lapWord(), which would title a circuit's dialog "Merge laps" and promise
+  // something this does not do
+  const name = await uiPrompt("Merge runs", {
+    value: "",
+    placeholder: session.route_name || displayName(session),
+    message: "Merged sessions share one card and one table, scored against"
+      + " each other. Nothing is rewritten — you can ungroup at any time.",
+    extra,
+    okText: "Merge",
+  });
+  if (name === null) return;
+  if (chosen.size < 2) {
+    await uiAlert("Nothing to merge", "Pick at least two sessions.");
+    return;
+  }
+  const res = await fetch("/api/groups", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: name.trim(), session_ids: [...chosen] }),
+  });
+  if (!res.ok) {
+    await uiAlert("Couldn't merge", (await res.json()).detail || "failed");
+    return;
+  }
+  const { group } = await res.json();
+  await loadSessions();
+  selectGroup(group.id);
+}
+
+async function renameGroup(group) {
+  const name = await uiPrompt("Rename group", {
+    value: group.name || "",
+    placeholder: group.display_name,
+    message: "Shown on the merged card. Leave empty to fall back to the route name.",
+  });
+  if (name === null) return;
+  await fetch(`/api/groups/${group.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: name.trim() }),
+  });
+  await loadSessions();
+  selectGroup(group.id);
+}
+
+async function ungroup(group) {
+  const sure = await uiConfirm("Ungroup",
+    "Split this group back into separate sessions? Nothing is deleted — the"
+    + " sessions, their telemetry and every manual edit stay exactly as they are.",
+    { okText: "Ungroup" });
+  if (!sure) return;
+  await fetch(`/api/groups/${group.id}`, { method: "DELETE" });
+  await loadSessions();
+  $("#detail").innerHTML =
+    `<div class="empty-hint">Ungrouped — the sessions are back in the list.</div>`;
+  state.groupId = null;
+  state.sessionId = null;
+  renderSessionList();
+}
+
+async function removeFromGroup(sessionId) {
+  const gid = state.groupId;
+  const res = await fetch(`/api/groups/${gid}/sessions/${sessionId}`,
+                          { method: "DELETE" });
+  const out = await res.json();
+  await loadSessions();
+  if (out.pruned) { state.groupId = null; selectSession(sessionId); }
+  else selectGroup(gid);
+}
+
 async function renameSession(session) {
   const name = await uiPrompt("Rename session", {
     value: session.name || "",
@@ -539,22 +1117,62 @@ async function renameSession(session) {
   selectSession(session.id);
 }
 
+/* Name the route and correct its shape in one dialog. The shape decides
+   whether the whole page says "lap" or "run", and the recorder's guess can
+   be wrong (a circuit you only ever drove one lap of reads as a sprint until
+   you drive two), so an override belongs next to the name. showModal renders
+   `extra` above its input, so the picker is built here and read from the
+   closure — same pattern as the lap flags editor. */
 async function renameRoute(session) {
   if (!session.route_id) {
     await uiAlert("No route identified yet",
       "Routes are fingerprinted from the first completed lap — finish a lap on this route first.");
     return;
   }
+  const detected = session.route_kind_auto;
+  let kind = session.route_kind || "";
+  const extra = document.createElement("div");
+  // which course this actually is, drawn from its fastest recorded lap —
+  // the one thing a name-this-route dialog was missing
+  const map = routeOutline(session.route_id, { lazy: false });
+  map.classList.add("big");
+  extra.appendChild(map);
+  const label = document.createElement("div");
+  label.className = "modal-hint";
+  label.textContent = detected
+    ? `Shape (detected: ${detected === "sprint" ? "sprint" : "circuit"})`
+    : "Shape";
+  const seg = document.createElement("span");
+  seg.className = "seg route-kind";
+  for (const [value, text] of [["circuit", "Circuit — laps"],
+                               ["sprint", "Sprint — runs"]]) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = text;
+    b.classList.toggle("active", kind === value);
+    b.onclick = () => {
+      // clicking the active choice clears the override back to the guess
+      kind = kind === value ? "" : value;
+      for (const x of seg.children) x.classList.toggle("active", x === b && kind);
+    };
+    seg.appendChild(b);
+  }
+  extra.append(label, seg);
+
   const name = await uiPrompt("Name route / circuit", {
     value: session.route_name || "",
     message: "Applies to every session recorded on this route.",
+    extra,
   });
-  if (name === null || !name.trim()) return;
+  if (name === null) return;  // cancelled: neither the name nor the shape changes
+  const body = { kind };  // "" clears the override back to the detected shape
+  if (name.trim()) body.name = name.trim();
   await fetch(`/api/routes/${session.route_id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: name.trim() }),
+    body: JSON.stringify(body),
   });
+  await loadSessions();  // the shape renames every card on this route
   selectSession(session.id);
 }
 
@@ -620,7 +1238,8 @@ async function reprocessSession(session) {
     return;
   }
   const { laps } = await res.json();
-  await uiAlert("Reprocess complete", `${laps} completed lap${laps === 1 ? "" : "s"} found.`);
+  await uiAlert("Reprocess complete",
+    `${laps} completed ${lapWord(session.route_kind, laps)} found.`);
   // the replay recreates lap rows under recycled rowids: a kept pick could
   // silently point at a different lap - drop this session's picks instead
   state.picks = state.picks.filter((p) => p.session.id !== session.id);
@@ -1092,7 +1711,7 @@ function drawMap() {
     // letters and numbers only - session names stay in the tray, which
     // renders them via textContent (user-named sessions must not hit innerHTML)
     const lapCells = state.picks.map((p) => `
-      <div><div class="label"><span class="swatch" style="background:${p.color}"></span> ${pickLetter(p)} · Lap ${p.lap.lap_number + 1}</div>
+      <div><div class="label"><span class="swatch" style="background:${p.color}"></span> ${pickLetter(p)} · ${lapLabel(p.session.route_kind, p.lap.lap_number + 1)}</div>
       <div class="value">${fmtLap(p.lap.lap_time)}</div></div>`).join("");
     side.innerHTML = `<div class="lap-grid" style="text-align:left">
       ${lapCells}
@@ -1219,7 +1838,7 @@ function exportMapPng() {
   // every picked lap, in tray order; laps from other sessions carry their
   // session's name so a cross-session overlay stays readable
   const lapsTxt = state.picks.map((p) => {
-    const t = `Lap ${p.lap.lap_number + 1} — ${fmtLap(p.lap.lap_time)}`;
+    const t = `${lapLabel(p.session.route_kind, p.lap.lap_number + 1)} — ${fmtLap(p.lap.lap_time)}`;
     return p.session.id !== s.id ? `${shortName(p.session)} ${t}` : t;
   }).join("  ·  ");
   ctx.fillStyle = color("--muted", "#8494a7");
@@ -1450,7 +2069,7 @@ function renderRawSection() {
   head.appendChild(document.createElement("th"));
   for (const p of rawView.cols) {
     const th = document.createElement("th");
-    th.textContent = `${pickLetter(p)} · Lap ${p.lap.lap_number + 1}`;
+    th.textContent = `${pickLetter(p)} · ${lapLabel(p.session.route_kind, p.lap.lap_number + 1)}`;
     th.style.color = p.color;
     head.appendChild(th);
   }
@@ -1554,5 +2173,6 @@ onSettingsChange(() => {
   drawMap(); drawCharts(); syncRawSection();
 });
 bindImport();
+bindBrowse();
 loadSessions();
 setInterval(loadSessions, 15000); // pick up newly finished sessions

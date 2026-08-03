@@ -102,6 +102,110 @@ function trackBadge(type) {
   return `<span class="cond-badge track-${type}">${icon} ${label}</span>`;
 }
 
+/* A point-to-point sprint produces exactly one timed run per visit, so
+   calling it a "lap" is wrong. The noun comes from the route's kind
+   (routes.kind / kind_user, see store.py) — a NULL kind means the route was
+   never identified, or the session was imported, so fall back to "lap"
+   rather than guess. Keep the two branches in step with ROUTE_KINDS. */
+function lapWord(kind, n = 1) {
+  const w = kind === "sprint" ? "run" : "lap";
+  return n === 1 ? w : `${w}s`;
+}
+
+/* "Lap 3" / "Run 2" — a specific numbered entry in a lap table or tray */
+function lapLabel(kind, n) {
+  return `${kind === "sprint" ? "Run" : "Lap"} ${n}`;
+}
+
+/* ---------- route outlines (the course, drawn small) ----------
+
+   A route is far easier to recognize by its shape than by a name someone
+   typed once, so anywhere a route is listed gets a thumbnail of it. The
+   server sends a normalized polyline (GET /api/routes/{id}/outline, filled
+   from one lap's frames the first time it is asked for), so the only work
+   here is turning it into a path and fitting the tight bbox to the box —
+   the same projection the big 2D map uses, so both are the same way up.
+
+   Thumbnails load lazily: a facet menu can list sixty routes and only ever
+   show eight of them, and the first request for a route reads a lap's worth
+   of frames. */
+
+const outlineCache = new Map();    // route_id -> points | null (null = none)
+const outlineInFlight = new Map(); // route_id -> Promise, so one route is
+                                   // never fetched twice at once
+let outlineObserver = null;
+
+function drawOutline(host, pts) {
+  host.classList.toggle("empty", !(pts && pts.length >= 4));
+  if (!pts || pts.length < 4) return;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (let i = 0; i < pts.length; i += 2) {
+    minX = Math.min(minX, pts[i]); maxX = Math.max(maxX, pts[i]);
+    minY = Math.min(minY, pts[i + 1]); maxY = Math.max(maxY, pts[i + 1]);
+  }
+  const pad = 30;  // room for the stroke; the box is 0..1000 (ROUTE_OUTLINE_BOX)
+  const d = [];
+  for (let i = 0; i < pts.length; i += 2)
+    d.push(`${i ? "L" : "M"}${pts[i]} ${pts[i + 1]}`);
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox",
+    `${minX - pad} ${minY - pad} ${maxX - minX + 2 * pad} ${maxY - minY + 2 * pad}`);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", d.join(""));
+  // non-scaling-stroke: a 3 km route and a 300 m one are drawn at wildly
+  // different scales, and a scaled stroke would render one hairline and the
+  // other a blob
+  path.setAttribute("vector-effect", "non-scaling-stroke");
+  svg.appendChild(path);
+  host.replaceChildren(svg);
+}
+
+function fetchOutline(routeId) {
+  if (outlineCache.has(routeId)) return Promise.resolve(outlineCache.get(routeId));
+  if (outlineInFlight.has(routeId)) return outlineInFlight.get(routeId);
+  const p = fetch(`/api/routes/${routeId}/outline`)
+    .then((r) => (r.ok ? r.json() : { outline: null }))
+    .then((body) => body.outline || null)
+    .catch(() => null)
+    .then((pts) => {
+      outlineCache.set(routeId, pts);
+      outlineInFlight.delete(routeId);
+      return pts;
+    });
+  outlineInFlight.set(routeId, p);
+  return p;
+}
+
+/* A thumbnail element for a route. `lazy` defers the fetch until it scrolls
+   into view — right for a long menu, pointless for a dialog. */
+function routeOutline(routeId, { lazy = true } = {}) {
+  const host = document.createElement("span");
+  host.className = "route-outline empty";  // drawOutline clears it on arrival
+  host.dataset.route = routeId;
+  const cached = outlineCache.get(routeId);
+  if (cached !== undefined) {
+    drawOutline(host, cached);
+    return host;
+  }
+  const load = () => fetchOutline(routeId).then((pts) => drawOutline(host, pts));
+  if (!lazy) { load(); return host; }
+  if (!outlineObserver) {
+    // the intersection rect is clipped by scrollable ancestors, so rows
+    // parked below a menu's scroll never fire
+    outlineObserver = new IntersectionObserver((entries, obs) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        obs.unobserve(e.target);
+        fetchOutline(Number(e.target.dataset.route))
+          .then((pts) => drawOutline(e.target, pts));
+      }
+    }, { rootMargin: "120px" });
+  }
+  outlineObserver.observe(host);
+  return host;
+}
+
 /* DrivetrainType is in every packet: 0=FWD 1=RWD 2=AWD */
 const DRIVETRAINS = ["FWD", "RWD", "AWD"];
 
@@ -160,14 +264,20 @@ function fmtRaw(v, dec) {
 
 /* ---------- themed modal dialogs (replace window.prompt / confirm / alert) ---------- */
 
+/* showModal's third answer. A dialog offering two opposite verdicts over one
+   selection ("merge these" / "dismiss these") would otherwise have to send the
+   second one through a second visit. Never collides with a prompt's result:
+   the alt button is only ever paired with a dialog that has no text input. */
+const MODAL_ALT = Symbol("modal-alt");
+
 function showModal({ title, message = "", extra = null, value = null, placeholder = "",
-                     okText = "OK", cancelText = "Cancel",
-                     danger = false, showCancel = true }) {
+                     okText = "OK", cancelText = "Cancel", altText = "",
+                     danger = false, showCancel = true, wide = false }) {
   return new Promise((resolve) => {
     const backdrop = document.createElement("div");
     backdrop.className = "modal-backdrop";
     const box = document.createElement("div");
-    box.className = "modal" + (danger ? " danger" : "");
+    box.className = "modal" + (danger ? " danger" : "") + (wide ? " modal-wide" : "");
     box.setAttribute("role", "dialog");
     box.setAttribute("aria-modal", "true");
     backdrop.appendChild(box);
@@ -203,6 +313,15 @@ function showModal({ title, message = "", extra = null, value = null, placeholde
       backdrop.remove();
       resolve(result);
     };
+    if (altText) {
+      // first in the row so its margin-right:auto pushes the cancel/OK pair
+      // away: a bulk dismissal should not sit under the thumb aiming for Merge
+      const alt = document.createElement("button");
+      alt.className = "modal-alt";
+      alt.textContent = altText;
+      alt.onclick = () => done(MODAL_ALT);
+      actions.appendChild(alt);
+    }
     if (showCancel) {
       const cancel = document.createElement("button");
       cancel.className = "modal-cancel";

@@ -364,6 +364,82 @@ def test_route_span_tolerance_edges():
     assert not _spans_match(270.0, 759.0, 270.0 + ROUTE_SPAN_FLOOR_M + 1, 759.0)
 
 
+def test_route_kind_never_downgrades(tmp_path):
+    """Circuit evidence is strong and sprint evidence is weak: "only ever
+    produced one timed run" is also what a single-lap circuit race looks
+    like, so the recorder may promote sprint -> circuit but must never undo
+    it - one point-to-point-looking visit can't unmake a course that has
+    demonstrably been lapped."""
+    store = Store(str(Path(tmp_path) / "telemetry.db"))
+    args = (100.0, 200.0, 5951.5, 500.0, 400.0)
+
+    rid = store.match_or_create_route(*args, kind="sprint")
+    assert store.match_or_create_route(*args, kind="circuit") == rid
+    with store.reader() as conn:
+        assert conn.execute("SELECT kind FROM routes WHERE id = ?",
+                            (rid,)).fetchone()["kind"] == "circuit"
+
+    store.match_or_create_route(*args, kind="sprint")   # ignored
+    store.set_route_kind(rid, None)                     # no evidence: no write
+    with store.reader() as conn:
+        assert conn.execute("SELECT kind FROM routes WHERE id = ?",
+                            (rid,)).fetchone()["kind"] == "circuit"
+    store.close()
+
+
+def test_user_route_kind_outranks_the_recorder(tmp_path):
+    """kind_user is the manual correction and always wins; the recorder keeps
+    writing its own guess underneath, so clearing the override reveals it."""
+    store = Store(str(Path(tmp_path) / "telemetry.db"))
+    args = (100.0, 200.0, 5951.5, 500.0, 400.0)
+    rid = store.match_or_create_route(*args, kind="circuit")
+
+    store.set_route_kind_user(rid, "sprint")
+    with store.reader() as conn:
+        row = conn.execute("SELECT COALESCE(kind_user, kind) AS eff, kind"
+                           " FROM routes WHERE id = ?", (rid,)).fetchone()
+    assert (row["eff"], row["kind"]) == ("sprint", "circuit")
+
+    store.set_route_kind_user(rid, None)  # cleared: the detected shape shows again
+    with store.reader() as conn:
+        row = conn.execute("SELECT COALESCE(kind_user, kind) AS eff"
+                           " FROM routes WHERE id = ?", (rid,)).fetchone()
+    assert row["eff"] == "circuit"
+    store.close()
+
+
+def test_backfill_classifies_routes_recorded_before_kind_existed(tmp_path):
+    """Routes driven before the column existed carry NULL. The backfill
+    classifies them from the index tables alone (no frame reads): a World
+    Time Attack tag or more than one timed lap means the course loops.
+    Routes whose sessions are all gone stay NULL - there is no evidence to
+    guess from, and a fabricated 'sprint' would be indistinguishable from a
+    real one."""
+    path = str(Path(tmp_path) / "telemetry.db")
+    store = Store(path)
+    store.db.executescript("""
+        INSERT INTO routes (id, start_x, start_z, lap_length) VALUES
+            (1, 0, 0, 5951), (2, 0, 0, 5951), (3, 0, 0, 5951), (4, 0, 0, 5951);
+        INSERT INTO sessions (id, started_at, route_id) VALUES
+            (1, 100, 1), (2, 100, 2), (3, 100, 3);
+        UPDATE sessions SET track_type = 'wtc' WHERE id = 3;
+        INSERT INTO laps (session_id, lap_number, lap_time, started_t) VALUES
+            (1, 0, 42.0, 0), (1, 1, 41.5, 43),   -- two timed laps: a circuit
+            (2, 0, 90.0, 0),                     -- one run: a sprint
+            (3, 0, 55.0, 0);                     -- one geometric lap, but wtc
+    """)
+    store.db.commit()
+    store.db.execute("UPDATE routes SET kind = NULL")  # as if freshly migrated
+    store.db.commit()
+    store.close()
+
+    Store(path).close()  # reopening runs the backfill
+    store = Store(path)
+    kinds = dict(store.db.execute("SELECT id, kind FROM routes"))
+    store.close()
+    assert kinds == {1: "circuit", 2: "sprint", 3: "circuit", 4: None}
+
+
 def test_listener_fallback_keeps_frame_contract(tmp_path):
     """A recorder crash must not shrink the published frame: the extras keep
     the documented shape (session_id/delta/session_best/lap_elapsed/race_mode)."""

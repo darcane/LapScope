@@ -54,6 +54,13 @@ CREATE TABLE IF NOT EXISTS car_names (
     ordinal INTEGER PRIMARY KEY,
     name    TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS session_groups (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT,
+    route_id    INTEGER,
+    car_ordinal INTEGER,
+    created_at  REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS edits (
     id         INTEGER PRIMARY KEY,
     session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -86,7 +93,61 @@ MIGRATIONS = (
     # NULL on rows recorded before the span term existed
     "ALTER TABLE routes ADD COLUMN span_x REAL",
     "ALTER TABLE routes ADD COLUMN span_z REAL",
+    # does one visit produce laps, or a single run? (see ROUTE_KINDS below)
+    "ALTER TABLE routes ADD COLUMN kind TEXT",       # recorder + backfill guess
+    "ALTER TABLE routes ADD COLUMN kind_user TEXT",  # manual override; wins
+    # several attempts at one sprint, browsed as one card (session_groups)
+    "ALTER TABLE sessions ADD COLUMN group_id INTEGER",
+    # the course drawn as a thumbnail (see ROUTE_OUTLINE_* below)
+    "ALTER TABLE routes ADD COLUMN outline TEXT",
 )
+
+# Merged runs. A point-to-point route can only be attempted by restarting the
+# event, so a grind is N one-run sessions that the user wants to read - and
+# score - as one thing. A group is purely an index: sessions, frames, laps and
+# edits are untouched, so ungrouping is free and a reprocess of any member
+# still behaves exactly as it did before.
+#
+# `route_id` / `car_ordinal` are pinned at creation rather than derived from
+# the members, so the group keeps its identity as members are removed and
+# add-validation is a column compare. Membership is validated on write only:
+# a reprocess can legitimately re-fingerprint a session onto another route,
+# and refusing to *read* a group the user can no longer repair would be worse
+# than reporting it as mixed.
+
+# Route shape. A Horizon sprint is point-to-point: one visit produces exactly
+# one timed run, so calling it a "lap" is wrong everywhere in the UI. The
+# packet says nothing about it, so the recorder infers it from which lap
+# machinery fired (laps.py `_route_kind`) and stores it on the route - it's a
+# property of the course, not of a session.
+#
+# Two columns for the same reason `laps.flags` has an `edits` overlay: `kind`
+# is the machine's guess (recorder, plus a one-off backfill for routes driven
+# before this existed) and `kind_user` is the user's correction. Effective
+# value is COALESCE(kind_user, kind), so a wrong guess is repairable by the
+# next real lap and a manual override is never in the blast radius.
+ROUTE_KINDS = ("circuit", "sprint")
+
+# Route outline: the course drawn as a thumbnail, so a route is recognizable
+# by its shape and not only by a name someone remembered to type. Deliberately
+# NOT called "shape" anywhere user-facing - that word already means
+# circuit-vs-sprint in the route dialog.
+#
+# Derived, cached, and cheap to lose: a flattened [x0, y0, x1, y1, ...] JSON
+# list of integers in a 0..OUTLINE_BOX box, longest axis scaled to fit, y
+# already flipped into screen space so a client can drop it straight into an
+# SVG viewBox. Points are spaced along the driven line rather than by frame -
+# a lap that starts with the car sitting on the grid would otherwise spend a
+# tenth of its points on one spot and cut the corners where it was quick.
+# DETAIL is that spacing as a fraction of the bounding box, so the point
+# count follows how much the course wanders (2-4x DETAIL in practice).
+#
+# Filled lazily on first request (one lap's frames, tens of milliseconds)
+# rather than by the recorder: the outline only matters once someone opens
+# the browse bar, and a route driven before this existed has to be filled
+# from stored frames anyway.
+ROUTE_OUTLINE_BOX = 1000
+ROUTE_OUTLINE_DETAIL = 150
 
 # Route fingerprint: same start point within this radius, a lap length within
 # this fraction, and matching bounding-box dimensions = the same route.
@@ -124,12 +185,26 @@ def _spans_match(ax: float, az: float, bx: float, bz: float) -> bool:
         for a, b in ((ax, bx), (az, bz))
     )
 
+# One projection for every session read - the list, a single session, and a
+# group's members. It used to be two hand-written joins that had to be kept in
+# step by hand, and a column added to only one of them went missing wherever
+# the other one fed. Callers append their own WHERE, then _SESSION_GROUP_BY.
 _SESSION_SELECT = """
-SELECT s.*, r.name AS route_name, cn.name AS car_name_override
+SELECT s.*, r.name AS route_name, cn.name AS car_name_override,
+       COALESCE(r.kind_user, r.kind) AS route_kind, r.kind AS route_kind_auto,
+       g.name AS group_name,
+       COUNT(l.lap_time) AS lap_count, MIN(l.lap_time) AS best_lap
 FROM sessions s
 LEFT JOIN routes r ON r.id = s.route_id
 LEFT JOIN car_names cn ON cn.ordinal = s.car_ordinal
+LEFT JOIN session_groups g ON g.id = s.group_id
+-- excluded laps (manual edit) don't count: same span-match as session_laps
+LEFT JOIN laps l ON l.session_id = s.id AND NOT EXISTS
+  (SELECT 1 FROM edits e WHERE e.session_id = l.session_id
+   AND e.kind = 'exclude_lap' AND e.anchor_t >= l.started_t
+   AND e.anchor_t <= COALESCE(l.ended_t, 1e18))
 """
+_SESSION_GROUP_BY = " GROUP BY s.id"
 
 
 def lap_span(lap: dict) -> tuple[float, float]:
@@ -148,6 +223,27 @@ def lap_anchor(lap: dict) -> float:
     return (lap["started_t"] + end) / 2
 
 
+def _merge_edits(laps: list[dict], edits: list[dict]) -> list[dict]:
+    """Apply the read-time edit overlay to lap rows. Shared by `session_laps`
+    and `group_laps` so a merged group scores by exactly the same rules as
+    the session it came from - an excluded lap has to stay excluded."""
+    by_session: dict[int, list[dict]] = {}
+    for e in edits:
+        by_session.setdefault(e["session_id"], []).append(e)
+    for lap in laps:
+        lap["flags_auto"] = lap["flags"]
+        lap["excluded"] = False
+        t0, t1 = lap_span(lap)
+        for e in by_session.get(lap["session_id"], ()):
+            if not t0 <= e["anchor_t"] <= t1:
+                continue
+            if e["kind"] == "flags":
+                lap["flags"] = e["value"] or None
+            elif e["kind"] == "exclude_lap":
+                lap["excluded"] = True
+    return laps
+
+
 class Store:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
@@ -162,11 +258,44 @@ class Store:
             except sqlite3.OperationalError:
                 pass  # column already exists
         self.db.commit()
+        self.backfill_route_kinds()
         # session ids must never be reused: discarding a session deletes the
         # max rowid, which plain INTEGER PRIMARY KEY would hand out again -
         # and the live dashboard detects "new event" by the id changing
         self._next_session_id = self.db.execute(
             "SELECT COALESCE(MAX(id), 0) + 1 FROM sessions").fetchone()[0]
+
+    def backfill_route_kinds(self) -> int:
+        """Classify routes driven before `kind` existed, from evidence already
+        in the index tables - no frame reads, so the size of `frames` doesn't
+        matter. Idempotent (NULL rows only), so it belongs in __init__ rather
+        than the lifespan or a tools script: the packaged Windows exe has no
+        shell step, and without this every pre-existing route would stay NULL
+        forever and read as "lap".
+
+        A route that ever produced more than one timed lap, or that carries a
+        World Time Attack tag, is a circuit; anything else only ever produced
+        single runs. Routes with no sessions left (their captures were
+        deleted) stay NULL rather than get a fabricated guess."""
+        if not self.db.execute(
+                "SELECT 1 FROM routes WHERE kind IS NULL LIMIT 1").fetchone():
+            return 0
+        cur = self.db.execute("""
+            UPDATE routes SET kind = (
+                SELECT CASE
+                    WHEN MAX(s.track_type = 'wtc') = 1 THEN 'circuit'
+                    WHEN MAX(COALESCE(n.c, 0)) > 1     THEN 'circuit'
+                    ELSE 'sprint' END
+                FROM sessions s
+                LEFT JOIN (SELECT session_id, COUNT(*) c FROM laps
+                           WHERE lap_time IS NOT NULL GROUP BY session_id) n
+                  ON n.session_id = s.id
+                WHERE s.route_id = routes.id)
+            WHERE kind IS NULL
+              AND EXISTS (SELECT 1 FROM sessions WHERE route_id = routes.id)
+        """)
+        self.db.commit()
+        return cur.rowcount
 
     def close(self) -> None:
         self.db.commit()
@@ -188,6 +317,7 @@ class Store:
             " AND COALESCE(kept, 0) = 0"
         )
         self.db.commit()
+        self.prune_empty_groups()
         return cur.rowcount
 
     def create_session(self, started_at: float, frame: dict) -> int:
@@ -294,7 +424,7 @@ class Store:
 
     def match_or_create_route(self, start_x: float, start_z: float,
                               lap_length: float, span_x: float,
-                              span_z: float) -> int:
+                              span_z: float, kind: str | None = None) -> int:
         for rid, rx, rz, rlen, rsx, rsz in self.db.execute(
                 "SELECT id, start_x, start_z, lap_length, span_x, span_z FROM routes"):
             if (math.hypot(start_x - rx, start_z - rz) > ROUTE_START_RADIUS_M
@@ -309,16 +439,32 @@ class Store:
                     "UPDATE routes SET span_x = ?, span_z = ? WHERE id = ?",
                     (span_x, span_z, rid))
                 self.db.commit()
+                self.set_route_kind(rid, kind)
                 return rid
             if _spans_match(span_x, span_z, rsx, rsz):
+                self.set_route_kind(rid, kind)
                 return rid
         cur = self.db.execute(
-            "INSERT INTO routes (start_x, start_z, lap_length, span_x, span_z)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (start_x, start_z, lap_length, span_x, span_z),
+            "INSERT INTO routes (start_x, start_z, lap_length, span_x, span_z, kind)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (start_x, start_z, lap_length, span_x, span_z, kind),
         )
         self.db.commit()
         return cur.lastrowid
+
+    def set_route_kind(self, route_id: int, kind: str | None) -> None:
+        """Recorder write. Circuit evidence is strong and sprint evidence is
+        weak: a LapNumber increment or a geometric loop closure can only
+        happen on a circuit, while "only ever produced one timed run" is also
+        what a single-lap circuit race looks like. So NULL -> anything and
+        sprint -> circuit, never circuit -> sprint. Event-loop connection."""
+        if kind is None:
+            return
+        self.db.execute(
+            "UPDATE routes SET kind = ? WHERE id = ?"
+            " AND (kind IS NULL OR (kind = 'sprint' AND ? = 'circuit'))",
+            (kind, route_id, kind))
+        self.db.commit()
 
     def set_session_route(self, session_id: int, route_id: int) -> None:
         self.db.execute("UPDATE sessions SET route_id = ? WHERE id = ?",
@@ -339,25 +485,15 @@ class Store:
     def list_sessions(self) -> list[dict]:
         with self.reader() as conn:
             rows = conn.execute(
-                "SELECT s.*, r.name AS route_name, cn.name AS car_name_override,"
-                " COUNT(l.lap_time) AS lap_count, MIN(l.lap_time) AS best_lap"
-                " FROM sessions s"
-                " LEFT JOIN routes r ON r.id = s.route_id"
-                " LEFT JOIN car_names cn ON cn.ordinal = s.car_ordinal"
-                # excluded laps (manual edit) don't count: same span-match as
-                # session_laps, in SQL
-                " LEFT JOIN laps l ON l.session_id = s.id AND NOT EXISTS"
-                "  (SELECT 1 FROM edits e WHERE e.session_id = l.session_id"
-                "   AND e.kind = 'exclude_lap' AND e.anchor_t >= l.started_t"
-                "   AND e.anchor_t <= COALESCE(l.ended_t, 1e18))"
-                " GROUP BY s.id ORDER BY s.started_at DESC"
-            ).fetchall()
+                _SESSION_SELECT + _SESSION_GROUP_BY
+                + " ORDER BY s.started_at DESC").fetchall()
         return [dict(r) for r in rows]
 
     def get_session(self, session_id: int) -> dict | None:
         with self.reader() as conn:
-            row = conn.execute(_SESSION_SELECT + " WHERE s.id = ?",
-                               (session_id,)).fetchone()
+            row = conn.execute(
+                _SESSION_SELECT + " WHERE s.id = ?" + _SESSION_GROUP_BY,
+                (session_id,)).fetchone()
         return dict(row) if row else None
 
     def rename_session(self, session_id: int, name: str | None) -> None:
@@ -382,6 +518,37 @@ class Store:
             cur = conn.execute("UPDATE routes SET name = ? WHERE id = ?", (name, route_id))
             conn.commit()
             return cur.rowcount > 0
+
+    def set_route_kind_user(self, route_id: int, kind: str | None) -> None:
+        """Manual override from the analysis page; None clears it so the
+        recorder's own value shows again. Unconditional - the whole point is
+        that the user outranks the guess."""
+        with self.reader() as conn:
+            conn.execute("UPDATE routes SET kind_user = ? WHERE id = ?",
+                         (kind, route_id))
+            conn.commit()
+
+    def get_route(self, route_id: int) -> dict | None:
+        with self.reader() as conn:
+            row = conn.execute("SELECT * FROM routes WHERE id = ?",
+                               (route_id,)).fetchone()
+        return dict(row) if row else None
+
+    def route_outline_lap(self, route_id: int) -> dict | None:
+        """The lap an outline is drawn from: the fastest completed lap anyone
+        has recorded on the route, which is also the cleanest line on it."""
+        with self.reader() as conn:
+            row = conn.execute(
+                "SELECT l.* FROM laps l JOIN sessions s ON s.id = l.session_id"
+                " WHERE s.route_id = ? AND l.lap_time IS NOT NULL"
+                " ORDER BY l.lap_time LIMIT 1", (route_id,)).fetchone()
+        return dict(row) if row else None
+
+    def set_route_outline(self, route_id: int, outline: str) -> None:
+        with self.reader() as conn:
+            conn.execute("UPDATE routes SET outline = ? WHERE id = ?",
+                         (outline, route_id))
+            conn.commit()
 
     def route_exists(self, route_id: int) -> bool:
         with self.reader() as conn:
@@ -426,6 +593,7 @@ class Store:
             conn.execute("PRAGMA foreign_keys=ON")
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             conn.commit()
+        self.prune_empty_groups()  # it may have been a group's last member
 
     def session_laps(self, session_id: int) -> list[dict]:
         """Lap rows with manual edits applied at read time: `flags` is the
@@ -436,20 +604,85 @@ class Store:
             rows = conn.execute(
                 "SELECT * FROM laps WHERE session_id = ? ORDER BY started_t", (session_id,)
             ).fetchall()
-        laps = [dict(r) for r in rows]
-        edits = self.session_edits(session_id)
-        for lap in laps:
-            lap["flags_auto"] = lap["flags"]
-            lap["excluded"] = False
-            t0, t1 = lap_span(lap)
-            for e in edits:
-                if not t0 <= e["anchor_t"] <= t1:
-                    continue
-                if e["kind"] == "flags":
-                    lap["flags"] = e["value"] or None
-                elif e["kind"] == "exclude_lap":
-                    lap["excluded"] = True
-        return laps
+        return _merge_edits([dict(r) for r in rows],
+                            self.session_edits(session_id))
+
+    # -- merged run groups ---------------------------------------------------
+
+    def create_group(self, name: str | None, route_id: int, car_ordinal: int,
+                     session_ids: list[int]) -> int:
+        with self.reader() as conn:
+            cur = conn.execute(
+                "INSERT INTO session_groups (name, route_id, car_ordinal, created_at)"
+                " VALUES (?, ?, ?, ?)", (name, route_id, car_ordinal, time.time()))
+            gid = cur.lastrowid
+            conn.executemany("UPDATE sessions SET group_id = ? WHERE id = ?",
+                             [(gid, sid) for sid in session_ids])
+            conn.commit()
+        return gid
+
+    def get_group(self, group_id: int) -> dict | None:
+        with self.reader() as conn:
+            row = conn.execute("SELECT * FROM session_groups WHERE id = ?",
+                               (group_id,)).fetchone()
+        return dict(row) if row else None
+
+    def group_sessions(self, group_id: int) -> list[dict]:
+        """Members, oldest first - the order runs are numbered in."""
+        with self.reader() as conn:
+            rows = conn.execute(
+                _SESSION_SELECT + " WHERE s.group_id = ?" + _SESSION_GROUP_BY
+                + " ORDER BY s.started_at", (group_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def group_laps(self, group_id: int) -> list[dict]:
+        """Every member's laps as one list, oldest first, with the same
+        read-time edit overlay `session_laps` applies. One connection for the
+        whole group rather than two per member."""
+        with self.reader() as conn:
+            ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM sessions WHERE group_id = ?", (group_id,))]
+            if not ids:
+                return []
+            marks = ",".join("?" * len(ids))
+            laps = [dict(r) for r in conn.execute(
+                f"SELECT * FROM laps WHERE session_id IN ({marks})"
+                " ORDER BY started_t", ids)]
+            edits = [dict(r) for r in conn.execute(
+                f"SELECT * FROM edits WHERE session_id IN ({marks})", ids)]
+        return _merge_edits(laps, edits)
+
+    def set_group_name(self, group_id: int, name: str | None) -> None:
+        with self.reader() as conn:
+            conn.execute("UPDATE session_groups SET name = ? WHERE id = ?",
+                         (name, group_id))
+            conn.commit()
+
+    def set_session_group(self, session_id: int, group_id: int | None) -> None:
+        with self.reader() as conn:
+            conn.execute("UPDATE sessions SET group_id = ? WHERE id = ?",
+                         (group_id, session_id))
+            conn.commit()
+
+    def delete_group(self, group_id: int) -> None:
+        """Ungroup: the members survive, only the index goes. Explicitly two
+        statements in one transaction - `reader()` doesn't enable foreign
+        keys, so an ON DELETE SET NULL here would silently leave dangling
+        group_ids behind."""
+        with self.reader() as conn:
+            conn.execute("UPDATE sessions SET group_id = NULL WHERE group_id = ?",
+                         (group_id,))
+            conn.execute("DELETE FROM session_groups WHERE id = ?", (group_id,))
+            conn.commit()
+
+    def prune_empty_groups(self) -> int:
+        """Drop groups whose last member was deleted."""
+        with self.reader() as conn:
+            cur = conn.execute(
+                "DELETE FROM session_groups WHERE id NOT IN"
+                " (SELECT group_id FROM sessions WHERE group_id IS NOT NULL)")
+            conn.commit()
+        return cur.rowcount
 
     def session_edits(self, session_id: int) -> list[dict]:
         with self.reader() as conn:
