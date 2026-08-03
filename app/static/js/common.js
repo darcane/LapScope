@@ -264,14 +264,20 @@ function fmtRaw(v, dec) {
 
 /* ---------- themed modal dialogs (replace window.prompt / confirm / alert) ---------- */
 
+/* showModal's third answer. A dialog offering two opposite verdicts over one
+   selection ("merge these" / "dismiss these") would otherwise have to send the
+   second one through a second visit. Never collides with a prompt's result:
+   the alt button is only ever paired with a dialog that has no text input. */
+const MODAL_ALT = Symbol("modal-alt");
+
 function showModal({ title, message = "", extra = null, value = null, placeholder = "",
-                     okText = "OK", cancelText = "Cancel",
-                     danger = false, showCancel = true }) {
+                     okText = "OK", cancelText = "Cancel", altText = "",
+                     danger = false, showCancel = true, wide = false }) {
   return new Promise((resolve) => {
     const backdrop = document.createElement("div");
     backdrop.className = "modal-backdrop";
     const box = document.createElement("div");
-    box.className = "modal" + (danger ? " danger" : "");
+    box.className = "modal" + (danger ? " danger" : "") + (wide ? " modal-wide" : "");
     box.setAttribute("role", "dialog");
     box.setAttribute("aria-modal", "true");
     backdrop.appendChild(box);
@@ -307,6 +313,15 @@ function showModal({ title, message = "", extra = null, value = null, placeholde
       backdrop.remove();
       resolve(result);
     };
+    if (altText) {
+      // first in the row so its margin-right:auto pushes the cancel/OK pair
+      // away: a bulk dismissal should not sit under the thumb aiming for Merge
+      const alt = document.createElement("button");
+      alt.className = "modal-alt";
+      alt.textContent = altText;
+      alt.onclick = () => done(MODAL_ALT);
+      actions.appendChild(alt);
+    }
     if (showCancel) {
       const cancel = document.createElement("button");
       cancel.className = "modal-cancel";

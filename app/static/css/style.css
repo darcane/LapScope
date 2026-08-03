@@ -505,6 +505,9 @@ main.grid .lap-grid { margin-bottom: auto; }
 }
 @keyframes modal-in { from { opacity: 0; transform: translateY(10px) scale(0.97); } }
 
+/* for dialogs that list rows rather than ask one question */
+.modal-wide { width: min(580px, calc(100vw - 40px)); }
+
 .modal h3 {
   margin: 0 0 10px;
   font-family: var(--display);
@@ -559,6 +562,11 @@ main.grid .lap-grid { margin-bottom: auto; }
 .modal-hint { color: var(--muted); font-size: 0.8rem; margin: 8px 0 0; }
 
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+/* the opposite verdict, parked at the far end so a bulk dismissal is never
+   the button next to the one you were aiming for */
+.modal-actions .modal-alt { margin-right: auto; }
+.modal-actions button:disabled { opacity: 0.4; cursor: default; }
+.modal-actions button:disabled:hover { border-color: var(--panel-edge); }
 .modal-actions button {
   padding: 7px 16px;
   font-family: var(--display);
@@ -1060,6 +1068,51 @@ table.laps .run-when .lap-act {
 .merge-list label span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .merge-list + input { margin-top: 12px; }
 
+/* every pending suggestion at once: one row per sitting, ticked = included in
+   whichever verdict you press */
+.merge-review {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: min(46vh, 420px);
+  overflow-y: auto;
+  margin-bottom: 16px;
+  user-select: none;
+}
+.merge-review label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 7px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.merge-review label:hover { background: var(--panel-lo); }
+.merge-review .rv-all {
+  color: var(--muted);
+  font-size: 0.8rem;
+  border-bottom: 1px solid var(--panel-edge);
+  border-radius: 8px 8px 0 0;
+  margin-bottom: 2px;
+  padding-bottom: 7px;
+}
+.merge-review .rv-text { flex: 1; min-width: 0; }
+.merge-review .rv-title { display: flex; align-items: baseline; gap: 8px; font-size: 0.86rem; }
+.merge-review .rv-title > span:first-child {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.merge-review .rv-count { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+.merge-review .rv-sub {
+  display: block;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.merge-review .rv-edit { flex: none; font-size: 0.75rem; padding: 3px 9px; opacity: 0.75; }
+.merge-review label:hover .rv-edit { opacity: 1; }
+
 /* the merge suggestion sits above the list, amber like every other "we
    noticed something, you decide" surface */
 .merge-hint {
@@ -1070,6 +1123,7 @@ table.laps .run-when .lap-act {
   font-size: 0.85rem;
   line-height: 1.45;
 }
+.merge-hint-more { color: var(--muted); font-size: 0.8rem; margin-top: 3px; }
 .merge-hint-actions { display: flex; gap: 6px; margin-top: 7px; }
 .merge-hint-actions button { flex: 1; font-size: 0.8rem; }
 .merge-hint-actions button:first-child { border-color: var(--warn); color: var(--warn); }

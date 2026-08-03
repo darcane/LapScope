@@ -213,34 +213,188 @@ function mergeSuggestions() {
     || b.cluster.length - a.cluster.length);
 }
 
+function dismissMerges(sigs) {
+  const seen = JSON.parse(localStorage.getItem("ls_merge_dismissed") || "[]");
+  localStorage.setItem("ls_merge_dismissed",
+                       JSON.stringify([...new Set([...seen, ...sigs])].slice(-200)));
+}
+
 function renderMergeHint() {
   const host = $("#merge-hint");
   if (!host) return;
-  const [top] = mergeSuggestions();
+  const all = mergeSuggestions();
+  const [top] = all;
   host.innerHTML = "";
   host.style.display = top ? "" : "none";
   if (!top) return;
   const { cluster, sig } = top;
   const s = cluster[0];
   const text = document.createElement("div");
+  // laps, not sessions: on a circuit two sessions are rarely two laps, and the
+  // review list right behind this banner prints the real count
+  const runs = cluster.reduce((n, x) => n + x.lap_count, 0);
   text.textContent =
-    `${cluster.length} ${lapWord(s.route_kind, cluster.length)} on `
+    `${runs} ${lapWord(s.route_kind, runs)} on `
     + `${s.route_name || "this route"} in one sitting — merge them?`;
+  host.appendChild(text);
+  // the banner speaks for the newest sitting; the queue behind it is the
+  // reason the review list exists, so say how deep it is
+  if (all.length > 1) {
+    const more = document.createElement("div");
+    more.className = "merge-hint-more";
+    more.textContent = `and ${all.length - 1} more sitting`
+      + (all.length > 2 ? "s" : "");
+    host.appendChild(more);
+  }
   const row = document.createElement("div");
   row.className = "merge-hint-actions";
   const go = document.createElement("button");
-  go.textContent = "Review";
-  go.onclick = () => mergeRuns(s);
+  go.textContent = all.length > 1 ? "Review all" : "Review";
+  go.title = "Go through every suggestion in one list";
+  go.onclick = reviewMerges;
   const no = document.createElement("button");
   no.textContent = "Not now";
-  no.onclick = () => {
-    const seen = JSON.parse(localStorage.getItem("ls_merge_dismissed") || "[]");
-    localStorage.setItem("ls_merge_dismissed",
-                         JSON.stringify([...new Set([...seen, sig])].slice(-200)));
-    renderMergeHint();
-  };
+  no.title = all.length > 1
+    ? "Hide this suggestion — the others stay" : "Hide this suggestion";
+  no.onclick = () => { dismissMerges([sig]); renderMergeHint(); };
   row.append(go, no);
-  host.append(text, row);
+  host.append(row);
+}
+
+/* Every pending suggestion in one list, with the two verdicts applied to
+   whatever is ticked: everything starts ticked, so the buttons read "merge
+   all" / "dismiss all" until you say otherwise. Unticking is neither — that
+   sitting stays pending and comes back. */
+async function reviewMerges() {
+  const all = mergeSuggestions();
+  if (!all.length) return;
+  const chosen = new Set(all.map((x) => x.sig));
+  let handOff = null;   // set by a row's Edit button, opened after we close
+
+  const extra = document.createElement("div");
+  extra.className = "merge-review";
+
+  const head = document.createElement("label");
+  head.className = "rv-all";
+  const headBox = document.createElement("input");
+  headBox.type = "checkbox";
+  headBox.checked = true;
+  const headText = document.createElement("span");
+  head.append(headBox, headText);
+  extra.appendChild(head);
+
+  /* showModal owns its buttons, so relabel them through the dialog we were
+     mounted into rather than growing a callback API for one caller */
+  const sync = () => {
+    const box = extra.closest(".modal");
+    const n = chosen.size;
+    headBox.checked = n > 0;
+    headBox.indeterminate = n > 0 && n < all.length;
+    headText.textContent = `All ${all.length} sitting`
+      + (all.length > 1 ? "s" : "") + (n < all.length ? ` (${n} picked)` : "");
+    if (!box) return;
+    $(".modal-ok", box).textContent = n ? `Merge ${n}` : "Merge";
+    $(".modal-alt", box).textContent = n ? `Dismiss ${n}` : "Dismiss";
+    for (const b of [$(".modal-ok", box), $(".modal-alt", box)]) b.disabled = !n;
+  };
+  headBox.onchange = () => {
+    chosen.clear();
+    if (headBox.checked) for (const x of all) chosen.add(x.sig);
+    for (const cb of extra.querySelectorAll(".rv-row input"))
+      cb.checked = headBox.checked;
+    sync();
+  };
+
+  for (const { sig, cluster } of all) {
+    const s = cluster[0];
+    const runs = cluster.reduce((n, x) => n + x.lap_count, 0);
+    const bests = cluster.filter((x) => x.best_lap).map((x) => x.best_lap);
+    const label = document.createElement("label");
+    label.className = "rv-row";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = true;
+    cb.onchange = () => {
+      cb.checked ? chosen.add(sig) : chosen.delete(sig);
+      sync();
+    };
+    label.appendChild(cb);
+    label.appendChild(routeOutline(s.route_id));   // never null: see the filter
+    const text = document.createElement("span");
+    text.className = "rv-text";
+    const title = document.createElement("span");
+    title.className = "rv-title";
+    const name = document.createElement("span");
+    name.textContent = s.route_name || "Unnamed route";
+    const count = document.createElement("span");
+    count.className = "rv-count";
+    count.textContent = `${cluster.length} sessions`;
+    title.append(name, count);
+    const sub = document.createElement("span");
+    sub.className = "rv-sub";
+    sub.textContent = `${fmtDate(Math.min(...cluster.map((x) => x.started_at)))}`
+      + ` · ${s.car_name} · ${runs} ${lapWord(s.route_kind, runs)}`
+      + ` · best ${fmtLap(bests.length ? Math.min(...bests) : null)}`;
+    text.append(title, sub);
+    label.append(text);
+    // the way back to the per-route dialog, which is where naming a group and
+    // pulling in an attempt from another sitting still live
+    const edit = document.createElement("button");
+    edit.className = "rv-edit";
+    edit.textContent = "Edit";
+    edit.title = "Merge this one by hand: pick the sessions and name the group";
+    edit.onclick = (e) => {
+      e.preventDefault();
+      handOff = s;
+      $(".modal-cancel", extra.closest(".modal")).click();
+    };
+    label.appendChild(edit);
+    extra.appendChild(label);
+  }
+  sync();
+
+  const verdict = await showModal({
+    title: "Merge suggestions",
+    message: "Each row is several attempts at one route in one car, driven in"
+      + " one sitting. Merging groups them into a single card — nothing is"
+      + " rewritten, and you can ungroup at any time.",
+    extra,
+    // sync() can only relabel these once the dialog exists, so they have to
+    // start out already counting
+    okText: `Merge ${all.length}`,
+    altText: `Dismiss ${all.length}`,
+    cancelText: "Close",
+    wide: true,
+  });
+  if (handOff) { await mergeRuns(handOff); return; }
+  const picked = all.filter((x) => chosen.has(x.sig));
+  if (verdict === null || !picked.length) return;
+  if (verdict === MODAL_ALT) {
+    dismissMerges(picked.map((x) => x.sig));
+    renderMergeHint();
+    return;
+  }
+  // one POST per sitting: /api/groups takes one group at a time, and a failure
+  // on the third must not cost the two that already landed
+  const failed = [];
+  for (const { cluster } of picked) {
+    const res = await fetch("/api/groups", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_ids: cluster.map((s) => s.id) }),
+    });
+    if (!res.ok) {
+      const why = await res.json().catch(() => ({}));
+      failed.push(`${cluster[0].route_name || "Unnamed route"}: `
+        + (why.detail || `HTTP ${res.status}`));
+    }
+  }
+  await loadSessions();
+  if (failed.length)
+    await uiAlert(failed.length === picked.length
+      ? "Couldn't merge" : "Some sittings weren't merged",
+      `Merged ${picked.length - failed.length} of ${picked.length}. ${failed[0]}`
+      + (failed.length > 1 ? ` (and ${failed.length - 1} more)` : ""));
 }
 
 function emptyHint(total) {
