@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import logging
 import math
 import re
@@ -20,7 +21,8 @@ from ..recorder.laps import (AIRBORNE_MIN_S, AIRBORNE_SLIP_MAX,
                              AIRBORNE_SUSP_MAX, IMPACT_ACCEL, LANDING_GRACE_S,
                              impulsive)
 from ..recorder.reprocess import reprocess_session
-from ..recorder.store import ROUTE_KINDS as store_kinds, lap_anchor, lap_span
+from ..recorder.store import (ROUTE_KINDS as store_kinds, ROUTE_OUTLINE_BOX,
+                              ROUTE_OUTLINE_DETAIL, lap_anchor, lap_span)
 from ..telemetry.packet import FIELDS, empty_fields, pack, parse
 
 log = logging.getLogger("lapscope.api")
@@ -214,6 +216,65 @@ def patch_route(route_id: int, body: RoutePatch, request: Request):
             raise HTTPException(400, f"track_type must be one of {sorted(TRACK_TYPES)}")
         store.set_route_sessions_track_type(route_id, body.track_type or None)
     return {"ok": True}
+
+
+def _outline_points(rows: list[tuple[float, bytes]]) -> list[int] | None:
+    """Flatten a lap's frames into the compact polyline described next to
+    ROUTE_OUTLINE_BOX in store.py: (x, -z) like the 2D track map projects it,
+    so a thumbnail and the big map are the same way up.
+
+    Spacing is by distance, not by frame: laps start with the car sitting on
+    the line, and an evenly-strided sample would spend a tenth of its points
+    there and then cut corners where the car is quick."""
+    pts = []
+    for _, raw in rows:
+        p = parse(raw)
+        pts.append((p["pos_x"], -p["pos_z"]))
+    if len(pts) < 8:
+        return None
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    min_x, min_y = min(xs), min(ys)
+    span = max(max(xs) - min_x, max(ys) - min_y)
+    if span < 1.0:  # a lap that never went anywhere (stationary capture)
+        return None
+
+    step = span / ROUTE_OUTLINE_DETAIL
+    kept = [pts[0]]
+    for p in pts[1:]:
+        if math.dist(p, kept[-1]) >= step:
+            kept.append(p)
+    if kept[-1] != pts[-1]:
+        kept.append(pts[-1])
+
+    k = ROUTE_OUTLINE_BOX / span
+    out: list[int] = []
+    for x, y in kept:
+        out.extend((round((x - min_x) * k), round((y - min_y) * k)))
+    return out
+
+
+@router.get("/routes/{route_id}/outline")
+def route_outline(route_id: int, request: Request):
+    """The course as a polyline, for the route thumbnails in the browse bar.
+
+    Computed from one lap's frames on first request and cached on the route
+    row. A miss is NOT cached: a route whose only capture was deleted has no
+    frames to draw today but may be driven again tomorrow, and an empty
+    lookup costs one indexed query."""
+    store = request.app.state.store
+    route = store.get_route(route_id)
+    if route is None:
+        raise HTTPException(404, "route not found")
+    if route.get("outline"):
+        return {"id": route_id, "outline": json.loads(route["outline"]),
+                "box": ROUTE_OUTLINE_BOX}
+
+    lap = store.route_outline_lap(route_id)
+    points = _outline_points(store.lap_frames(lap)) if lap else None
+    if points:
+        store.set_route_outline(route_id, json.dumps(points))
+    return {"id": route_id, "outline": points, "box": ROUTE_OUTLINE_BOX}
 
 
 @router.get("/cars")

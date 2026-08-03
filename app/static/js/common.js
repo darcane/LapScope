@@ -117,6 +117,95 @@ function lapLabel(kind, n) {
   return `${kind === "sprint" ? "Run" : "Lap"} ${n}`;
 }
 
+/* ---------- route outlines (the course, drawn small) ----------
+
+   A route is far easier to recognize by its shape than by a name someone
+   typed once, so anywhere a route is listed gets a thumbnail of it. The
+   server sends a normalized polyline (GET /api/routes/{id}/outline, filled
+   from one lap's frames the first time it is asked for), so the only work
+   here is turning it into a path and fitting the tight bbox to the box —
+   the same projection the big 2D map uses, so both are the same way up.
+
+   Thumbnails load lazily: a facet menu can list sixty routes and only ever
+   show eight of them, and the first request for a route reads a lap's worth
+   of frames. */
+
+const outlineCache = new Map();    // route_id -> points | null (null = none)
+const outlineInFlight = new Map(); // route_id -> Promise, so one route is
+                                   // never fetched twice at once
+let outlineObserver = null;
+
+function drawOutline(host, pts) {
+  host.classList.toggle("empty", !(pts && pts.length >= 4));
+  if (!pts || pts.length < 4) return;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (let i = 0; i < pts.length; i += 2) {
+    minX = Math.min(minX, pts[i]); maxX = Math.max(maxX, pts[i]);
+    minY = Math.min(minY, pts[i + 1]); maxY = Math.max(maxY, pts[i + 1]);
+  }
+  const pad = 30;  // room for the stroke; the box is 0..1000 (ROUTE_OUTLINE_BOX)
+  const d = [];
+  for (let i = 0; i < pts.length; i += 2)
+    d.push(`${i ? "L" : "M"}${pts[i]} ${pts[i + 1]}`);
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox",
+    `${minX - pad} ${minY - pad} ${maxX - minX + 2 * pad} ${maxY - minY + 2 * pad}`);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", d.join(""));
+  // non-scaling-stroke: a 3 km route and a 300 m one are drawn at wildly
+  // different scales, and a scaled stroke would render one hairline and the
+  // other a blob
+  path.setAttribute("vector-effect", "non-scaling-stroke");
+  svg.appendChild(path);
+  host.replaceChildren(svg);
+}
+
+function fetchOutline(routeId) {
+  if (outlineCache.has(routeId)) return Promise.resolve(outlineCache.get(routeId));
+  if (outlineInFlight.has(routeId)) return outlineInFlight.get(routeId);
+  const p = fetch(`/api/routes/${routeId}/outline`)
+    .then((r) => (r.ok ? r.json() : { outline: null }))
+    .then((body) => body.outline || null)
+    .catch(() => null)
+    .then((pts) => {
+      outlineCache.set(routeId, pts);
+      outlineInFlight.delete(routeId);
+      return pts;
+    });
+  outlineInFlight.set(routeId, p);
+  return p;
+}
+
+/* A thumbnail element for a route. `lazy` defers the fetch until it scrolls
+   into view — right for a long menu, pointless for a dialog. */
+function routeOutline(routeId, { lazy = true } = {}) {
+  const host = document.createElement("span");
+  host.className = "route-outline empty";  // drawOutline clears it on arrival
+  host.dataset.route = routeId;
+  const cached = outlineCache.get(routeId);
+  if (cached !== undefined) {
+    drawOutline(host, cached);
+    return host;
+  }
+  const load = () => fetchOutline(routeId).then((pts) => drawOutline(host, pts));
+  if (!lazy) { load(); return host; }
+  if (!outlineObserver) {
+    // the intersection rect is clipped by scrollable ancestors, so rows
+    // parked below a menu's scroll never fire
+    outlineObserver = new IntersectionObserver((entries, obs) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        obs.unobserve(e.target);
+        fetchOutline(Number(e.target.dataset.route))
+          .then((pts) => drawOutline(e.target, pts));
+      }
+    }, { rootMargin: "120px" });
+  }
+  outlineObserver.observe(host);
+  return host;
+}
+
 /* DrivetrainType is in every packet: 0=FWD 1=RWD 2=AWD */
 const DRIVETRAINS = ["FWD", "RWD", "AWD"];
 

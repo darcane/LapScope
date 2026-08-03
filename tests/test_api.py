@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -354,6 +355,55 @@ def test_route_patch_sets_and_clears_the_shape_override(tmp_path):
         patch_route(rid, RoutePatch(kind="rallycross"), req)
     assert exc.value.status_code == 400
     assert sid is not None
+
+
+def test_route_outline_is_drawn_once_and_then_cached(tmp_path):
+    """GET /routes/{id}/outline is what the browse bar's thumbnails read.
+    It costs a lap's worth of frame parsing, so the first call fills
+    routes.outline and every call after that answers from the column."""
+    from app.api.routes import route_outline
+    from app.recorder.store import ROUTE_OUTLINE_BOX
+
+    def scenario(sim):
+        sim.event(120, "event")
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    rid = sessions(store)[0]["route_id"]
+    req = _request_for(store)
+    assert store.get_route(rid)["outline"] is None
+
+    out = route_outline(rid, req)
+    pts = out["outline"]
+    assert out["box"] == ROUTE_OUTLINE_BOX
+    assert len(pts) >= 8 and len(pts) % 2 == 0        # flat (x, y) pairs
+    assert all(isinstance(v, int) for v in pts)       # JSON-compact
+    assert all(0 <= v <= ROUTE_OUTLINE_BOX for v in pts)
+    # normalized on the longest axis, so one of the two must reach the box
+    assert (max(pts[0::2]) == ROUTE_OUTLINE_BOX
+            or max(pts[1::2]) == ROUTE_OUTLINE_BOX)
+
+    assert json.loads(store.get_route(rid)["outline"]) == pts
+    assert route_outline(rid, req)["outline"] == pts   # served from the cache
+
+    with pytest.raises(HTTPException) as exc:
+        route_outline(rid + 99, req)
+    assert exc.value.status_code == 404
+
+
+def test_route_outline_miss_is_not_cached(tmp_path):
+    """A route whose captures were all deleted has nothing to draw today but
+    may be driven again tomorrow, so a miss must leave the column NULL rather
+    than pin an empty outline on it forever."""
+    from app.api.routes import route_outline
+
+    store = Store(str(tmp_path / "outline.db"))
+    rid = store.match_or_create_route(0.0, 0.0, 1000.0, 100.0, 100.0)
+    req = _request_for(store)
+
+    assert route_outline(rid, req)["outline"] is None
+    assert store.get_route(rid)["outline"] is None
+    store.close()
 
 
 def test_route_kind_reaches_both_session_payloads(tmp_path):

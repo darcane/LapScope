@@ -877,10 +877,13 @@ async function mergeRuns(session) {
     label.append(cb, text);
     extra.appendChild(label);
   }
-  const name = await uiPrompt(`Merge ${lapWord(session.route_kind, 2)}`, {
+  // "runs" as in attempts at the route, matching the header button — NOT
+  // lapWord(), which would title a circuit's dialog "Merge laps" and promise
+  // something this does not do
+  const name = await uiPrompt("Merge runs", {
     value: "",
     placeholder: session.route_name || displayName(session),
-    message: "Merged sessions share one card and one run table, scored against"
+    message: "Merged sessions share one card and one table, scored against"
       + " each other. Nothing is rewritten — you can ungroup at any time.",
     extra,
     okText: "Merge",
@@ -975,6 +978,11 @@ async function renameRoute(session) {
   const detected = session.route_kind_auto;
   let kind = session.route_kind || "";
   const extra = document.createElement("div");
+  // which course this actually is, drawn from its fastest recorded lap —
+  // the one thing a name-this-route dialog was missing
+  const map = routeOutline(session.route_id, { lazy: false });
+  map.classList.add("big");
+  extra.appendChild(map);
   const label = document.createElement("div");
   label.className = "modal-hint";
   label.textContent = detected

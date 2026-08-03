@@ -26,11 +26,16 @@ const BROWSE_SORTS = [
    matching. "none" is the untagged/unidentified bucket for every facet. */
 const FACETS = [
   {
+    /* Only NAMED routes get a row of their own. A fingerprint you have never
+       named says nothing a "Route #37" row could help you pick, and there are
+       more of those than named ones - they all share one bucket instead. */
     key: "route", label: "Route", bar: true,
-    value: (s) => String(s.route_id ?? "none"),
+    value: (s) => (s.route_name ? String(s.route_id)
+      : s.route_id ? "unnamed" : "none"),
     text: (s) => s.route_name
-      || (s.route_id ? `Route #${s.route_id}` : "No route identified"),
-    /* named routes first, then bare fingerprints, each by session count */
+      || (s.route_id ? "Unnamed routes" : "No route identified"),
+    outline: (s) => (s.route_name ? s.route_id : null),
+    /* named routes first, then the two buckets, each by session count */
     rank: (s) => (s.route_name ? 0 : s.route_id ? 1 : 2),
   },
   {
@@ -137,20 +142,34 @@ function browseValues(f) {
     seen.set(v, {
       value: v, count: 1, text: f.text(s),
       html: f.html ? f.html(s) : null, rank: f.rank ? f.rank(s) : 0,
+      outline: f.outline ? f.outline(s) : null,
     });
   }
   // a checked value whose sessions are all filtered out must stay visible,
   // or there is no way to uncheck it from the menu
-  for (const v of browse[f.key])
-    if (!seen.has(v)) seen.set(v, { value: v, count: 0, text: browseLabel(f, v), rank: 99 });
+  for (const v of browse[f.key]) {
+    if (seen.has(v)) continue;
+    const hit = browseSample(f, v);
+    seen.set(v, {
+      value: v, count: 0, rank: 99,
+      text: hit ? f.text(hit) : v,
+      html: hit && f.html ? f.html(hit) : null,
+      outline: hit && f.outline ? f.outline(hit) : null,
+    });
+  }
   return [...seen.values()].sort(
     (a, b) => a.rank - b.rank || b.count - a.count || a.text.localeCompare(b.text));
 }
 
-/* Label for a stored value, resolved from the full list (a chip has to read
-   "Seaside Park Sprint", not "19", even while the filter hides everything). */
+/* Any session carrying a stored facet value, so a value still under filter
+   can be labelled and drawn from the full list rather than from the rows
+   that survived (a chip has to read "Seaside Park Sprint", not "19"). */
+function browseSample(f, value) {
+  return browseAll.find((s) => f.value(s) === value);
+}
+
 function browseLabel(f, value) {
-  const hit = browseAll.find((s) => f.value(s) === value);
+  const hit = browseSample(f, value);
   return hit ? f.text(hit) : value;
 }
 
@@ -203,6 +222,8 @@ function facetRow(f, v, onToggle) {
   const count = document.createElement("span");
   count.className = "facet-count";
   count.textContent = v.count;
+  // a named route is recognized by its shape long before its name
+  if (v.outline) row.appendChild(routeOutline(v.outline));
   row.append(label, count);
   row.onclick = () => {
     if (on) browse[f.key].delete(v.value);
@@ -359,10 +380,6 @@ function renderBrowseBar() {
       renderSessionList();
     }));
   }
-  const status = document.createElement("span");
-  status.className = "browse-status";
-  status.id = "browse-status";
-  chips.appendChild(status);
   if (browseActive() || browse.q) {
     const clear = document.createElement("button");
     clear.type = "button";
@@ -371,6 +388,8 @@ function renderBrowseBar() {
     clear.onclick = clearBrowse;
     chips.appendChild(clear);
   }
+  // an empty second row is a wasted line: the count lives up in the first one
+  chips.style.display = chips.children.length ? "" : "none";
 }
 
 /* Called by renderSessionList once it knows how many rows survived. The

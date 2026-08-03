@@ -526,7 +526,11 @@ main.grid .lap-grid { margin-bottom: auto; }
 
 .modal p { margin: 0 0 14px; color: var(--muted); line-height: 1.5; font-size: 0.92rem; }
 
-.modal input {
+/* the type selector is load-bearing: showModal's own field is the only text
+   input, and a bare `.modal input` also stretched every checkbox a caller
+   puts in `extra` to full width - which is what squashed the merge list and
+   the lap-flag editor into a centred box with wrapped labels */
+.modal input[type="text"] {
   width: 100%;
   background: #0a0e14;
   border: 1px solid var(--panel-edge);
@@ -536,7 +540,8 @@ main.grid .lap-grid { margin-bottom: auto; }
   padding: 9px 12px;
   margin-bottom: 16px;
 }
-.modal input:focus {
+.modal input[type="checkbox"] { flex: none; accent-color: var(--accent); margin: 0; }
+.modal input[type="text"]:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.12);
@@ -551,7 +556,6 @@ main.grid .lap-grid { margin-bottom: auto; }
   padding: 5px 2px;
   cursor: pointer;
 }
-.flag-editor input[type="checkbox"] { accent-color: var(--accent); }
 .modal-hint { color: var(--muted); font-size: 0.8rem; margin: 8px 0 0; }
 
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
@@ -774,6 +778,10 @@ main.grid .lap-grid { margin-bottom: auto; }
   border-bottom: 1px solid var(--panel-edge-soft);
 }
 .browse-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* the bar is chrome: the only thing in it worth a text caret is the search
+   box, so the caret is granted back there rather than left on by default */
+.browse-bar { cursor: default; user-select: none; }
+.browse-search input { cursor: text; user-select: text; }
 .browse-search {
   display: inline-flex;
   align-items: center;
@@ -827,9 +835,11 @@ main.grid .lap-grid { margin-bottom: auto; }
 }
 .browse-facets button.on .caret { color: inherit; }
 .browse-facets button.open { border-color: var(--accent); }
-.browse-sort { margin-left: auto; }
+.browse-sort { flex: none; }
 
-.browse-chips { gap: 6px; min-height: 24px; }
+/* only rendered when something is filtered; an always-present empty row is
+   the same wasted line */
+.browse-chips { gap: 6px; }
 .fchip {
   display: inline-flex;
   align-items: center;
@@ -850,7 +860,14 @@ main.grid .lap-grid { margin-bottom: auto; }
   line-height: 1;
 }
 .fchip button:hover { color: var(--bad); }
-.browse-status { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
+/* the count rides at the right end of the FIRST row, next to the sort: given
+   a row of its own it doubles the bar's height for one short string */
+.browse-status {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-left: auto;
+  white-space: nowrap;
+}
 .browse-status.warn { color: var(--warn); cursor: help; }
 .browse-clear { padding: 2px 10px; font-size: 0.8rem; }
 
@@ -866,6 +883,11 @@ main.grid .lap-grid { margin-bottom: auto; }
   background: var(--panel-hi);
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
   animation: fade-in 0.12s ease;
+  /* a menu is chrome, not prose: without this the popover's own padding
+     inherits cursor:auto and draws a text caret between the rows, and a
+     double-click on a value selects the label instead of ticking it */
+  cursor: default;
+  user-select: none;
 }
 .facet-search { display: block; padding: 2px 4px 6px; }
 .facet-search input {
@@ -878,6 +900,8 @@ main.grid .lap-grid { margin-bottom: auto; }
   font-size: 0.82rem;
   padding: 3px 8px;
   outline: none;
+  cursor: text;
+  user-select: text;
 }
 .facet-search input:focus { border-color: var(--accent); }
 .facet-body { max-height: 320px; overflow-y: auto; }
@@ -903,6 +927,42 @@ main.grid .lap-grid { margin-bottom: auto; }
 .facet-row.on { background: #131c27; color: var(--accent); }
 .facet-row.on .facet-label::before { content: "✓ "; }
 .facet-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* route thumbnails: one flat stroke in the row's own color, so a selected
+   route's outline turns accent with its label and nothing else has to know */
+.route-outline {
+  /* a bare inline span ignores width/height, and the svg's 100%/100% then
+     resolves against nothing and renders the outline full-page tall */
+  display: block;
+  flex: none;
+  width: 48px;
+  height: 30px;
+  border-radius: 4px;
+  background: #0a0e14;
+  border: 1px solid var(--panel-edge);
+}
+.route-outline svg { display: block; width: 100%; height: 100%; }
+.route-outline path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  opacity: 0.85;
+}
+/* still loading, or a route whose captures were deleted: hold the space so
+   the list doesn't jump when the outlines land */
+.route-outline.empty { opacity: 0.35; }
+.route-outline.big {
+  width: 100%;
+  height: 130px;
+  margin-bottom: 12px;
+  color: var(--accent);
+}
+.route-outline.big path { stroke-width: 2; }
+/* a dialog showing an empty frame for a route with no frames left to draw
+   from says less than showing nothing at all */
+.route-outline.big.empty { display: none; }
 .facet-count { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 0.78rem; }
 .facet-clear { width: 100%; margin-top: 6px; font-size: 0.8rem; }
 .cls-only {
@@ -997,6 +1057,8 @@ table.laps .run-when .lap-act {
   cursor: pointer;
 }
 .merge-list label:hover { background: var(--panel-lo); }
+.merge-list label span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.merge-list + input { margin-top: 12px; }
 
 /* the merge suggestion sits above the list, amber like every other "we
    noticed something, you decide" surface */

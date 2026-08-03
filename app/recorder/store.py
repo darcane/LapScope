@@ -98,6 +98,8 @@ MIGRATIONS = (
     "ALTER TABLE routes ADD COLUMN kind_user TEXT",  # manual override; wins
     # several attempts at one sprint, browsed as one card (session_groups)
     "ALTER TABLE sessions ADD COLUMN group_id INTEGER",
+    # the course drawn as a thumbnail (see ROUTE_OUTLINE_* below)
+    "ALTER TABLE routes ADD COLUMN outline TEXT",
 )
 
 # Merged runs. A point-to-point route can only be attempted by restarting the
@@ -125,6 +127,27 @@ MIGRATIONS = (
 # value is COALESCE(kind_user, kind), so a wrong guess is repairable by the
 # next real lap and a manual override is never in the blast radius.
 ROUTE_KINDS = ("circuit", "sprint")
+
+# Route outline: the course drawn as a thumbnail, so a route is recognizable
+# by its shape and not only by a name someone remembered to type. Deliberately
+# NOT called "shape" anywhere user-facing - that word already means
+# circuit-vs-sprint in the route dialog.
+#
+# Derived, cached, and cheap to lose: a flattened [x0, y0, x1, y1, ...] JSON
+# list of integers in a 0..OUTLINE_BOX box, longest axis scaled to fit, y
+# already flipped into screen space so a client can drop it straight into an
+# SVG viewBox. Points are spaced along the driven line rather than by frame -
+# a lap that starts with the car sitting on the grid would otherwise spend a
+# tenth of its points on one spot and cut the corners where it was quick.
+# DETAIL is that spacing as a fraction of the bounding box, so the point
+# count follows how much the course wanders (2-4x DETAIL in practice).
+#
+# Filled lazily on first request (one lap's frames, tens of milliseconds)
+# rather than by the recorder: the outline only matters once someone opens
+# the browse bar, and a route driven before this existed has to be filled
+# from stored frames anyway.
+ROUTE_OUTLINE_BOX = 1000
+ROUTE_OUTLINE_DETAIL = 150
 
 # Route fingerprint: same start point within this radius, a lap length within
 # this fraction, and matching bounding-box dimensions = the same route.
@@ -503,6 +526,28 @@ class Store:
         with self.reader() as conn:
             conn.execute("UPDATE routes SET kind_user = ? WHERE id = ?",
                          (kind, route_id))
+            conn.commit()
+
+    def get_route(self, route_id: int) -> dict | None:
+        with self.reader() as conn:
+            row = conn.execute("SELECT * FROM routes WHERE id = ?",
+                               (route_id,)).fetchone()
+        return dict(row) if row else None
+
+    def route_outline_lap(self, route_id: int) -> dict | None:
+        """The lap an outline is drawn from: the fastest completed lap anyone
+        has recorded on the route, which is also the cleanest line on it."""
+        with self.reader() as conn:
+            row = conn.execute(
+                "SELECT l.* FROM laps l JOIN sessions s ON s.id = l.session_id"
+                " WHERE s.route_id = ? AND l.lap_time IS NOT NULL"
+                " ORDER BY l.lap_time LIMIT 1", (route_id,)).fetchone()
+        return dict(row) if row else None
+
+    def set_route_outline(self, route_id: int, outline: str) -> None:
+        with self.reader() as conn:
+            conn.execute("UPDATE routes SET outline = ? WHERE id = ?",
+                         (outline, route_id))
             conn.commit()
 
     def route_exists(self, route_id: int) -> bool:
