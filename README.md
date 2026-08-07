@@ -71,7 +71,10 @@ in Rivals.
   (road/dirt/cross-country/WTC read from the telemetry, your override always wins —
   and can be applied to a whole route in one click).
 - **Routes** — the game never sends route names, so circuits are fingerprinted from lap
-  geometry. Name a route once and every past and future session on it picks it up.
+  geometry. LapScope ships a catalogue of the official courses, so most routes name
+  themselves on your first completed lap. Anything it doesn't recognize — a blueprint,
+  a custom route, a track added after your build — you name once, and every past and
+  future session on it picks it up. Your name always wins over the catalogue.
 - **Settings** — a ⚙ **Settings** panel (top-right on both pages) to switch units —
   **speed** (km/h ↔ mph), **tire temp** (°C ↔ °F), **distance** (km ↔ mi),
   **power** (kW / hp / PS), **boost** (psi / bar) — pick an **accent theme**

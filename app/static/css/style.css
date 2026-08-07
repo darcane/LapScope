@@ -663,7 +663,7 @@ main.grid .lap-grid { margin-bottom: auto; }
 .settings-swatch:hover { transform: scale(1.15); }
 .settings-swatch.active { border-color: var(--text); box-shadow: 0 0 10px var(--sw); }
 
-.settings-carlist-status { color: var(--muted); font-size: 0.85rem; }
+.settings-refresh-status { color: var(--muted); font-size: 0.85rem; }
 .settings-refresh {
   background: #0a0e14;
   border: 1px solid var(--panel-edge);

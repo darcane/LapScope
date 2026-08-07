@@ -100,6 +100,9 @@ MIGRATIONS = (
     "ALTER TABLE sessions ADD COLUMN group_id INTEGER",
     # the course drawn as a thumbnail (see ROUTE_OUTLINE_* below)
     "ALTER TABLE routes ADD COLUMN outline TEXT",
+    # the catalogue entry that supplied this row's name (app/tracks.py);
+    # NULL = named by the user, or not named at all
+    "ALTER TABLE routes ADD COLUMN catalog_key TEXT",
 )
 
 # Merged runs. A point-to-point route can only be attempted by restarting the
@@ -172,6 +175,11 @@ ROUTE_OUTLINE_DETAIL = 150
 # database, 120 m merges exactly those two pairs and nothing else - the
 # nearest genuinely different pair sits at 121 m and disagrees on span
 # anyway.
+#
+# The same three terms also identify a course against the shipped catalogue of
+# official routes (app/tracks.py), which is how a route gets a name without the
+# user typing one: the packet never says where you are, but "this fingerprint
+# is The Goliath" is knowledge that transfers between installs.
 ROUTE_START_RADIUS_M = 120.0
 ROUTE_LENGTH_TOLERANCE = 0.05
 ROUTE_SPAN_TOLERANCE = 0.15
@@ -259,6 +267,7 @@ class Store:
                 pass  # column already exists
         self.db.commit()
         self.backfill_route_kinds()
+        self.backfill_route_names()
         # session ids must never be reused: discarding a session deletes the
         # max rowid, which plain INTEGER PRIMARY KEY would hand out again -
         # and the live dashboard detects "new event" by the id changing
@@ -425,6 +434,7 @@ class Store:
     def match_or_create_route(self, start_x: float, start_z: float,
                               lap_length: float, span_x: float,
                               span_z: float, kind: str | None = None) -> int:
+        route_id = None
         for rid, rx, rz, rlen, rsx, rsz in self.db.execute(
                 "SELECT id, start_x, start_z, lap_length, span_x, span_z FROM routes"):
             if (math.hypot(start_x - rx, start_z - rz) > ROUTE_START_RADIUS_M
@@ -439,18 +449,96 @@ class Store:
                     "UPDATE routes SET span_x = ?, span_z = ? WHERE id = ?",
                     (span_x, span_z, rid))
                 self.db.commit()
-                self.set_route_kind(rid, kind)
-                return rid
+                route_id = rid
+                break
             if _spans_match(span_x, span_z, rsx, rsz):
-                self.set_route_kind(rid, kind)
-                return rid
+                route_id = rid
+                break
+        if route_id is None:
+            cur = self.db.execute(
+                "INSERT INTO routes (start_x, start_z, lap_length, span_x, span_z, kind)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (start_x, start_z, lap_length, span_x, span_z, kind),
+            )
+            self.db.commit()
+            route_id = cur.lastrowid
+        else:
+            self.set_route_kind(route_id, kind)
+        # Single exit so this runs on every path: a brand-new row, and equally
+        # a legacy row that only just adopted a shape, may be identifiable as
+        # an official course now when it wasn't a moment ago.
+        self._name_from_catalog(route_id, start_x, start_z, lap_length,
+                                span_x, span_z)
+        return route_id
+
+    def _name_from_catalog(self, route_id: int, start_x: float, start_z: float,
+                           lap_length: float, span_x: float,
+                           span_z: float) -> str | None:
+        """Give a route the official name of the course it fingerprints as,
+        and return that name if it was applied.
+
+        Guarded on the name being empty, so this is free to run on every lap
+        close and can never overwrite something the user typed. `rename_route`
+        clears `catalog_key` in the same spirit: once a human has had an
+        opinion about a route's name, later catalogue updates leave it alone.
+
+        The catalogue's shape goes through `set_route_kind`, so it can promote
+        the recorder's guess but never downgrade it, and `kind_user` - the
+        user's own override - is never touched.
+
+        `tracks` is imported here rather than at module scope because it
+        imports this module's fingerprint tolerances; keeping the import
+        inside the call leaves that a one-way edge."""
+        from .. import tracks
+        entry = tracks.match(start_x, start_z, lap_length, span_x, span_z)
+        if entry is None:
+            return None
         cur = self.db.execute(
-            "INSERT INTO routes (start_x, start_z, lap_length, span_x, span_z, kind)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (start_x, start_z, lap_length, span_x, span_z, kind),
-        )
+            "UPDATE routes SET name = ?, catalog_key = ? WHERE id = ?"
+            " AND (name IS NULL OR TRIM(name) = '')",
+            (entry["name"], entry["key"], route_id))
         self.db.commit()
-        return cur.lastrowid
+        if not cur.rowcount:
+            return None
+        self.set_route_kind(route_id, entry["kind"])
+        return entry["name"]
+
+    def backfill_route_names(self) -> int:
+        """Name routes the catalogue can identify, and return how many names
+        changed. Two passes, both idempotent:
+
+        - routes with no name yet. Covers a database recorded before the
+          catalogue existed, and equally a catalogue that has since learned
+          about a course the user drove last week. A route with no span can't
+          be fingerprinted at all; reprocessing one of its sessions is what
+          gives it one.
+        - names this catalogue supplied that it has since corrected (a typo,
+          a re-spelling). Rows the user renamed have `catalog_key` cleared, so
+          they are invisible to this pass.
+
+        Called from __init__ for the same reason as `backfill_route_kinds`:
+        the packaged Windows exe has no shell step, so a pass that has to run
+        once per install has to run itself. Also called after a catalogue
+        refresh, which is what makes new tracks land without a restart."""
+        from .. import tracks
+        changed = 0
+        for rid, sx, sz, rlen, spx, spz in self.db.execute(
+                "SELECT id, start_x, start_z, lap_length, span_x, span_z FROM routes"
+                " WHERE (name IS NULL OR TRIM(name) = '') AND span_x IS NOT NULL"
+        ).fetchall():
+            if self._name_from_catalog(rid, sx, sz, rlen, spx, spz):
+                changed += 1
+        for rid, name, key in self.db.execute(
+                "SELECT id, name, catalog_key FROM routes"
+                " WHERE catalog_key IS NOT NULL").fetchall():
+            entry = tracks.TRACKS.get(key)
+            if entry is not None and entry["name"] != name:
+                self.db.execute("UPDATE routes SET name = ? WHERE id = ?",
+                                (entry["name"], rid))
+                changed += 1
+        if changed:
+            self.db.commit()
+        return changed
 
     def set_route_kind(self, route_id: int, kind: str | None) -> None:
         """Recorder write. Circuit evidence is strong and sprint evidence is
@@ -514,8 +602,13 @@ class Store:
             conn.commit()
 
     def rename_route(self, route_id: int, name: str) -> bool:
+        """Clearing `catalog_key` is the point of the second column: a name the
+        user typed outranks the shipped catalogue permanently, so a later
+        catalogue update can't quietly undo their correction."""
         with self.reader() as conn:
-            cur = conn.execute("UPDATE routes SET name = ? WHERE id = ?", (name, route_id))
+            cur = conn.execute(
+                "UPDATE routes SET name = ?, catalog_key = NULL WHERE id = ?",
+                (name, route_id))
             conn.commit()
             return cur.rowcount > 0
 

@@ -263,15 +263,17 @@ function openSettings() {
   toggle("Raw telemetry panel (live)", "rawLive");
   toggle("Raw data at cursor (analysis)", "rawAnalysis");
 
-  // Car-name list: server-side state (not a browser preference) — shows the
-  // community list's size/age and re-downloads it on demand. The same refresh
-  // also runs automatically once a day (common.js maybeRefreshCarList).
-  group("Car list");
-  {
+  // Bundled reference lists: server-side state, not a browser preference —
+  // each row shows the list's size/age and re-downloads it on demand. The same
+  // refreshes also run automatically once a day (common.js
+  // maybeRefreshCarList / maybeRefreshTrackList). `summarize` turns the
+  // refresh response into the "what changed" half of the status line, and says
+  // whether the session list has to be redrawn because names moved.
+  const refreshRow = (path, unit, summarize) => {
     const row = document.createElement("div");
     row.className = "settings-row";
     const status = document.createElement("span");
-    status.className = "settings-label settings-carlist-status";
+    status.className = "settings-label settings-refresh-status";
     status.textContent = "…";
     row.appendChild(status);
     const btn = document.createElement("button");
@@ -281,31 +283,46 @@ function openSettings() {
     row.appendChild(btn);
     body.appendChild(row);
 
-    const show = (info) => {
+    fetch(`/api/${path}`).then((r) => r.json()).then((info) => {
       const when = info.fetched_at
         ? `updated ${new Date(info.fetched_at * 1000).toLocaleDateString()}`
         : "bundled list";
-      status.textContent = `${info.total} car names · ${when}`;
-    };
-    fetch("/api/cars").then((r) => r.json()).then(show)
-      .catch(() => { status.textContent = "car list unavailable"; });
+      status.textContent = `${info.total} ${unit} · ${when}`;
+    }).catch(() => { status.textContent = `${unit} unavailable`; });
 
     btn.onclick = async () => {
       btn.disabled = true;
       status.textContent = "refreshing…";
       try {
-        const r = await fetch("/api/cars/refresh", { method: "POST" });
+        const r = await fetch(`/api/${path}/refresh`, { method: "POST" });
         const out = await r.json();
         if (!r.ok) throw new Error(out.detail || "refresh failed");
-        status.textContent = `${out.total} car names · `
-          + (out.added ? `${out.added} new` : "already up to date");
-        if (out.added > 0 && typeof loadSessions === "function") loadSessions();
+        const { text, changed } = summarize(out);
+        status.textContent = `${out.total} ${unit} · ${text}`;
+        if (changed && typeof loadSessions === "function") loadSessions();
       } catch (e) {
         status.textContent = e.message || "refresh failed (offline?)";
       }
       btn.disabled = false;
     };
-  }
+  };
+
+  group("Car list");
+  refreshRow("cars", "car names", (out) => ({
+    text: out.added ? `${out.added} new` : "already up to date",
+    changed: out.added > 0,
+  }));
+
+  // Official-route catalogue: what names a course on its first completed lap
+  // (app/tracks.py). "named" counts routes already in this database that the
+  // refreshed catalogue could identify, which is the number the user cares
+  // about — new entries they've never driven change nothing they can see.
+  group("Track list");
+  refreshRow("tracks", "tracks", (out) => ({
+    text: out.named ? `${out.named} route${out.named === 1 ? "" : "s"} named`
+      : (out.added ? `${out.added} new` : "already up to date"),
+    changed: out.named > 0,
+  }));
 
   const actions = document.createElement("div");
   actions.className = "modal-actions";

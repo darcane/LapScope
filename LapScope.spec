@@ -1,7 +1,8 @@
 # PyInstaller spec for the plug-and-play Windows build (onedir).
 # Build:  pip install -r requirements.txt -r requirements-build.txt
 #         pyinstaller LapScope.spec
-# Output: dist/LapScope/LapScope.exe (+ bundled runtime, static assets, car list).
+# Output: dist/LapScope/LapScope.exe (+ bundled runtime, static assets, car
+#         list, track catalogue).
 
 from PyInstaller.building.datastruct import Tree
 from PyInstaller.utils.hooks import collect_submodules
@@ -18,9 +19,10 @@ a = Analysis(
     ["run_desktop.py"],
     pathex=["."],
     binaries=[],
-    # car_ordinals.json sits next to the app package (routes.py reads
-    # parent.parent / "car_ordinals.json"); the static tree is added to COLLECT.
-    datas=[("app/car_ordinals.json", "app")],
+    # car_ordinals.json and track_catalog.json sit next to the app package
+    # (cars.py / tracks.py read Path(__file__).parent / …); the static tree is
+    # added to COLLECT.
+    datas=[("app/car_ordinals.json", "app"), ("app/track_catalog.json", "app")],
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],

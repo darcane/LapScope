@@ -479,6 +479,28 @@ async function maybeRefreshCarList() {
   } catch { /* offline / server restarting: bundled list keeps working */ }
 }
 
+/* ---------- track-catalogue auto-refresh (fail-soft, once a day) ----------
+   Same deal as the car list, for the bundled table of official routes that
+   names a course on its first completed lap (see app/tracks.py). A refresh
+   also re-runs the naming backfill server-side, so a route the user drove
+   before the catalogue knew about it gets named here rather than never. */
+
+const TRACKDB_CHECK_KEY = "ls_trackdb_check";    // ts of the last attempt
+const TRACKDB_CHECK_TTL = 24 * 60 * 60 * 1000;   // 1 day
+
+async function maybeRefreshTrackList() {
+  const last = parseInt(localStorage.getItem(TRACKDB_CHECK_KEY) || "0", 10);
+  if (Date.now() - last < TRACKDB_CHECK_TTL) return;
+  localStorage.setItem(TRACKDB_CHECK_KEY, String(Date.now()));  // even on failure: don't hammer
+  try {
+    const r = await fetch("/api/tracks/refresh", { method: "POST" });
+    if (!r.ok) return;
+    const { named } = await r.json();
+    // newly named routes show up as route names on the cards: redraw
+    if (named > 0 && typeof loadSessions === "function") loadSessions();
+  } catch { /* offline / server restarting: bundled catalogue keeps working */ }
+}
+
 function onReady(fn) {
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", fn);
@@ -489,3 +511,4 @@ function onReady(fn) {
 
 onReady(checkForUpdate);
 onReady(maybeRefreshCarList);
+onReady(maybeRefreshTrackList);

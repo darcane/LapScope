@@ -37,7 +37,7 @@ Half of LapScope exists to work around what the game *doesn't* send:
 
 | Missing | LapScope's workaround |
 |---|---|
-| Route / track names | Circuits are fingerprinted from lap geometry (start position + lap length); you name a route once and every session on it picks the name up. |
+| Route / track names | Courses are fingerprinted from lap geometry (start position + lap length + the lap's bounding box). A bundled catalogue maps the official courses' fingerprints to their names, so most name themselves; anything else you name once and every session on it picks the name up. See [Event Detection](Event-Detection). |
 | Car name strings | `CarOrdinal` is looked up in a community list (`app/car_ordinals.json`): a bundled copy ships with the build and LapScope re-downloads the maintained version from this repo about once a day (Settings → Car list has a manual Refresh), with your own overrides always on top. An unknown ordinal shows as `Car #<number>` with an "unknown car — help name it" button that pre-fills a [name-this-car issue](https://github.com/darcane/LapScope/issues/new?template=unknown_car.yml) — once merged, everyone's list picks the name up automatically. |
 | Weather | Wet conditions are inferred from `WheelInPuddleDepth` over the session; snow is a manual tag. |
 | Game mode (race / Rivals / free roam) | Inferred — see [Event Detection](Event-Detection). `IsRaceOn` does **not** mean "in an event" (below). |

@@ -15,7 +15,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .. import __version__, cars
+from .. import __version__, cars, tracks
 from ..cars import CAR_NAMES
 from ..recorder.laps import (AIRBORNE_MIN_S, AIRBORNE_SLIP_MAX,
                              AIRBORNE_SUSP_MAX, IMPACT_ACCEL, LANDING_GRACE_S,
@@ -275,6 +275,28 @@ def route_outline(route_id: int, request: Request):
     if points:
         store.set_route_outline(route_id, json.dumps(points))
     return {"id": route_id, "outline": points, "box": ROUTE_OUTLINE_BOX}
+
+
+@router.get("/tracks")
+def tracks_info():
+    """Track-catalogue metadata for the Settings panel: size + last refresh
+    time (null while still on the bundled copy)."""
+    return tracks.info()
+
+
+@router.post("/tracks/refresh")
+async def refresh_tracks(request: Request):
+    """Re-download the official-route catalogue from the repo's main branch and
+    re-run the naming backfill, so tracks added since this build was made get
+    named without a restart. Blocking urllib fetch, hence the threadpool; the
+    backfill writes through the Store's event-loop connection, so it stays on
+    this thread (same reason /reprocess is async)."""
+    try:
+        total, added = await run_in_threadpool(tracks.refresh)
+    except tracks.RefreshError as exc:
+        raise HTTPException(502, str(exc))
+    named = request.app.state.store.backfill_route_names()
+    return {"ok": True, "total": total, "added": added, "named": named}
 
 
 @router.get("/cars")
