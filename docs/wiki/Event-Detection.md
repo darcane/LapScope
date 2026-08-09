@@ -202,9 +202,32 @@ detector's). **Reset edits** in the session header undoes all of them at once.
 
 ## Routes
 
-The game never sends route names, so circuits are **fingerprinted**: same
-start position within 80 m + lap length within 5 % = same route. Name a route
-once and every past and future session on it picks the name up.
+The game never sends route names, so courses are **fingerprinted** from the
+first completed lap: same start position within 120 m, lap length within 5 %,
+and the lap's bounding-box dimensions within 15 % (floor 50 m) = same route.
+
+That last term does the real work. Horizon events routinely launch from the
+same spot, and `DistanceTraveled` can't separate them — it's normalized per
+route, reading ~5950 at the end of every completed course whatever ground it
+covered, so a 3 km sprint and a 6.9 km one look identical. The bounding box
+measures the ground covered rather than the line driven, so an excursion or a
+rewind barely moves it: laps of one course agree to within 3.5 %, while
+different courses off a shared start line differ by 30 % or more.
+
+**Most routes name themselves.** LapScope ships a catalogue of the game's
+official courses — the same fingerprint, plus the name — so your first lap on
+The Goliath produces a route already called "The Goliath". Anything not in the
+catalogue (a blueprint, a custom route, a track added after your build) stays
+unnamed until you name it, which you do once and every past and future session
+on that route picks up. Your name always wins: renaming a route permanently
+exempts it, so a later catalogue update can never overwrite it. The catalogue
+refreshes itself in the background about once a day, and there's a **Refresh
+now** button under **Track list** in ⚙ Settings.
+
+If a route you've already driven stays unnamed after a refresh, it may be an
+old capture with no bounding box recorded (they predate the shape term).
+**Reprocess** one of its sessions from the session header and it can be
+identified from then on.
 
 ## Track type: auto-suggested, always yours to override
 

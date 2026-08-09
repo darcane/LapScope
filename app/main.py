@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
-from . import cars
+from . import cars, tracks
 from .api.routes import router
 from .recorder.laps import SessionTracker
 from .recorder.store import Store
@@ -37,8 +37,11 @@ async def lifespan(app: FastAPI):
     data_dir = os.environ.get("DATA_DIR", "./data")
     udp_port = int(os.environ.get("TELEMETRY_UDP_PORT", "9999"))
 
-    # overlay a previously downloaded community car list (see app/cars.py)
+    # overlay a previously downloaded community car list (see app/cars.py) and
+    # track catalogue (app/tracks.py). Both before the Store: its startup
+    # backfill names routes straight out of the catalogue.
     cars.load(data_dir)
+    tracks.load(data_dir)
     store = Store(os.path.join(data_dir, "telemetry.db"))
     removed = store.cleanup_sessions()
     if removed:
