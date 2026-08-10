@@ -1180,3 +1180,35 @@ def test_list_sessions_aggregates_survive_the_group_join(tmp_path):
     after = sessions(store)
     assert {s["id"]: (s["lap_count"], s["best_lap"]) for s in after} == before
     assert all(s["group_name"] == "grind" for s in after)
+
+
+def test_compact_reports_bytes_and_waits_for_the_recorder(tmp_path):
+    """The Settings action behind issue #59: it must refuse while a session is
+    recording (VACUUM holds an exclusive lock for the whole rebuild, on the
+    event-loop connection), and otherwise report what it actually gave back."""
+    from app.api.routes import compact_storage, delete_session, storage
+
+    def scenario(sim):
+        sim.event(120, "event")
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    sid = sessions(store)[0]["id"]
+
+    before = storage(_request_for(store))
+    assert before["db_bytes"] > 0 and before["sessions"] == 1
+
+    recording = _request_for(store, SimpleNamespace(session_id=sid))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(compact_storage(recording))
+    assert exc.value.status_code == 409
+
+    # run() closed the event-loop connection the rebuild goes through
+    store2 = Store(store.db_path)
+    idle = _request_for(store2, SimpleNamespace(session_id=None))
+    delete_session(sid, idle)
+    out = asyncio.run(compact_storage(idle))
+    assert out["ok"] and out["reclaimed_bytes"] > 0
+    assert out["after_bytes"] < out["before_bytes"]
+    assert storage(idle)["db_bytes"] == out["after_bytes"]
+    store2.close()

@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import re
+import sqlite3
 import time
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -125,6 +126,35 @@ def version():
     GitHub Release (client-side) to surface a dismissible update notice.
     "0.0.0" marks an unversioned dev/source run and suppresses the check."""
     return {"version": __version__}
+
+
+@router.get("/storage")
+def storage(request: Request):
+    """What the recordings cost on disk and how much of that a compaction
+    would give back (Settings panel). See `Store.storage_stats`."""
+    return request.app.state.store.storage_stats()
+
+
+@router.post("/storage/compact")
+async def compact_storage(request: Request):
+    """Shrink the database file (VACUUM) and report the bytes reclaimed.
+
+    Deleting sessions frees pages *inside* the file and nothing else, so a
+    user who deletes half their history to recover disk space gets zero bytes
+    back until this runs. `async def` on purpose: the rebuild goes through the
+    Store's event-loop connection and holds an exclusive lock the whole time,
+    so - like reprocess and import - it must not run while a session is
+    recording, or live telemetry stalls behind it."""
+    if request.app.state.tracker.session_id is not None:
+        raise HTTPException(409, "a session is recording; retry after it ends")
+    try:
+        return {"ok": True, **request.app.state.store.vacuum()}
+    except sqlite3.OperationalError as exc:
+        # the usual cause is no room for the rebuild: VACUUM writes a full
+        # second copy before replacing the original
+        raise HTTPException(
+            503, f"compact failed ({exc}) - it needs free disk space equal to "
+                 "the size of the database")
 
 
 @router.get("/sessions")

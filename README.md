@@ -197,15 +197,24 @@ and `tools/inspect_session.py`) has its own page:
 
 ## Configuration
 
-| Env var              | Default     | Meaning                                    |
-|----------------------|-------------|--------------------------------------------|
-| `TELEMETRY_UDP_PORT` | `9999`      | UDP port the listener binds                |
-| `DATA_DIR`           | `/app/data` | Where `telemetry.db` is written            |
-| `LS_KEEP_DISCARDED`  | `0`         | `1` = keep sessions with no completed laps |
+| Env var              | Default          | Meaning                                    |
+|----------------------|------------------|--------------------------------------------|
+| `TELEMETRY_UDP_PORT` | `9999`           | UDP port the listener binds                |
+| `DATA_DIR`           | `/app/data`      | Where `telemetry.db` is written            |
+| `LS_KEEP_DISCARDED`  | `0`              | `1` = keep sessions with no completed laps |
+| `LS_CAR_LIST_URL`    | this repo's list | Where "Refresh car names" downloads from   |
+| `LS_TRACK_LIST_URL`  | this repo's list | Where "Refresh tracks" downloads from      |
 
-Recordings are raw 324-byte packets (~70 MB per hour of driving). Delete sessions from
-the Analysis page to reclaim space. The Windows exe stores its DB in
-`%LOCALAPPDATA%\LapScope` and serves on `127.0.0.1:8000`.
+`LS_KEEP_DISCARDED` is read once when the app starts, so it has to be set before
+launch — changing it later needs a restart. The two list URLs point at this repo's
+`main` branch by default and only exist so a fork can serve its own lists.
+
+Recordings are raw 324-byte packets (~70 MB per hour of driving). Deleting a session
+from the Analysis page frees that space *inside* the database file for future
+recordings, but the file itself never shrinks on its own — use **Settings → Storage →
+Compact now** to hand the space back to the drive (it needs as much free disk space as
+the database currently uses, and can't run while a session is recording). The Windows
+exe stores its DB in `%LOCALAPPDATA%\LapScope` and serves on `127.0.0.1:8000`.
 
 ## How it works
 

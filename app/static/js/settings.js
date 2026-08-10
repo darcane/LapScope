@@ -136,6 +136,16 @@ function applyAccent() {
 }
 applyAccent();
 
+/* Database sizes for the Storage row. Not a user preference — bytes are
+   bytes — and binary units on purpose, since that is what the OS reports for
+   the same file. */
+function fmtBytes(n) {
+  if (!(n > 0)) return "0 MB";
+  const mb = n / 1048576;
+  if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`;
+  return `${mb.toFixed(mb < 10 ? 1 : 0)} MB`;
+}
+
 /* ---------- settings panel (themed modal, reuses common.js modal chrome) ---------- */
 
 function openSettings() {
@@ -263,13 +273,10 @@ function openSettings() {
   toggle("Raw telemetry panel (live)", "rawLive");
   toggle("Raw data at cursor (analysis)", "rawAnalysis");
 
-  // Bundled reference lists: server-side state, not a browser preference —
-  // each row shows the list's size/age and re-downloads it on demand. The same
-  // refreshes also run automatically once a day (common.js
-  // maybeRefreshCarList / maybeRefreshTrackList). `summarize` turns the
-  // refresh response into the "what changed" half of the status line, and says
-  // whether the session list has to be redrawn because names moved.
-  const refreshRow = (path, unit, summarize) => {
+  // Status line + one action button. The rows below it are the exception to
+  // "localStorage-only": they act on server-side state, so they read their
+  // own status from the API instead of from _settings.
+  const actionRow = (btnText) => {
     const row = document.createElement("div");
     row.className = "settings-row";
     const status = document.createElement("span");
@@ -279,9 +286,20 @@ function openSettings() {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "settings-refresh";
-    btn.textContent = "Refresh now";
+    btn.textContent = btnText;
     row.appendChild(btn);
     body.appendChild(row);
+    return { status, btn };
+  };
+
+  // Bundled reference lists: each row shows the list's size/age and
+  // re-downloads it on demand. The same refreshes also run automatically once
+  // a day (common.js maybeRefreshCarList / maybeRefreshTrackList).
+  // `summarize` turns the refresh response into the "what changed" half of the
+  // status line, and says whether the session list has to be redrawn because
+  // names moved.
+  const refreshRow = (path, unit, summarize) => {
+    const { status, btn } = actionRow("Refresh now");
 
     fetch(`/api/${path}`).then((r) => r.json()).then((info) => {
       const when = info.fetched_at
@@ -323,6 +341,48 @@ function openSettings() {
       : (out.added ? `${out.added} new` : "already up to date"),
     changed: out.named > 0,
   }));
+
+  // Deleting a session frees pages *inside* the database file and nothing
+  // else — SQLite only hands space back to the drive on VACUUM. Without this
+  // row, someone who deletes half their history to recover disk space sees
+  // zero bytes come back and no explanation (issue #59).
+  group("Storage");
+  const storageRow = () => {
+    const { status, btn } = actionRow("Compact now");
+    const size = (info) => {
+      const free = info.free_bytes > 0
+        ? ` · ${fmtBytes(info.free_bytes)} reclaimable` : "";
+      status.textContent = `${fmtBytes(info.db_bytes)} of recordings${free}`;
+    };
+
+    fetch("/api/storage").then((r) => r.json()).then(size)
+      .catch(() => { status.textContent = "database size unavailable"; });
+
+    btn.onclick = async () => {
+      const ok = await uiConfirm(
+        "Compact database?",
+        "Rebuilds the database file so the space freed by deleted sessions "
+        + "goes back to the drive. It needs as much free disk space as the "
+        + "database currently uses, and LapScope pauses while it runs.",
+        { okText: "Compact" });
+      if (!ok) return;
+      btn.disabled = true;
+      status.textContent = "compacting…";
+      try {
+        const r = await fetch("/api/storage/compact", { method: "POST" });
+        const out = await r.json();
+        if (!r.ok) throw new Error(out.detail || "compact failed");
+        status.textContent = out.reclaimed_bytes > 0
+          ? `${fmtBytes(out.after_bytes)} of recordings · `
+            + `${fmtBytes(out.reclaimed_bytes)} reclaimed`
+          : `${fmtBytes(out.after_bytes)} of recordings · nothing to reclaim`;
+      } catch (e) {
+        status.textContent = e.message || "compact failed";
+      }
+      btn.disabled = false;
+    };
+  };
+  storageRow();
 
   const actions = document.createElement("div");
   actions.className = "modal-actions";
