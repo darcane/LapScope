@@ -8,11 +8,14 @@ writes like renames are also fine there).
 
 from __future__ import annotations
 
+import logging
 import math
 import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
+
+log = logging.getLogger("lapscope.store")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -79,6 +82,13 @@ CREATE INDEX IF NOT EXISTS idx_edits_session ON edits(session_id);
 #   flags            anchor_t inside a lap's [started_t, ended_t] span;
 #                    value = the full flags CSV ("" = no flags)
 #   exclude_lap      anchor_t inside a lap's span; lap drops out of bests/counts
+
+# Stamped into `PRAGMA user_version` once SCHEMA + MIGRATIONS have run, so a
+# database can always say which shape it is without probing table_info. It
+# costs nothing today and is the only way a future migration can tell a v1.0
+# database from a v0.8 one; every DB written before this existed reads 0.
+# Bump it when a change can't be expressed as an idempotent ADD COLUMN.
+SCHEMA_VERSION = 1
 
 # added after v1; applied to existing databases on startup
 MIGRATIONS = (
@@ -260,11 +270,26 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript(SCHEMA)
+        was = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if was > SCHEMA_VERSION:
+            # a newer LapScope wrote this file; we can still read it (every
+            # change so far is an added column), but say so rather than
+            # silently stamping it back down to our own version
+            log.warning("%s was written by a newer LapScope (schema v%d, this "
+                        "build understands v%d)", db_path, was, SCHEMA_VERSION)
         for stmt in MIGRATIONS:
             try:
                 self.db.execute(stmt)
-            except sqlite3.OperationalError:
-                pass  # column already exists
+            except sqlite3.OperationalError as exc:
+                # ONLY "column already exists" is expected here. A blanket pass
+                # also swallows "database is locked" / "disk I/O error" /
+                # "readonly database", which no-ops every ALTER and leaves the
+                # app half-migrated - it then dies further along on a missing
+                # column, an error that says nothing about the real cause.
+                if "duplicate column" not in str(exc).lower():
+                    raise
+        if was < SCHEMA_VERSION:  # never lower a newer build's stamp
+            self.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION:d}")
         self.db.commit()
         self.backfill_route_kinds()
         self.backfill_route_names()
@@ -328,6 +353,49 @@ class Store:
         self.db.commit()
         self.prune_empty_groups()
         return cur.rowcount
+
+    def _disk_bytes(self) -> int:
+        """What the database costs on disk: the file plus its WAL sidecars,
+        because a checkpoint that hasn't happened yet is still your space."""
+        total = 0
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                total += Path(self.db_path + suffix).stat().st_size
+            except OSError:  # -wal/-shm only exist while a connection is open
+                pass
+        return total
+
+    def storage_stats(self) -> dict:
+        """How much disk the recordings hold, and how much of it is already
+        dead weight. `free_bytes` is the freelist: pages that deleting a
+        session released *for reuse* but that the file never hands back on
+        its own - SQLite only shrinks on VACUUM, and turning on auto_vacuum
+        now would do nothing for a database whose tables already exist."""
+        with self.reader() as conn:
+            page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+            free_pages = conn.execute("PRAGMA freelist_count").fetchone()[0]
+            sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        return {"db_bytes": self._disk_bytes(),
+                "free_bytes": page_size * free_pages,
+                "sessions": sessions}
+
+    def vacuum(self) -> dict:
+        """Rebuild the file so freed pages leave the disk, and report what
+        that gave back.
+
+        Event-loop connection only - VACUUM takes an exclusive lock for the
+        whole rebuild, so it must never race the recorder's own writes (the
+        API handler is `async def` for exactly this reason, same rule as
+        reprocess). The truncating checkpoint afterwards is what makes the
+        number honest: in WAL mode the rebuild lands in the -wal file first,
+        so measuring without it would report a saving that is still on disk."""
+        before = self._disk_bytes()
+        self.db.commit()
+        self.db.execute("VACUUM")
+        self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        after = self._disk_bytes()
+        return {"before_bytes": before, "after_bytes": after,
+                "reclaimed_bytes": max(0, before - after)}
 
     def create_session(self, started_at: float, frame: dict) -> int:
         sid = self._next_session_id

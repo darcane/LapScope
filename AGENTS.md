@@ -79,7 +79,14 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
   "Session N ended/discarded" log line before asserting on the API.
 - DB lives in `./data/telemetry.db` (bind mount, gitignored). Schema changes go in
   `store.MIGRATIONS` as `ALTER TABLE ... ADD COLUMN` statements — they run on every
-  startup inside try/except (existing-column errors are swallowed).
+  startup, and **only** "duplicate column" is swallowed (a locked or readonly
+  database must not silently no-op every ALTER). `store.SCHEMA_VERSION` is stamped
+  into `PRAGMA user_version` afterwards; bump it for a change that isn't an
+  idempotent ADD COLUMN, and keep `tests/test_store.py`'s upgrade test honest.
+- Deleting sessions never shrinks the file — freed pages go on the freelist and
+  stay there. `Store.vacuum()` (Settings → Storage → Compact now) is the only
+  thing that returns bytes to the drive; `auto_vacuum` can't help an existing
+  database, which is why it isn't set.
 - SQLite threading rule: the single `Store.db` connection is event-loop-thread
   only. API handlers run in FastAPI's threadpool and must use `Store.reader()`
   (short-lived connection; fine for small writes too, thanks to WAL).
