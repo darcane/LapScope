@@ -59,7 +59,8 @@ class _ReplayStore:
 
 def reprocess_session(store, session_id: int) -> int:
     """Replay stored frames through current lap detection; returns the
-    number of completed laps found. Existing lap rows are replaced.
+    number of completed laps found. Existing lap rows are replaced, atomically:
+    either the session ends up fully re-segmented or exactly as it was.
 
     Must run on the event-loop thread: lap/route writes go through the
     Store's main connection.
@@ -67,18 +68,25 @@ def reprocess_session(store, session_id: int) -> int:
     frames = store.session_frames(session_id)
     if not frames:
         return 0
-    store.delete_session_laps(session_id)
-    tracker = SessionTracker(_ReplayStore(store, session_id))
-    last_t = frames[0][0]
-    for t, raw in frames:
-        try:
-            frame = parse(raw)
-        except Exception:
-            continue  # tolerate a corrupt frame rather than losing the replay
-        tracker.on_frame(t, raw, frame)
-        last_t = t
-    tracker.shutdown(last_t + RACE_OFF_GRACE + 1.0)
+    # All-or-nothing: the old laps are deleted at the start, so anything that
+    # raises before the rebuild finishes must put them back. A tracker crash
+    # on a given session is deterministic, so without the rollback a retry
+    # can't recover the times either - they're simply gone (issue #60).
+    with store.transaction():
+        store.delete_session_laps(session_id)
+        tracker = SessionTracker(_ReplayStore(store, session_id))
+        last_t = frames[0][0]
+        for t, raw in frames:
+            try:
+                frame = parse(raw)
+            except Exception:
+                continue  # tolerate a corrupt frame rather than losing the replay
+            tracker.on_frame(t, raw, frame)
+            last_t = t
+        tracker.shutdown(last_t + RACE_OFF_GRACE + 1.0)
+        store.mark_session_kept(session_id)  # survives cleanup even with 0 laps
+    # after the commit: session_laps reads through its own connection, which
+    # can't see anything the transaction was still holding
     laps = sum(1 for lap in store.session_laps(session_id) if lap["lap_time"])
-    store.mark_session_kept(session_id)  # survives cleanup even with 0 laps
     log.info("Session %d reprocessed: %d completed laps", session_id, laps)
     return laps

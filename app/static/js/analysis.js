@@ -1097,6 +1097,12 @@ async function removeFromGroup(sessionId) {
   const res = await fetch(`/api/groups/${gid}/sessions/${sessionId}`,
                           { method: "DELETE" });
   const out = await res.json();
+  if (!res.ok) {  // the group moved on since this view was rendered
+    await uiAlert("Remove failed", out.detail || "remove failed");
+    await loadSessions();
+    selectGroup(gid);
+    return;
+  }
   await loadSessions();
   if (out.pruned) { state.groupId = null; selectSession(sessionId); }
   else selectGroup(gid);

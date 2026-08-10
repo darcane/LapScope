@@ -999,6 +999,50 @@ def test_edits_survive_reprocess_and_reset_reverts(tmp_path):
     assert not any(c["dismissed"] for c in data["collisions"])
 
 
+def test_a_crash_mid_replay_leaves_the_original_laps_intact(tmp_path, monkeypatch):
+    """Issue #60: reprocess deletes the session's laps before rebuilding them,
+    so anything that raises mid-replay used to leave the session with no lap
+    times at all - permanently, because the same frames crash the same way on
+    every retry. The rollback has to put back every lap, and the endpoint has
+    to say the data survived instead of a bare 500."""
+    from app.api.routes import reprocess
+    from app.recorder import reprocess as reprocess_mod
+
+    def scenario(sim):
+        sim.event(120, "event")
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    sid = sessions(store)[0]["id"]
+    before = [(lap["lap_number"], lap["lap_time"]) for lap in store.session_laps(sid)]
+    assert [t for _, t in before if t]  # the session really has timed laps
+
+    real = reprocess_mod.SessionTracker
+
+    class ExplodingTracker(real):
+        """Dies a few hundred frames in - past the first lap boundary, so the
+        replay has already written rows of its own by the time it fails."""
+        seen = 0
+
+        def on_frame(self, t, raw, frame):
+            ExplodingTracker.seen += 1
+            if ExplodingTracker.seen > 400:
+                raise RuntimeError("detection blew up")
+            return super().on_frame(t, raw, frame)
+
+    monkeypatch.setattr(reprocess_mod, "SessionTracker", ExplodingTracker)
+    store2 = Store(store.db_path)  # replay writes via the event-loop connection
+    req = _request_for(store2, SimpleNamespace(session_id=None))
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(reprocess(sid, req))
+    store2.close()
+
+    assert err.value.status_code == 500
+    assert "left unchanged" in err.value.detail
+    after = [(lap["lap_number"], lap["lap_time"]) for lap in store.session_laps(sid)]
+    assert after == before
+
+
 # ------------------------- merged run groups -------------------------
 # A group is an index over sessions, never a rewrite of them: creating,
 # ungrouping and removing members must all leave laps, frames and edits alone.
@@ -1167,6 +1211,36 @@ def test_group_membership_edits_and_mixed_reporting(tmp_path):
         conn.execute("UPDATE sessions SET route_id = 9999 WHERE id = ?", (ids[1],))
         conn.commit()
     assert group_laps(gid, req)["group"]["mixed"] is True
+
+
+def test_removing_a_session_from_the_wrong_group_changes_nothing(tmp_path):
+    """Issue #63: the endpoint checked that the *group* existed and then cleared
+    whatever session id it was handed. Naming group A while passing a member of
+    group B ungrouped that session and pruned B as newly empty - a request about
+    A silently deleting B."""
+    from app.api.routes import GroupCreate, create_group, remove_group_session
+
+    def scenario(sim):
+        for i in range(3):
+            sim.event(75, f"event {i + 1}")
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    ids = [s["id"] for s in sorted(sessions(store), key=lambda s: s["started_at"])]
+    req = _request_for(store)
+    a = create_group(GroupCreate(name="A", session_ids=ids[:2]), req)["group"]["id"]
+    b = create_group(GroupCreate(name="B", session_ids=ids[2:]), req)["group"]["id"]
+
+    with pytest.raises(HTTPException) as err:
+        remove_group_session(a, ids[2], req)  # a member of B, named through A
+    assert err.value.status_code == 404
+    assert store.get_group(b) is not None
+    assert [s["id"] for s in store.group_sessions(b)] == [ids[2]]
+    assert [s["id"] for s in store.group_sessions(a)] == ids[:2]
+
+    # ...and a genuine removal still works, pruning included
+    assert remove_group_session(b, ids[2], req)["pruned"] is True
+    assert store.get_group(b) is None
 
 
 def test_list_sessions_aggregates_survive_the_group_join(tmp_path):
