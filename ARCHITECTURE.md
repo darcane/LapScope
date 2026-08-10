@@ -25,8 +25,8 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
 | [app/telemetry/listener.py](app/telemetry/listener.py) | `asyncio.DatagramProtocol`: counts packets, warns once on wrong size (hex dump), parses, feeds tracker, publishes frame+extras to hub. Recorder exceptions never kill the stream. |
 | [app/telemetry/hub.py](app/telemetry/hub.py) | Fan-out to WebSocket subscriber queues (drop-oldest on slow clients) + stream stats used by `/api/status`. |
 | [app/recorder/laps.py](app/recorder/laps.py) | **The heart.** `SessionTracker`: session boundaries, lap segmentation, finish detection, geometric (WTA) laps, dirty-lap flags, wet detection, route fingerprint triggers, live delta, `race_mode`, and the track-type auto-suggestion (`suggest_track_type` + per-frame surface accumulators; written at session close with COALESCE so user tags win). All tunable thresholds are module constants at the top. |
-| [app/recorder/store.py](app/recorder/store.py) | SQLite persistence: schema, `SCHEMA_VERSION`/`MIGRATIONS`, session/lap/route/car-name CRUD, manual-edit overrides (`edits` table, merged into `session_laps` at read time), monotonic session-id counter, `reader()` for threadpool access, `storage_stats()`/`vacuum()` (disk usage + the compaction behind Settings → Storage). |
-| [app/recorder/reprocess.py](app/recorder/reprocess.py) | Replays a session's stored raw frames through a fresh `SessionTracker` via `_ReplayStore` (laps/routes written for real; session row and frames untouched; discard suppressed). |
+| [app/recorder/store.py](app/recorder/store.py) | SQLite persistence: schema, `SCHEMA_VERSION`/`MIGRATIONS`, session/lap/route/car-name CRUD, manual-edit overrides (`edits` table, merged into `session_laps` at read time), monotonic session-id counter, `reader()` for threadpool access, `transaction()` (all-or-nothing batches of event-loop writes), `storage_stats()`/`vacuum()` (disk usage + the compaction behind Settings → Storage). |
+| [app/recorder/reprocess.py](app/recorder/reprocess.py) | Replays a session's stored raw frames through a fresh `SessionTracker` via `_ReplayStore` (laps/routes written for real; session row and frames untouched; discard suppressed). The delete + rebuild runs inside one `store.transaction()`, so a replay that raises leaves the session exactly as it was instead of destroying its lap times. |
 | [app/api/routes.py](app/api/routes.py) | REST API (table below) + constants: `CAR_CLASSES`, `CONDITIONS`, `TRACK_TYPES`, `DRIVETRAINS`, `CHANNELS` (channel-name → frame extractor for lap data; a loop appends generated `raw_<field>` / `raw_<field>_<fl\|fr\|rl\|rr>` channels — every `packet.FIELDS` entry verbatim, packet-native units — for the analysis raw-data view). |
 | [app/cars.py](app/cars.py) | Community car-name list (`CarOrdinal` → name), three layers, top wins: `car_names` DB override > downloaded `DATA_DIR/car_ordinals.json` > bundled `app/car_ordinals.json`. `refresh()` re-downloads the maintained copy from this repo's `main` (validated, atomically persisted, hot-swapped); triggered by the browser daily + Settings "Refresh now" via `POST /api/cars/refresh`. |
 | [app/tracks.py](app/tracks.py) | Official-route catalogue (route fingerprint → name), the same three-layer shape as `cars.py`: a user's own `PATCH /routes/{id}` rename > downloaded `DATA_DIR/track_catalog.json` > bundled `app/track_catalog.json`. `match()` reuses the recorder's own tolerances (imported from `store.py`, which is why the reverse import is function-local) and returns `None` on ambiguity rather than guessing. The catalogue is **generated** by `tools/export_track_catalog.py`, never hand-edited. |
@@ -39,6 +39,12 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
 - Plain `def` API handlers run in FastAPI's **threadpool** and must use
   `Store.reader()` (short-lived connection; WAL makes small writes there fine —
   renames/tags do this).
+- Store write methods commit through `Store._commit()`, which `transaction()`
+  holds open so a batch lands all-or-nothing. It groups **only** the event-loop
+  connection: a `reader()` inside an open transaction opens its own connection
+  and still sees the pre-transaction data, so never read (or write) through one
+  in there — `reprocess_session` counts its laps after the commit for exactly
+  this reason. Not reentrant; SQLite has no nested transactions.
 - Hub `publish()` never blocks: full subscriber queues drop their oldest frame.
 
 ## SQLite schema (`data/telemetry.db`, WAL)
@@ -103,7 +109,22 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
   collision peak's frame time, matched ±0.5 s), `flags` (`value` = the full
   flags CSV, `""` = none) and `exclude_lap` (both anchored at the lap-span
   midpoint). Keyed by frame time so a reprocess — which recreates lap rows
-  under recycled rowids — keeps them.
+  under recycled rowids — keeps them. A lap's span is **half-open**
+  (`started_t <= anchor < ended_t`, `1e18` for an open lap): consecutive laps
+  share a frame, so with both ends inclusive an anchor on the boundary belonged
+  to two laps at once. Four places implement that one rule and must agree —
+  `lap_span`/`_merge_edits`, the `_SESSION_SELECT` overlay (the source of
+  `lap_count`/`best_lap`), `remove_edits`, and the flags lookup in
+  `dismiss_contact`.
+
+Startup repair (`Store.cleanup_sessions()`, once from the lifespan **before**
+the tracker exists — it closes every open row it finds, and a recording
+session's are open on purpose): a crashed process leaves `sessions.ended_at`
+and the final `laps.ended_t` NULL, both backfilled from the session's last
+frame; `lap_time` stays NULL because that lap never crossed the line. Then
+sessions with no timed lap and `kept = 0` are deleted (free-roam cruising, menu
+blips) and empty groups pruned. The `ended_t` repair is what keeps an orphaned
+open lap addressable — see the half-open span above.
 
 Schema changes: append `ALTER TABLE ... ADD COLUMN` to `store.MIGRATIONS`; each
 runs on every startup, and **only** a "duplicate column" error is swallowed —
@@ -133,7 +154,7 @@ so every existing user would need a full `VACUUM` anyway. `Store.vacuum()`
 | `POST /sessions/{id}/reprocess` | Rebuild laps from stored frames (async def — event-loop writes). 409 while **any** session records: the synchronous replay would stall the event loop and freeze live telemetry. Manual edits survive (time-keyed — see the `edits` table). |
 | `DELETE /sessions/{id}` | Cascades frames+laps. 409 while recording. |
 | `GET /sessions/{id}/laps` | Session + laps with `is_best` / `gap_to_best` (excluded laps never score). Each lap carries effective `flags`, detected `flags_auto`, `excluded`; the session carries `edit_count` (drives the Reset-edits button). |
-| `POST /groups`, `GET /groups/{id}/laps`, `PATCH /groups/{id}`, `POST\|DELETE /groups/{id}/sessions[/{sid}]`, `DELETE /groups/{id}` | Merged run groups. Create validates same route + same car, both non-NULL (400), nothing already grouped (409). `GET .../laps` mirrors `GET /sessions/{id}/laps` but scores the **whole group**: one `is_best`, gaps against it, plus a display-only `run_index` — `lap_number` is left alone because it names the CSV column and the export filename, and every sprint member's is 0. `DELETE /groups/{id}` ungroups (the sessions survive); removing the last member prunes the group. No group CSV export on purpose: `_lap_csv_rows` writes `lap_number + 1` and the importer starts a new lap group only when that number *changes*, so a concatenated group export would re-import as one giant lap. |
+| `POST /groups`, `GET /groups/{id}/laps`, `PATCH /groups/{id}`, `POST\|DELETE /groups/{id}/sessions[/{sid}]`, `DELETE /groups/{id}` | Merged run groups. Create validates same route + same car, both non-NULL (400), nothing already grouped (409). `GET .../laps` mirrors `GET /sessions/{id}/laps` but scores the **whole group**: one `is_best`, gaps against it, plus a display-only `run_index` — `lap_number` is left alone because it names the CSV column and the export filename, and every sprint member's is 0. `DELETE /groups/{id}` ungroups (the sessions survive); removing the last member prunes the group. `DELETE /groups/{id}/sessions/{sid}` checks membership in the UPDATE's WHERE and 404s if the session isn't in *that* group — without it, a request naming one group could ungroup another group's session and prune that group instead. No group CSV export on purpose: `_lap_csv_rows` writes `lap_number + 1` and the importer starts a new lap group only when that number *changes*, so a concatenated group export would re-import as one giant lap. |
 | `PATCH /laps/{id}` | Manual lap curation as read-time edits: `flags` (full CSV, `""` = none; a value equal to the detected flags removes the override), `excluded` (drop/restore from bests+counts). |
 | `POST /laps/{id}/dismiss_contact` | "Not a contact": body `{t}` from the collision list. 404 if no real (non-landing) collision peak within ±0.5 s; re-dismissing an already-dismissed marker is an idempotent no-op. Lifts the lap's `contact` flag once no real (non-landing, non-dismissed) contact remains — only ever removes flags. |
 | `DELETE /sessions/{id}/edits` | Reset edits: drops every manual edit of the session, back to pure detection. |
@@ -198,7 +219,7 @@ listener: `session_id`, `delta` (vs session-best), `session_best`,
 | [tests/test_scenarios.py](tests/test_scenarios.py) | The AGENTS.md event-detection matrix as headless assertions (free-roam discard, dirty flags, race finish, sprint/dirt/touge point-to-point, WTA geometric laps, jumps). |
 | [tests/test_tracker.py](tests/test_tracker.py) | Direct-drive tracker regressions the scenarios can't stage: flag hygiene across lap re-anchors, `race_mode` dropping at a LastLap-change finish, the listener's crash-fallback frame shape. |
 | [tests/test_api.py](tests/test_api.py) | Endpoint functions run directly against a harness-produced store (stub request, no HTTP server): the `lap_time` channel fallback for dead lap clocks. |
-| [tests/test_store.py](tests/test_store.py) | Store without a recording: the upgrade every existing user runs on install day (a SCHEMA-only, `user_version` 0 database migrates in place, keeps its rows, and gets stamped), that a non-duplicate-column migration error propagates, and that deleting only frees pages while `vacuum()` returns the bytes. |
+| [tests/test_store.py](tests/test_store.py) | Store without a recording: the upgrade every existing user runs on install day (a SCHEMA-only, `user_version` 0 database migrates in place, keeps its rows, and gets stamped), that a non-duplicate-column migration error propagates, that deleting only frees pages while `vacuum()` returns the bytes, the startup `cleanup_sessions()` pass (what it deletes, what it repairs, and that a second run is a no-op), and that excluding an orphaned open lap leaves the previous lap's time alone. |
 | [tests/test_cars.py](tests/test_cars.py), [tests/test_tracks.py](tests/test_tracks.py) | The two reference lists' refresh layers, with `SOURCE_URL` pointed at `file://` URLs — the real code path minus the socket. `test_tracks.py` also covers naming: created/backfilled/legacy-adopt paths, `kind` promotion, and that a user rename is never overwritten. `test_bundled_catalogue_is_unambiguous` asserts every shipped entry still resolves to itself, so a regenerated catalogue can't silently ship a colliding pair. |
 | [conftest.py](conftest.py), [pyproject.toml](pyproject.toml) | Put the repo root + `tests/` on `sys.path`; `pytest` testpaths and `ruff` lint config (defaults: pyflakes F + E4/E7/E9, line length 100). |
 

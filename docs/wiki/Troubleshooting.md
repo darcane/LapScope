@@ -115,6 +115,14 @@ recognizing something. See
 capture workflow, and [Event Detection](Event-Detection) for how the inference
 works.
 
+## A trailing lap with no time, after a crash or power cut
+
+Normal. If LapScope is killed mid-lap (closing the window, `docker kill`, the
+machine losing power), the lap that was in progress is left open — it never
+crossed a finish line, so it has no time. The next startup closes it at the
+last frame that was recorded, and the session keeps every lap it did finish.
+Excluding it with 🗑 in the lap table is safe.
+
 ## Still stuck?
 
 [Open a bug report](https://github.com/darcane/LapScope/issues/new?template=bug_report.yml)

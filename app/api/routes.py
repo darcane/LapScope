@@ -200,7 +200,14 @@ async def reprocess(session_id: int, request: Request):
         raise HTTPException(404, "session not found")
     if request.app.state.tracker.session_id is not None:
         raise HTTPException(409, "a session is recording; retry after it ends")
-    return {"ok": True, "laps": reprocess_session(store, session_id)}
+    try:
+        return {"ok": True, "laps": reprocess_session(store, session_id)}
+    except Exception:
+        # the replay rolled back, so the session still has its original laps -
+        # say so, because a bare 500 here used to mean they were gone (#60)
+        log.exception("Reprocess of session %d failed", session_id)
+        raise HTTPException(
+            500, "reprocess failed; the session's laps were left unchanged")
 
 
 @router.delete("/sessions/{session_id}")
@@ -531,7 +538,8 @@ def remove_group_session(group_id: int, session_id: int, request: Request):
     store = request.app.state.store
     if store.get_group(group_id) is None:
         raise HTTPException(404, "group not found")
-    store.set_session_group(session_id, None)
+    if not store.remove_session_from_group(session_id, group_id):
+        raise HTTPException(404, "session is not in this group")
     return {"ok": True, "pruned": store.prune_empty_groups() > 0}
 
 
@@ -613,7 +621,7 @@ def dismiss_contact(lap_id: int, body: DismissBody, request: Request):
     t0, t1 = lap_span(lap)
     flags = lap["flags"] or ""
     for e in edits:
-        if e["kind"] == "flags" and t0 <= e["anchor_t"] <= t1:
+        if e["kind"] == "flags" and t0 <= e["anchor_t"] < t1:  # see lap_span
             flags = e["value"] or ""
     if remaining == 0 and "contact" in flags.split(","):
         flags = ",".join(f for f in flags.split(",") if f and f != "contact")

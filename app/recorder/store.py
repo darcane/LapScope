@@ -216,27 +216,39 @@ FROM sessions s
 LEFT JOIN routes r ON r.id = s.route_id
 LEFT JOIN car_names cn ON cn.ordinal = s.car_ordinal
 LEFT JOIN session_groups g ON g.id = s.group_id
--- excluded laps (manual edit) don't count: same span-match as session_laps
+-- excluded laps (manual edit) don't count: same half-open span-match as
+-- session_laps, so a session's lap_count agrees with the laps it lists
 LEFT JOIN laps l ON l.session_id = s.id AND NOT EXISTS
   (SELECT 1 FROM edits e WHERE e.session_id = l.session_id
    AND e.kind = 'exclude_lap' AND e.anchor_t >= l.started_t
-   AND e.anchor_t <= COALESCE(l.ended_t, 1e18))
+   AND e.anchor_t < COALESCE(l.ended_t, 1e18))
 """
 _SESSION_GROUP_BY = " GROUP BY s.id"
 
 
 def lap_span(lap: dict) -> tuple[float, float]:
-    """A lap's frame-time span; an open lap (NULL ended_t - only ever the
-    last one) extends to infinity so an anchor inside it still matches."""
+    """A lap's frame-time span, HALF-OPEN: `t0 <= anchor < t1`. An open lap
+    (NULL ended_t - only ever the last one) extends to infinity so an anchor
+    inside it still matches.
+
+    Half-open because consecutive laps share a frame: a lap's ended_t and the
+    next lap's started_t are written from the same `t` (laps.py). A closed
+    span made an anchor on that boundary belong to both laps, and excluding
+    one silently excluded its neighbour (issue #62). Every place that matches
+    an anchor against a lap has to use the same rule - `_merge_edits`, the
+    `_SESSION_SELECT` overlay, `remove_edits`, and the flags lookup in the
+    API - or a lap's count and its own view of itself disagree."""
     end = lap["ended_t"] if lap["ended_t"] is not None else float("1e18")
     return lap["started_t"], end
 
 
 def lap_anchor(lap: dict) -> float:
     """Frame-time anchor identifying a lap across reprocesses: the midpoint
-    of its span (started_t for an open lap). Midpoints avoid boundary ties
-    with adjacent laps and still land inside the corresponding lap after a
-    reprocess re-segments the session."""
+    of its span (started_t for an open lap, whose end isn't known yet).
+    Midpoints avoid boundary ties with adjacent laps and still land inside the
+    corresponding lap after a reprocess re-segments the session. An open lap's
+    anchor sits exactly on the shared boundary, which only resolves to the
+    right lap because the span above is half-open."""
     end = lap["ended_t"] if lap["ended_t"] is not None else lap["started_t"]
     return (lap["started_t"] + end) / 2
 
@@ -253,7 +265,7 @@ def _merge_edits(laps: list[dict], edits: list[dict]) -> list[dict]:
         lap["excluded"] = False
         t0, t1 = lap_span(lap)
         for e in by_session.get(lap["session_id"], ()):
-            if not t0 <= e["anchor_t"] <= t1:
+            if not t0 <= e["anchor_t"] < t1:  # half-open: see lap_span
                 continue
             if e["kind"] == "flags":
                 lap["flags"] = e["value"] or None
@@ -266,6 +278,7 @@ class Store:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._in_transaction = False
         self.db = sqlite3.connect(db_path)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
@@ -328,7 +341,7 @@ class Store:
             WHERE kind IS NULL
               AND EXISTS (SELECT 1 FROM sessions WHERE route_id = routes.id)
         """)
-        self.db.commit()
+        self._commit()
         return cur.rowcount
 
     def close(self) -> None:
@@ -337,20 +350,72 @@ class Store:
 
     # -- writes (event-loop thread only) ------------------------------------
 
+    def _commit(self) -> None:
+        """Every write method commits through this. Inside `transaction()` it
+        does nothing, so the caller decides when the batch becomes visible."""
+        if not self._in_transaction:
+            self.db.commit()
+
+    @contextmanager
+    def transaction(self):
+        """Make a batch of writes all-or-nothing: on any exception the whole
+        batch rolls back, including whatever ran before the failing statement.
+
+        Reprocess is why this exists. It deletes a session's laps and rebuilds
+        them from the frames; with each write committing on its own, a replay
+        that raised halfway left the session with its lap times deleted and
+        only a partial rebuild - permanently, since a crash on given frames
+        repeats on every retry.
+
+        Only the event-loop connection is grouped. Methods that write through
+        `reader()` open their own connection and commit independently, and a
+        read through `reader()` inside a transaction sees the *old* data, so
+        do neither in here. Not reentrant: SQLite has no nested transactions,
+        and a savepoint would only make the rollback look stronger than it is.
+        """
+        if self._in_transaction:
+            raise RuntimeError("Store.transaction() does not nest")
+        self._in_transaction = True
+        try:
+            yield
+        except BaseException:
+            self.db.rollback()
+            raise
+        else:
+            self.db.commit()
+        finally:
+            self._in_transaction = False
+
     def cleanup_sessions(self) -> int:
         """Startup pass: close crashed sessions, drop those without a single
-        completed lap (free-roam cruising, menu blips)."""
+        completed lap (free-roam cruising, menu blips).
+
+        Safe to run only before recording starts - it closes every open row it
+        finds, and a live session's are open on purpose."""
         self.db.execute(
             "UPDATE sessions SET ended_at ="
             " (SELECT MAX(t) FROM frames WHERE frames.session_id = sessions.id)"
             " WHERE ended_at IS NULL"
+        )
+        # ...and the lap the crash caught mid-flight, which used to stay open
+        # forever. An open lap's span has no end, so its edit anchor collapses
+        # onto the previous lap's last frame and excluding it excluded that one
+        # too (issue #62). lap_time stays NULL: it never crossed the line.
+        # The `started_t <` guard keeps the span non-empty - a lap whose only
+        # frame is the last one would get ended_t == started_t, and a half-open
+        # [t, t) can never be pointed at, so it could never be edited at all.
+        self.db.execute(
+            "UPDATE laps SET ended_t ="
+            " (SELECT MAX(t) FROM frames WHERE frames.session_id = laps.session_id)"
+            " WHERE ended_t IS NULL AND started_t <"
+            " (SELECT MAX(t) FROM frames WHERE frames.session_id = laps.session_id)"
         )
         cur = self.db.execute(
             "DELETE FROM sessions WHERE id NOT IN"
             " (SELECT DISTINCT session_id FROM laps WHERE lap_time IS NOT NULL)"
             " AND COALESCE(kept, 0) = 0"
         )
-        self.db.commit()
+        self._commit()
         self.prune_empty_groups()
         return cur.rowcount
 
@@ -390,7 +455,7 @@ class Store:
         number honest: in WAL mode the rebuild lands in the -wal file first,
         so measuring without it would report a saving that is still on disk."""
         before = self._disk_bytes()
-        self.db.commit()
+        self.db.commit()  # never deferred: VACUUM can't run inside a transaction
         self.db.execute("VACUUM")
         self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         after = self._disk_bytes()
@@ -406,7 +471,7 @@ class Store:
             (sid, started_at, frame["car_ordinal"], frame["car_class"],
              frame["car_pi"], frame["drivetrain_type"]),
         )
-        self.db.commit()
+        self._commit()
         return sid
 
     def end_session(self, session_id: int, ended_at: float, frame_count: int,
@@ -420,7 +485,7 @@ class Store:
             " track_type = COALESCE(track_type, ?) WHERE id = ?",
             (ended_at, frame_count, conditions, track_type, session_id),
         )
-        self.db.commit()
+        self._commit()
 
     def auto_tag_session(self, session_id: int, conditions: str | None,
                          track_type: str | None) -> None:
@@ -432,7 +497,7 @@ class Store:
             " track_type = COALESCE(track_type, ?) WHERE id = ?",
             (conditions, track_type, session_id),
         )
-        self.db.commit()
+        self._commit()
 
     def route_track_type(self, route_id: int,
                          exclude_session_id: int | None = None) -> str | None:
@@ -450,14 +515,14 @@ class Store:
     def discard_session(self, session_id: int) -> None:
         """Delete a just-ended session that produced no completed laps."""
         self.db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-        self.db.commit()
+        self._commit()
 
     def add_frames(self, session_id: int, frames: list[tuple[float, bytes]]) -> None:
         self.db.executemany(
             "INSERT INTO frames (session_id, t, raw) VALUES (?, ?, ?)",
             ((session_id, t, raw) for t, raw in frames),
         )
-        self.db.commit()
+        self._commit()
 
     def add_lap(self, session_id: int, lap_number: int, started_t: float,
                 start_distance: float) -> int:
@@ -466,7 +531,7 @@ class Store:
             " VALUES (?, ?, ?, ?)",
             (session_id, lap_number, started_t, start_distance),
         )
-        self.db.commit()
+        self._commit()
         return cur.lastrowid
 
     def restart_lap(self, lap_id: int, started_t: float, start_distance: float) -> None:
@@ -475,7 +540,7 @@ class Store:
             "UPDATE laps SET started_t = ?, start_distance = ? WHERE id = ?",
             (started_t, start_distance, lap_id),
         )
-        self.db.commit()
+        self._commit()
 
     def complete_lap(self, lap_id: int, ended_t: float, lap_time: float | None,
                      flags: str | None = None) -> None:
@@ -483,21 +548,21 @@ class Store:
             "UPDATE laps SET ended_t = ?, lap_time = ?, flags = ? WHERE id = ?",
             (ended_t, lap_time, flags, lap_id),
         )
-        self.db.commit()
+        self._commit()
 
     def delete_lap(self, lap_id: int) -> None:
         """Drop an open lap that turned out not to be one (post-finish coast)."""
         self.db.execute("DELETE FROM laps WHERE id = ?", (lap_id,))
-        self.db.commit()
+        self._commit()
 
     def delete_session_laps(self, session_id: int) -> None:
         self.db.execute("DELETE FROM laps WHERE session_id = ?", (session_id,))
-        self.db.commit()
+        self._commit()
 
     def mark_session_kept(self, session_id: int) -> None:
         """Exempt from the no-completed-laps cleanup at startup."""
         self.db.execute("UPDATE sessions SET kept = 1 WHERE id = ?", (session_id,))
-        self.db.commit()
+        self._commit()
 
     def match_or_create_route(self, start_x: float, start_z: float,
                               lap_length: float, span_x: float,
@@ -516,7 +581,7 @@ class Store:
                 self.db.execute(
                     "UPDATE routes SET span_x = ?, span_z = ? WHERE id = ?",
                     (span_x, span_z, rid))
-                self.db.commit()
+                self._commit()
                 route_id = rid
                 break
             if _spans_match(span_x, span_z, rsx, rsz):
@@ -528,7 +593,7 @@ class Store:
                 " VALUES (?, ?, ?, ?, ?, ?)",
                 (start_x, start_z, lap_length, span_x, span_z, kind),
             )
-            self.db.commit()
+            self._commit()
             route_id = cur.lastrowid
         else:
             self.set_route_kind(route_id, kind)
@@ -565,7 +630,7 @@ class Store:
             "UPDATE routes SET name = ?, catalog_key = ? WHERE id = ?"
             " AND (name IS NULL OR TRIM(name) = '')",
             (entry["name"], entry["key"], route_id))
-        self.db.commit()
+        self._commit()
         if not cur.rowcount:
             return None
         self.set_route_kind(route_id, entry["kind"])
@@ -605,7 +670,7 @@ class Store:
                                 (entry["name"], rid))
                 changed += 1
         if changed:
-            self.db.commit()
+            self._commit()
         return changed
 
     def set_route_kind(self, route_id: int, kind: str | None) -> None:
@@ -620,12 +685,12 @@ class Store:
             "UPDATE routes SET kind = ? WHERE id = ?"
             " AND (kind IS NULL OR (kind = 'sprint' AND ? = 'circuit'))",
             (kind, route_id, kind))
-        self.db.commit()
+        self._commit()
 
     def set_session_route(self, session_id: int, route_id: int) -> None:
         self.db.execute("UPDATE sessions SET route_id = ? WHERE id = ?",
                         (route_id, session_id))
-        self.db.commit()
+        self._commit()
 
     # -- reads / small writes (any thread; short-lived connection) -----------
 
@@ -825,6 +890,20 @@ class Store:
                          (group_id, session_id))
             conn.commit()
 
+    def remove_session_from_group(self, session_id: int, group_id: int) -> bool:
+        """Take a session out of one specific group; False if it wasn't in it.
+
+        The membership is part of the WHERE on purpose. Clearing group_id
+        without checking meant a request naming group A could ungroup a
+        session belonging to group B - and then prune B as newly empty
+        (issue #63)."""
+        with self.reader() as conn:
+            cur = conn.execute(
+                "UPDATE sessions SET group_id = NULL"
+                " WHERE id = ? AND group_id = ?", (session_id, group_id))
+            conn.commit()
+        return cur.rowcount > 0
+
     def delete_group(self, group_id: int) -> None:
         """Ungroup: the members survive, only the index goes. Explicitly two
         statements in one transaction - `reader()` doesn't enable foreign
@@ -862,11 +941,14 @@ class Store:
             conn.commit()
 
     def remove_edits(self, session_id: int, kind: str, t0: float, t1: float) -> int:
-        """Drop edits of one kind anchored inside [t0, t1] (a lap's span)."""
+        """Drop edits of one kind anchored inside [t0, t1) - a lap's span, and
+        half-open for the same reason it is everywhere else (see `lap_span`):
+        with both ends inclusive, clearing one lap's override also cleared the
+        next lap's, whose anchor can sit exactly on t1."""
         with self.reader() as conn:
             cur = conn.execute(
                 "DELETE FROM edits WHERE session_id = ? AND kind = ?"
-                " AND anchor_t >= ? AND anchor_t <= ?",
+                " AND anchor_t >= ? AND anchor_t < ?",
                 (session_id, kind, t0, t1))
             conn.commit()
             return cur.rowcount

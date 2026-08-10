@@ -269,6 +269,11 @@ with a 409 while any recording is in progress, so a long replay can't freeze
 live telemetry.) Manual edits — dismissed contacts, flag overrides, excluded
 laps — are kept across a reprocess; **Reset edits** is the way to drop them.
 
+A reprocess is all-or-nothing. It rebuilds every lap of the session from
+scratch, so if the replay hits something it can't handle it puts the session
+back exactly as it was rather than leaving it half-rebuilt — the error says so,
+and your existing lap times are still there.
+
 ## Known accepted trade-offs
 
 Not bugs — revisit only with new signal data:

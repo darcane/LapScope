@@ -90,6 +90,11 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
 - SQLite threading rule: the single `Store.db` connection is event-loop-thread
   only. API handlers run in FastAPI's threadpool and must use `Store.reader()`
   (short-lived connection; fine for small writes too, thanks to WAL).
+- Every store write commits on its own. Wrap a multi-step write that must not
+  land half-done in `store.transaction()` (it defers those commits and rolls
+  the batch back on any exception). It groups the event-loop connection only:
+  a `reader()` opened inside one sees the *old* data, so don't read back what
+  you just wrote until the block has exited.
 
 ## FH6 packet facts (hard-won, don't re-derive)
 
@@ -224,7 +229,11 @@ All the rules exist because some real behavior broke a naive version:
   session row untouched, discard suppressed) — recovers laps recorded before a
   detection fix. Must stay `async def` (writes on the event-loop connection),
   which also means the replay blocks the loop — it 409s while **any** session
-  is recording, or a long replay would freeze live telemetry mid-race.
+  is recording, or a long replay would freeze live telemetry mid-race. It
+  deletes the old laps before rebuilding, so the whole replay runs inside one
+  `store.transaction()`: anything that raises rolls the delete back. Without it
+  a crash mid-replay wiped the session's lap times for good — the same frames
+  crash the same way on every retry.
 - **Manual edits are read-time overrides** (analysis page: dismiss a contact
   marker, re-tag a lap's flags, exclude a lap from bests/counts). They live in
   the `edits` table keyed by **frame timestamps, never lap ids** — a reprocess
@@ -234,9 +243,18 @@ All the rules exist because some real behavior broke a naive version:
   recorder's `laps.flags` are never rewritten; `Store.session_laps` merges the
   overrides in (`flags` effective, `flags_auto` detected, `excluded`), and
   `DELETE /api/sessions/{id}/edits` ("Reset edits") is the escape hatch back
-  to pure detection.
+  to pure detection. An edit anchor matches a lap on a **half-open** span
+  (`started_t <= anchor < ended_t`) because consecutive laps share a frame —
+  with both ends inclusive, excluding a trailing open lap also excluded the
+  timed lap before it. Four places implement that rule (`lap_span`, the
+  `_SESSION_SELECT` overlay behind `lap_count`/`best_lap`, `remove_edits`,
+  `dismiss_contact`); change one and you must change all four.
 - `sessions.kept = 1` exempts a session from the startup no-laps cleanup
-  (LS_KEEP_DISCARDED captures and reprocessed sessions set it).
+  (LS_KEEP_DISCARDED captures and reprocessed sessions set it). That same
+  startup pass (`cleanup_sessions`) also closes what a crash left open —
+  `sessions.ended_at` **and** the last `laps.ended_t` — from the session's last
+  frame. It runs before the tracker exists and must stay there: it would close
+  a live session's open rows.
 - Dirty-lap inference: rewind = lap clock below its high-water mark while
   distance doesn't grow (per-frame comparison misses gradual scrubs — that bug
   shipped once); contact = ground-plane |accel| ≥ 45 m/s² **that also looks

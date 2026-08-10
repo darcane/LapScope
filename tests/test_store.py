@@ -96,6 +96,126 @@ def test_a_migration_failure_is_not_swallowed(tmp_path, monkeypatch):
         Store(str(tmp_path / "broken.db"))
 
 
+def _session(store, started_at: float, frames: int = 3) -> int:
+    """A session with `frames` frames one second apart, left open."""
+    sid = store.create_session(started_at, CAR)
+    store.add_frames(sid, [(started_at + i, bytes(324)) for i in range(frames)])
+    return sid
+
+
+def test_startup_cleanup_keeps_everything_it_should(tmp_path):
+    """The one destructive path that runs before the user sees anything, on
+    every single launch (issue #61 - it had no test at all). It must drop only
+    the sessions that never produced a timed lap, and repair what a crash left
+    half-written rather than deleting it."""
+    store = Store(str(tmp_path / "c.db"))
+    try:
+        timed = _session(store, 1000.0)
+        lap = store.add_lap(timed, 0, 1000.0, 0.0)
+        store.complete_lap(lap, 1002.0, 2.0)
+        store.end_session(timed, 1002.0, 3)
+
+        untimed = _session(store, 2000.0)  # free-roam cruise: laps, no times
+        store.add_lap(untimed, 0, 2000.0, 0.0)
+        store.end_session(untimed, 2002.0, 3)
+
+        kept = _session(store, 3000.0)  # an import, or a reprocess that found 0
+        store.mark_session_kept(kept)
+        store.end_session(kept, 3002.0, 3)
+
+        crashed = _session(store, 4000.0)  # killed mid-lap: both rows still open
+        store.add_lap(crashed, 0, 4000.0, 0.0)  # never completed
+        done = store.add_lap(crashed, 1, 4001.0, 0.0)  # ...after one full lap
+        store.complete_lap(done, 4002.0, 1.0)
+        gone = store.create_group("doomed", 1, 100, [untimed])
+
+        removed = store.cleanup_sessions()
+
+        assert removed == 1
+        assert sorted(s["id"] for s in store.list_sessions()) == [timed, kept, crashed]
+        # the crash left no ended_at and an open lap; both take the last frame
+        assert store.get_session(crashed)["ended_at"] == 4002.0
+        rows = {row["lap_number"]: row for row in store.session_laps(crashed)}
+        assert rows[0]["ended_t"] == 4002.0
+        assert rows[0]["lap_time"] is None  # repaired, not invented
+        assert rows[1]["lap_time"] == 1.0   # the finished one is untouched
+        assert store.get_group(gone) is None  # emptied by the delete, so pruned
+    finally:
+        store.close()
+
+
+def test_startup_cleanup_leaves_a_healthy_database_alone(tmp_path):
+    """It runs on every launch, so the second run must be a no-op: nothing is
+    deleted twice and no ended_t drifts to a later frame."""
+    store = Store(str(tmp_path / "c2.db"))
+    try:
+        sid = _session(store, 1000.0)
+        lap = store.add_lap(sid, 0, 1000.0, 0.0)
+        store.complete_lap(lap, 1001.0, 1.0)
+        store.end_session(sid, 1002.0, 3)
+
+        assert store.cleanup_sessions() == 0
+        assert store.cleanup_sessions() == 0
+        assert [s["id"] for s in store.list_sessions()] == [sid]
+        assert store.get_session(sid)["ended_at"] == 1002.0
+        assert store.session_laps(sid)[0]["ended_t"] == 1001.0
+    finally:
+        store.close()
+
+
+def _one_lap_then_an_open_one(store) -> tuple[int, list[dict]]:
+    """What killing the process mid-session leaves behind: a finished lap, and
+    an open one starting on the very frame the first ended."""
+    sid = _session(store, 1000.0, frames=0)
+    store.add_frames(sid, [(1000.0 + i, bytes(324)) for i in range(201)])
+    done = store.add_lap(sid, 0, 1000.0, 0.0)
+    store.complete_lap(done, 1100.0, 100.0)
+    store.add_lap(sid, 1, 1100.0, 0.0)  # started_t == the previous ended_t
+    return sid, store.session_laps(sid)
+
+
+def test_excluding_an_open_lap_leaves_the_previous_lap_alone(tmp_path):
+    """Issue #62: an open lap's anchor is its started_t, which is byte-identical
+    to the previous lap's ended_t. With both ends of the span inclusive the
+    anchor landed inside both laps, so tidying away the untimed trailing lap
+    silently excluded the timed one before it - and with it the session best."""
+    store = Store(str(tmp_path / "open.db"))
+    try:
+        sid, laps = _one_lap_then_an_open_one(store)
+        assert laps[1]["ended_t"] is None
+        anchor = store_mod.lap_anchor(laps[1])
+        assert anchor == laps[0]["ended_t"]  # the collision this test is about
+
+        store.add_edit(sid, "exclude_lap", anchor)
+        rows = store.session_laps(sid)
+        assert not rows[0]["excluded"], "the finished lap must survive"
+        assert rows[1]["excluded"]
+        # the session's own count uses a second, SQL copy of the same rule
+        session = store.get_session(sid)
+        assert session["lap_count"] == 1 and session["best_lap"] == 100.0
+    finally:
+        store.close()
+
+
+def test_cleanup_closes_the_open_lap_so_the_anchors_separate(tmp_path):
+    """The other half of #62: the orphaned open lap is repaired at startup, so
+    its anchor becomes a real midpoint instead of sitting on the boundary."""
+    store = Store(str(tmp_path / "open2.db"))
+    try:
+        sid, laps = _one_lap_then_an_open_one(store)
+        store.mark_session_kept(sid)
+        store.cleanup_sessions()
+
+        rows = store.session_laps(sid)
+        assert rows[1]["ended_t"] == 1200.0
+        assert store_mod.lap_anchor(rows[1]) == 1150.0  # clear of lap 1's end
+        store.add_edit(sid, "exclude_lap", store_mod.lap_anchor(rows[1]))
+        rows = store.session_laps(sid)
+        assert not rows[0]["excluded"] and rows[1]["excluded"]
+    finally:
+        store.close()
+
+
 def _recorded(store, frames: int = 20_000) -> int:
     sid = store.create_session(1000.0, CAR)
     store.add_frames(sid, [(1000.0 + i / 60, bytes(324)) for i in range(frames)])
