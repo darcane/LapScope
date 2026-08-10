@@ -518,10 +518,20 @@ class Store:
         self._commit()
 
     def add_frames(self, session_id: int, frames: list[tuple[float, bytes]]) -> None:
-        self.db.executemany(
-            "INSERT INTO frames (session_id, t, raw) VALUES (?, ?, ?)",
-            ((session_id, t, raw) for t, raw in frames),
-        )
+        try:
+            self.db.executemany(
+                "INSERT INTO frames (session_id, t, raw) VALUES (?, ?, ?)",
+                ((session_id, t, raw) for t, raw in frames),
+            )
+        except Exception:
+            # the tracker retries the same buffer (issue #64), so a half
+            # applied batch must not survive: the next write's commit would
+            # otherwise carry it along and duplicate the re-inserted frames.
+            # Inside transaction() the batch is already doomed - leave the
+            # rollback to it, which is the only thing that may end one.
+            if not self._in_transaction:
+                self.db.rollback()
+            raise
         self._commit()
 
     def add_lap(self, session_id: int, lap_number: int, started_t: float,

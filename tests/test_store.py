@@ -253,3 +253,32 @@ def test_deleting_frees_pages_but_only_compacting_returns_the_space(tmp_path):
                                      "ended_t": 1e18})) == 20_000
     finally:
         store.close()
+
+
+def test_a_half_written_frame_batch_never_survives_the_retry(tmp_path):
+    """The tracker retries the same buffer after a failed write (issue #64),
+    so a batch that died half-way must not still be sitting in the open
+    transaction: the next write's commit would carry it along and store
+    those frames twice."""
+    class DiesHalfWay:
+        """Frames that raise part-way through, like a disk filling up mid-write."""
+
+        def __init__(self, frames, after):
+            self.frames, self.after = frames, after
+
+        def __iter__(self):
+            for i, frame in enumerate(self.frames):
+                if i == self.after:
+                    raise sqlite3.OperationalError("database or disk is full")
+                yield frame
+
+    store = Store(str(tmp_path / "t.db"))
+    try:
+        sid = store.create_session(1000.0, CAR)
+        frames = [(1000.0 + i / 60, bytes(324)) for i in range(10)]
+        with pytest.raises(sqlite3.OperationalError):
+            store.add_frames(sid, DiesHalfWay(frames, 5))
+        store.add_frames(sid, frames)  # the retry, exactly as the tracker does it
+        assert store.db.execute("SELECT COUNT(*) FROM frames").fetchone()[0] == 10
+    finally:
+        store.close()

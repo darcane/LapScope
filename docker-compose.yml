@@ -13,3 +13,11 @@ services:
       # recognize yet - see README "An event type isn't being recorded")
       - LS_KEEP_DISCARDED=${LS_KEEP_DISCARDED:-0}
     restart: unless-stopped
+    logging:
+      # Docker's default json-file driver never rotates. A recorder that
+      # starts failing logs at telemetry rate, so an unbounded log is one
+      # more way to fill the disk that caused the failure (issue #64).
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

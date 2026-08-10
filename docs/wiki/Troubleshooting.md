@@ -123,6 +123,34 @@ crossed a finish line, so it has no time. The next startup closes it at the
 last frame that was recorded, and the session keeps every lap it did finish.
 Excluding it with 🗑 in the lap table is safe.
 
+## "Not recording — the database write failed"
+
+A red bar across the top of the Live page, and `write_error` in
+`/api/status`. Telemetry is still arriving and the gauges still move, but
+nothing is being stored — almost always a **full disk**, occasionally a
+database file that has been made read-only or locked by another program.
+
+LapScope keeps buffering while this lasts (about a minute of telemetry,
+oldest frames dropped first — `frames_dropped` counts what was lost) and
+retries every second, so freeing space is enough: the bar disappears on its
+own and recording carries on, no restart needed. The failure is logged once
+when it starts and once when it recovers, not per packet.
+
+Where the space went: recordings are raw packets, roughly **70 MB per hour of
+driving**. Delete sessions you don't need from the Analysis page, then
+**Settings → Storage → Compact now** — deleting alone frees space inside the
+database file without giving it back to the drive.
+
+## "400 Invalid host header"
+
+LapScope answers to `localhost`, any `.local` name, and any IP address. It
+refuses other hostnames, which is what stops a web page you visit from
+pointing its own domain at your machine and using the API from there.
+
+You'll only hit this if you reach LapScope by some other name — through a
+reverse proxy, say. List the names you use in the `LS_ALLOWED_HOSTS` env var
+(comma-separated) and restart.
+
 ## Still stuck?
 
 [Open a bug report](https://github.com/darcane/LapScope/issues/new?template=bug_report.yml)
