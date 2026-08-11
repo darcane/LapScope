@@ -117,6 +117,7 @@ log = logging.getLogger("lapscope.recorder")
 
 RACE_OFF_GRACE = 15.0
 FLUSH_INTERVAL = 1.0
+FRAME_BUFFER_MAX = 3600       # ~60 s at 60 Hz; oldest frames go first (issue #64)
 RACE_TIME_RESET_JUMP = 10.0   # backwards jump (s) that signals a new event
 PUDDLE_DEPTH_MIN = 0.03       # any wheel deeper than this counts as a wet frame
 WET_FRAME_FRACTION = 0.02     # fraction of wet frames to auto-tag "wet"
@@ -253,6 +254,12 @@ class SessionTracker:
         self._buffer: list[tuple[float, bytes]] = []
         self._last_flush = 0.0
         self._race_off_since: float | None = None
+        # a persistent write failure, surfaced in /api/status: the dashboard
+        # would otherwise look like it was recording normally. Both survive
+        # the session that hit them - a full disk is not fixed by the next
+        # session starting, and the count is what says how much was lost.
+        self.write_error: str | None = None
+        self.frames_dropped = 0
 
         self._lap_id: int | None = None
         self._lap_number: int | None = None
@@ -421,8 +428,8 @@ class SessionTracker:
         self._prev_g = (t, g)
         delta = self._lap_logic(t, frame)
         if t - self._last_flush >= FLUSH_INTERVAL:
-            self.flush()
-            self._last_flush = t
+            self._last_flush = t  # before, not after: a failing flush used to
+            self.flush()          # leave this stale and retry on every packet
         # live lap clock for events that never start CurrentLap (WTA/sprint)
         lap_elapsed = None
         if (self._lap_id is not None and frame["current_lap"] <= 0.001
@@ -458,13 +465,51 @@ class SessionTracker:
             self._end_session(self.last_frame_t or now)
 
     def flush(self) -> None:
-        if self._buffer and self.session_id is not None:
+        """Write the buffered frames, and survive it failing.
+
+        A raise here would reach `datagram_received`, which catches and logs
+        it with a traceback - once per packet, 60 a second, into a container
+        log Docker never rotated. On the disk-full failure that causes it,
+        that log spam accelerates the very condition behind it, while the
+        buffer it never drained grows ~86 MB an hour (issue #64).
+
+        So: the failure is logged once on the way in and once on the way out,
+        the buffer is retried (the write may have failed on a lock, not a
+        full disk) but capped, and the oldest frames go first - the same
+        backpressure `Hub.publish` applies to a slow WebSocket client."""
+        if not self._buffer or self.session_id is None:
+            return
+        try:
             self.store.add_frames(self.session_id, self._buffer)
-            self._buffer = []
+        except Exception as exc:
+            if self.write_error is None:
+                log.error(
+                    "Recording write failed (%s) - session %s is buffering up to "
+                    "%d frames and dropping the oldest. This is logged once, and "
+                    "reported in /api/status until it recovers.",
+                    exc, self.session_id, FRAME_BUFFER_MAX)
+            self.write_error = str(exc) or exc.__class__.__name__
+            overflow = len(self._buffer) - FRAME_BUFFER_MAX
+            if overflow > 0:
+                del self._buffer[:overflow]
+                self.frames_dropped += overflow
+            return
+        if self.write_error is not None:
+            log.info("Recording write recovered; %d frame(s) were lost",
+                     self.frames_dropped)
+            self.write_error = None
+        self._buffer = []
 
     # -- internals --------------------------------------------------------------
 
     def _start_session(self, t: float, frame: dict) -> None:
+        if self._buffer:
+            # a write still failing when the last session closed left its
+            # frames here; they can only ever be stored under whatever
+            # session is open at flush time, so keeping them would file the
+            # old session's telemetry under this one
+            self.frames_dropped += len(self._buffer)
+            self._buffer = []
         self.session_id = self.store.create_session(t, frame)
         self._frame_count = 0
         self._last_flush = t

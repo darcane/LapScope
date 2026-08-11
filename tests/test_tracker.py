@@ -458,3 +458,85 @@ def test_listener_fallback_keeps_frame_contract(tmp_path):
     for key in ("session_id", "delta", "session_best", "lap_elapsed", "race_mode"):
         assert key in frame
     assert frame["race_mode"] is False
+
+
+def test_a_failing_write_is_bounded_logged_once_and_reported(tmp_path, caplog):
+    """Issue #64: with the disk full every flush raises. The old code cleared
+    the buffer only after a successful write and advanced the flush clock
+    only after a successful flush, so the buffer grew without limit AND the
+    retry fired on the very next packet - 1740 of 1800 frames raised out of
+    on_frame in a 30 s measurement, each one a traceback in a container log
+    Docker never rotates, on the disk that was already full."""
+    import logging
+    import sqlite3
+
+    from app.recorder.laps import FLUSH_INTERVAL, FRAME_BUFFER_MAX
+
+    d = Driver(tmp_path)
+    real_add_frames = d.store.add_frames
+
+    def full_disk(session_id, frames):
+        raise sqlite3.OperationalError("database or disk is full")
+
+    d.store.add_frames = full_disk
+    caplog.set_level(logging.INFO, logger="lapscope.recorder")
+    sent = FRAME_BUFFER_MAX + 900  # ~75 s of telemetry, well past the cap
+    for _ in range(sent):
+        d.send(speed=40.0, distance_traveled=d.f["distance_traveled"] + 0.7)
+
+    # nothing raised (on_frame returned normally every time), the buffer is
+    # capped - the trim runs when a flush fails, so it carries at most one
+    # flush interval on top - and what it shed is counted, not quietly lost
+    assert FRAME_BUFFER_MAX <= len(d.tracker._buffer) <= FRAME_BUFFER_MAX + 60 * FLUSH_INTERVAL + 1
+    assert len(d.tracker._buffer) + d.tracker.frames_dropped == sent
+    assert "disk is full" in (d.tracker.write_error or "")
+    failures = [r for r in caplog.records if "Recording write failed" in r.getMessage()]
+    assert len(failures) == 1  # once on the way in, not once per second
+
+    # ...and it heals itself: the next working flush clears the state, says so
+    # once, and the frames still in the buffer reach the database
+    d.store.add_frames = real_add_frames
+    for _ in range(120):
+        d.send(speed=40.0, distance_traveled=d.f["distance_traveled"] + 0.7)
+    assert d.tracker.write_error is None
+    assert sum("Recording write recovered" in r.getMessage()
+               for r in caplog.records) == 1
+    d.tracker.flush()
+    stored = d.store.db.execute("SELECT COUNT(*) FROM frames").fetchone()[0]
+    assert stored >= FRAME_BUFFER_MAX
+    d.store.close()
+
+
+def test_frames_orphaned_by_a_failed_session_are_not_charged_to_the_next(tmp_path):
+    """A write still failing when the session closes leaves its frames in the
+    buffer. They can only ever be stored under whichever session is open at
+    flush time, so carrying them forward would file one session's telemetry
+    under the next one."""
+    import sqlite3
+
+    d = Driver(tmp_path)
+    real_add_frames = d.store.add_frames
+
+    def full_disk(session_id, frames):
+        raise sqlite3.OperationalError("database or disk is full")
+
+    d.store.add_frames = full_disk
+    for _ in range(180):  # 3 s of a session whose frames never reach the disk
+        d.send(speed=40.0, distance_traveled=d.f["distance_traveled"] + 0.7)
+    lost_session = d.tracker.session_id
+    d.tracker.shutdown(d.t + 20.0)
+    assert d.tracker._buffer  # the failing flush kept them, hoping to retry
+
+    d.store.add_frames = real_add_frames
+    d.f["current_race_time"] = 0.0
+    for _ in range(180):
+        d.send(speed=40.0, distance_traveled=d.f["distance_traveled"] + 0.7)
+    d.tracker.flush()
+    kept_session = d.tracker.session_id
+    assert kept_session != lost_session
+    rows = dict(d.store.db.execute(
+        "SELECT session_id, COUNT(*) FROM frames GROUP BY session_id").fetchall())
+    assert set(rows) == {kept_session}  # nothing was re-labelled
+    assert rows[kept_session] <= 180
+    assert d.tracker.frames_dropped >= 180  # and the loss is reported, not hidden
+    d.store.close()

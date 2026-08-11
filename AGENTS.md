@@ -95,6 +95,20 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
   the batch back on any exception). It groups the event-loop connection only:
   a `reader()` opened inside one sees the *old* data, so don't read back what
   you just wrote until the block has exited.
+- **The recording path must never raise.** `SessionTracker.flush()` runs from
+  the UDP callback, where an exception is caught and logged with a traceback —
+  per packet. A failing write (disk full, database locked) is therefore
+  swallowed there: logged once on the way in and once on recovery, buffer
+  capped at `FRAME_BUFFER_MAX` dropping oldest first, state exposed as
+  `write_error` / `frames_dropped` on `/api/status` and as a banner on the
+  dashboard. Keep any new per-frame work inside that contract.
+- **The API is reachable from the user's browser, so it has a boundary.**
+  `main.check_host` refuses a `Host` that is neither `localhost`, a `.local`
+  name, an IP literal, nor in `LS_ALLOWED_HOSTS` (DNS rebinding always arrives
+  with a borrowed *name*); `/ws/live` refuses a cross-origin handshake, since
+  WebSockets skip CORS; and anything accepting a raw body must require its
+  content type, or it is a CORS-simple request any page can POST to. A new
+  endpoint that reads a body inherits all three concerns.
 
 ## FH6 packet facts (hard-won, don't re-derive)
 

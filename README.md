@@ -145,6 +145,12 @@ docker compose up --build -d
 
 Then open **http://localhost:8000**.
 
+> ⚠️ Compose publishes port 8000 on **every** interface, and LapScope has no
+> accounts or passwords — anyone who can reach that port can read your sessions
+> and delete them. That's fine on a home LAN; don't publish it to an untrusted
+> network or forward it through your router. To keep it on the machine itself,
+> change the port mapping to `"127.0.0.1:8000:8000"`.
+
 ### In Forza Horizon 6 (required either way)
 
 Turn on Data Out under **`Settings → HUD and Gameplay`**:
@@ -204,10 +210,18 @@ and `tools/inspect_session.py`) has its own page:
 | `LS_KEEP_DISCARDED`  | `0`              | `1` = keep sessions with no completed laps |
 | `LS_CAR_LIST_URL`    | this repo's list | Where "Refresh car names" downloads from   |
 | `LS_TRACK_LIST_URL`  | this repo's list | Where "Refresh tracks" downloads from      |
+| `LS_ALLOWED_HOSTS`   | *(empty)*        | Extra `Host` names to answer to (see below) |
 
 `LS_KEEP_DISCARDED` is read once when the app starts, so it has to be set before
 launch — changing it later needs a restart. The two list URLs point at this repo's
 `main` branch by default and only exist so a fork can serve its own lists.
+
+LapScope answers to `localhost`, any `.local` name, and any IP address —
+loopback, the exe, and reaching a Docker host by its LAN IP all work untouched.
+Other hostnames get a `400 Invalid host header`, which is what stops a web page
+you happen to visit from pointing its own domain at your machine and driving the
+API from there. If you front LapScope with a reverse proxy or reach it by some
+other name, list those names in `LS_ALLOWED_HOSTS` (comma-separated).
 
 Recordings are raw 324-byte packets (~70 MB per hour of driving). Deleting a session
 from the Analysis page frees that space *inside* the database file for future

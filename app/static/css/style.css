@@ -117,6 +117,23 @@ nav a:hover:not(.active) { color: var(--text); background: var(--panel-hi); }
 }
 .update-banner-x:hover { opacity: 1; }
 
+/* recording write failure: same top-of-page slot as the update notice, but
+   a live condition rather than a notice - no dismiss button, because the
+   only way out is fixing the disk (issue #64) */
+.rec-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 8px 20px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-align: center;
+  color: #1a0406;
+  background: var(--bad);
+  border-bottom: 1px solid var(--panel-edge-soft);
+}
+
 .chip {
   margin-left: auto;
   background: var(--panel-lo);

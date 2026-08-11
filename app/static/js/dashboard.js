@@ -236,10 +236,31 @@ onSettingsChange(() => {
   syncRawPanel();
 });
 
-/* no-data overlay: refresh server stats while visible */
+/* The recorder can't write (disk full, database locked): packets still
+   arrive and every gauge still moves, so nothing on screen would say the
+   drive isn't being saved. Not dismissible — it clears itself when the
+   next flush succeeds (issue #64). */
+function showWriteError(st) {
+  let bar = document.getElementById("rec-banner");
+  if (!st.write_error) { if (bar) bar.remove(); return; }
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "rec-banner";
+    bar.className = "rec-banner";
+    document.body.prepend(bar);
+  }
+  const lost = st.frames_dropped ? ` ${st.frames_dropped} frames lost so far.` : "";
+  bar.textContent = `⚠ Not recording — the database write failed: ${st.write_error}.` +
+    `${lost} Free up disk space; recording resumes on its own.`;
+}
+
+/* server stats: the no-data overlay's line while it is visible, and the
+   write-failure banner at all times */
 async function pollStatus() {
   try {
     const st = await (await fetch("/api/status")).json();
+    showWriteError(st);
+    if ($("nodata").classList.contains("hidden")) return;
     $("nd-port").textContent = st.udp_port;
     const stat = $("nd-stat");
     if (st.udp_error) {
@@ -255,7 +276,7 @@ async function pollStatus() {
     }
   } catch { /* server briefly unavailable */ }
 }
-setInterval(() => { if (!$("nodata").classList.contains("hidden")) pollStatus(); }, 2000);
+setInterval(pollStatus, 2000);
 pollStatus();
 
 let chipOrdinal = null;

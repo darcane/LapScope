@@ -144,7 +144,7 @@ def test_mid_flight_spike_marks_its_own_jump_hard():
     jump, which is the last *emitted* segment at that moment (issue #41).
     Two flights, the second with a mid-air burst that subsides before
     touchdown: only the second may be hard."""
-    from app.api.routes import _scan_lap
+    from app.api.routes import _LapScan
     from app.telemetry.packet import empty_fields, pack
 
     def frame(d, *, air=False, gx=0.0):
@@ -175,7 +175,7 @@ def test_mid_flight_spike_marks_its_own_jump_hard():
     add(4, air=True)         # ...subsides while still airborne
     add(10)                  # touchdown + rollout
 
-    _, collisions, jumps = _scan_lap(rows, 0.0)
+    collisions, jumps = _LapScan(rows, 0.0).events()
     assert len(jumps) == 2
     assert not jumps[0]["hard"] and jumps[0]["g"] is None  # first flight clean
     assert jumps[1]["hard"] and jumps[1]["g"] > 4.0        # the spike is its
@@ -187,7 +187,7 @@ def test_aero_cornering_bursts_are_dropped_impacts_kept():
     threshold and used to draw a marker per fast corner. Only a burst that
     looks like an impulse survives - here one long aero corner (dropped) and
     one wall hit (kept), so exactly one marker comes back."""
-    from app.api.routes import _scan_lap
+    from app.api.routes import _LapScan
     from app.telemetry.packet import empty_fields, pack
 
     def frame(d, gx):
@@ -216,12 +216,12 @@ def test_aero_cornering_bursts_are_dropped_impacts_kept():
     add([60.0 - 2.0 * i for i in range(31)])  # ...and unwinds. No impulse.
     add([0.0] * 10)
     aero_only = len(rows)
-    assert _scan_lap(rows, 0.0)[1] == []          # not one marker so far
+    assert _LapScan(rows, 0.0).events()[0] == []          # not one marker so far
 
     add([0.0, 70.0, 65.0, 50.0])        # a wall: 0 -> 70 m/s^2 in one frame
     add([0.0] * 10)
 
-    _, collisions, jumps = _scan_lap(rows, 0.0)
+    collisions, jumps = _LapScan(rows, 0.0).events()
     assert jumps == []
     assert len(collisions) == 1                    # the wall, not the corner
     hit = collisions[0]
@@ -813,15 +813,22 @@ def test_export_filename_is_windows_and_header_safe():
 # ------------------------- CSV import (the reverse trip) -------------------------
 
 
-def _import_request(store, text: str, recording: bool = False):
-    """Stub request for import_csv: the raw body is the file, and the
-    tracker gate needs an answerable session_id."""
+def _import_request(store, text: str, recording: bool = False, *,
+                    content_type: str = "text/csv", declared: str | None = None,
+                    chunk: int = 1 << 20):
+    """Stub request for import_csv: the raw body is the file, streamed the
+    way Starlette streams it, and the tracker gate needs an answerable
+    session_id. `declared` overrides Content-Length to stage a lying header."""
     req = _request_for(store, tracker=SimpleNamespace(
         session_id=7 if recording else None))
+    raw = text.encode()
+    req.headers = {"content-type": content_type,
+                   "content-length": str(len(raw) if declared is None else declared)}
 
-    async def body():
-        return text.encode()
-    req.body = body
+    async def stream():
+        for i in range(0, max(len(raw), 1), chunk):
+            yield raw[i:i + chunk]
+    req.stream = stream
     return req
 
 
@@ -1286,3 +1293,237 @@ def test_compact_reports_bytes_and_waits_for_the_recorder(tmp_path):
     assert out["after_bytes"] < out["before_bytes"]
     assert storage(idle)["db_bytes"] == out["after_bytes"]
     store2.close()
+
+
+def test_the_chart_point_budget_is_actually_respected(tmp_path):
+    """Issue #65: the stride was len(kept) // max_points, which is 1 for
+    anything under twice the budget - so a 2562-frame lap answered a request
+    for 1500 points with all 2562 of them, and the client paid for the extra
+    in interpolation and chart rebuilds."""
+    from app.api.routes import lap_data
+
+    store = _dirty_store(tmp_path)
+    req = _request_for(store)
+    lap = next(lap for lap in completed_laps(store, sessions(store)[0]["id"])
+               if not flags_of(lap))
+    n = lap_data(lap["id"], req, "speed_kmh", 20000)["n_frames"]
+
+    budget = n // 2 + 1  # the worst case: the old stride rounded down to 1
+    data = lap_data(lap["id"], req, "speed_kmh", budget)
+    assert n > budget                      # there is something to decimate
+    assert len(data["dist"]) <= budget     # and the answer stays inside the ask
+    assert len(data["dist"]) > budget / 2  # without throwing away the budget
+    assert len(data["channels"]["speed_kmh"]) == len(data["dist"]) == len(data["t"])
+
+
+def _flat_rows(n: int, *, rewind_at: int | None = None, rewind_by: int = 0):
+    """n grounded frames, one meter apart, optionally rewinding the odometer."""
+    from app.telemetry.packet import empty_fields, pack
+
+    rows = []
+    for i in range(n):
+        d = float(i)
+        if rewind_at is not None and i >= rewind_at:
+            d = float(i - rewind_by)
+        f = empty_fields()
+        f.update(is_race_on=1, distance_traveled=d, pos_x=d,
+                 norm_susp_travel=[0.5] * 4, tire_combined_slip=[0.3] * 4)
+        rows.append((i / 60, pack(f)))
+    return rows
+
+
+def test_a_rewind_is_trimmed_the_same_whatever_the_window(monkeypatch):
+    """The scan streams now, so a frame can only be rewound away while it is
+    still inside REWIND_WINDOW. Any window wider than the rewind itself must
+    give the identical trace - the window bounds memory, not behavior."""
+    from app.api import routes
+
+    rows = _flat_rows(400, rewind_at=300, rewind_by=120)
+    full = [d for _, d, _ in routes._LapScan(rows, 0.0)]
+    assert len(full) < len(rows)  # the rewound-over stretch really is dropped
+
+    monkeypatch.setattr(routes, "REWIND_WINDOW", 200)  # still wider than the rewind
+    assert [d for _, d, _ in routes._LapScan(rows, 0.0)] == full
+
+
+def test_the_lap_scan_holds_a_window_not_the_whole_lap():
+    """Issue #65: it used to keep every parsed frame - 506 MB measured on a
+    real 119k-frame lap, per request, in the threadpool. Peak allocation must
+    now be flat in the length of the lap instead of linear in it."""
+    import tracemalloc
+
+    from app.api.routes import _LapScan
+
+    def peak_for(n: int) -> int:
+        rows = _flat_rows(n)  # built before tracing: only the scan is measured
+        tracemalloc.start()
+        _LapScan(rows, 0.0).events()
+        high = tracemalloc.get_traced_memory()[1]
+        tracemalloc.stop()
+        return high
+
+    short, long = peak_for(2_000), peak_for(20_000)
+    assert long < short * 1.5   # 10x the lap, same working set
+    assert long < 20_000 * 500  # and nowhere near the ~4.2 KB per frame it kept
+
+
+def test_status_reports_a_recorder_that_cannot_write():
+    """Issue #64: packets keep arriving and every gauge keeps moving while a
+    write failure quietly drops the recording, so /api/status has to be the
+    one place that says so - it is what the dashboard banner reads."""
+    from app.api.routes import status
+    from app.telemetry.hub import Hub
+
+    tracker = SimpleNamespace(session_id=3, best_lap_time=None,
+                              write_error=None, frames_dropped=0)
+    req = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+        hub=Hub(), tracker=tracker, udp_port=9999, udp_error=None)))
+    assert asyncio.run(status(req))["write_error"] is None
+
+    tracker.write_error, tracker.frames_dropped = "database or disk is full", 240
+    out = asyncio.run(status(req))
+    assert out["write_error"] == "database or disk is full"
+    assert out["frames_dropped"] == 240
+    assert out["session_active"] is True  # still "recording", which is the trap
+
+
+def test_import_csv_rejects_an_out_of_range_lap_number(tmp_path):
+    """Issue #66: the lap column went unchecked into a uint16 packet field.
+    70000 raised struct.error - an uncaught 500 from an endpoint that
+    promises 400s carrying the line - and 0 was the quiet one: it stored
+    lap_number -1, which re-exported as lap 0 and re-imported as -2."""
+    from app.api.routes import IMPORT_MAX_LAP, import_csv
+
+    store = Store(tmp_path / "imp.db")
+    header = "lap,t_s,dist_m,speed_kmh,lap_time_s,pos_x_m,pos_z_m\n"
+    for lap_no in (70000, 0, -1, IMPORT_MAX_LAP + 1):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(import_csv(_import_request(
+                store, f"{header}{lap_no},0.0,0.0,100.0,0.017,0.0,0.0\n"), name=""))
+        assert exc.value.status_code == 400
+        assert "line 2" in exc.value.detail and "out of range" in exc.value.detail
+
+    # the boundary itself is a valid lap and still imports
+    out = asyncio.run(import_csv(_import_request(
+        store, f"{header}{IMPORT_MAX_LAP},0.0,0.0,100.0,0.017,0.0,0.0\n"
+               f"{IMPORT_MAX_LAP},1.0,27.8,100.0,1.017,27.8,0.0\n"), name=""))
+    assert store.session_laps(out["session_id"])[0]["lap_number"] == IMPORT_MAX_LAP - 1
+    store.close()
+
+
+def test_import_csv_bounds_the_body_and_demands_a_csv(tmp_path, monkeypatch):
+    """Issue #66/#67: the body was read whole, on the event loop, with no cap
+    and no content-type check - so a huge upload froze the live dashboard
+    (the kernel drops UDP meanwhile), and being a CORS-simple request meant
+    any page the user visited could POST sessions into their database."""
+    from app.api.routes import IMPORT_MAX_BYTES, import_csv
+
+    store = Store(tmp_path / "imp.db")
+    text = ("lap,t_s,dist_m,speed_kmh,lap_time_s,pos_x_m,pos_z_m\n"
+            "1,0.0,0.0,100.0,0.017,0.0,0.0\n")
+
+    for content_type in ("", "text/plain", "application/x-www-form-urlencoded"):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(import_csv(
+                _import_request(store, text, content_type=content_type), name=""))
+        assert exc.value.status_code == 415
+    # charset parameters are part of a normal browser upload, not a mismatch
+    asyncio.run(import_csv(
+        _import_request(store, text, content_type="text/csv; charset=utf-8"), name=""))
+
+    # refused on the declared size, before a byte of it is transferred...
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(import_csv(_import_request(
+            store, text, declared=str(IMPORT_MAX_BYTES + 1)), name=""))
+    assert exc.value.status_code == 413
+
+    # ...and refused again while streaming, for a chunked upload that
+    # declared nothing at all (a tiny cap keeps the test cheap)
+    from app.api import routes
+
+    monkeypatch.setattr(routes, "IMPORT_MAX_BYTES", 1024)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(import_csv(_import_request(
+            store, "x" * 4096, declared="", chunk=256), name=""))
+    assert exc.value.status_code == 413
+
+    assert len(store.list_sessions()) == 1  # only the well-formed one landed
+    store.close()
+
+
+# ------------------------- host / origin guards (issue #67) -------------------------
+# "Self-hosted on localhost" is not a boundary against the user's own browser:
+# DNS rebinding reaches the whole API, and WebSocket handshakes skip CORS.
+
+
+def test_the_host_guard_answers_addresses_but_not_borrowed_names():
+    """A page the user visits can point its own domain at 127.0.0.1 and then
+    talk to LapScope as if it were same-origin - DELETE /api/sessions/{id}
+    included. That always arrives with the attacker's name in Host, never a
+    bare address, which is exactly the line this draws."""
+    from app.main import host_allowed
+
+    for header in ("localhost:8000", "127.0.0.1:8000", "127.0.0.1", "[::1]:8000",
+                   "192.168.1.20:8000", "nas.local:8000", "lapscope.localhost"):
+        assert host_allowed(header), header
+    for header in ("evil.example.com", "evil.example.com:8000", "", "   ",
+                   "lapscope.evil.com"):
+        assert not host_allowed(header), header
+
+
+def test_the_host_guard_is_wired_in_and_extensible(monkeypatch):
+    """It runs as the outermost middleware (nothing reaches a handler first),
+    and an operator can name their own hostname instead of being locked out."""
+    from app import main
+
+    assert main.app.user_middleware[0].kwargs["dispatch"] is main.check_host
+
+    async def call_next(_request):
+        return "the handler ran"
+
+    def call(host):
+        req = SimpleNamespace(headers={"host": host})
+        return asyncio.run(main.check_host(req, call_next))
+
+    assert call("127.0.0.1:8000") == "the handler ran"
+    assert call("lapscope.example.com").status_code == 400
+    monkeypatch.setattr(main, "ALLOWED_HOSTS", {"lapscope.example.com"})
+    assert call("lapscope.example.com") == "the handler ran"
+
+
+def test_ws_live_only_talks_to_the_page_it_served():
+    """/ws/live streams live position, speed and car. WebSockets are exempt
+    from CORS, so without an Origin check any page the user has open can
+    subscribe to it while they drive."""
+    from app.main import origin_allowed, ws_live
+    from app.telemetry.hub import Hub
+
+    assert origin_allowed("http://localhost:8000", "localhost:8000")
+    assert origin_allowed(None, "localhost:8000")  # a script, not a browser
+    assert not origin_allowed("http://evil.example.com", "localhost:8000")
+    assert not origin_allowed("null", "localhost:8000")  # file:// / sandboxed
+    assert not origin_allowed("http://localhost:8001", "localhost:8000")
+
+    class FakeWS:
+        def __init__(self, origin):
+            self.headers = {"origin": origin, "host": "localhost:8000"}
+            self.app = SimpleNamespace(state=SimpleNamespace(hub=Hub()))
+            self.accepted, self.close_code = False, None
+
+        async def accept(self):
+            self.accepted = True
+
+        async def close(self, code=1000):
+            self.close_code = code
+
+        async def send_json(self, msg):  # pragma: no cover - nothing is published
+            pass
+
+    ws = FakeWS("http://evil.example.com")
+    asyncio.run(ws_live(ws))
+    assert ws.close_code == 1008 and not ws.accepted
+
+    ws = FakeWS("http://localhost:8000")  # the dashboard itself: accepted,
+    with pytest.raises(asyncio.TimeoutError):  # then waits for frames forever
+        asyncio.run(asyncio.wait_for(ws_live(ws), 0.05))
+    assert ws.accepted and ws.close_code is None

@@ -10,6 +10,7 @@ import math
 import re
 import sqlite3
 import time
+from collections import deque
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
@@ -117,6 +118,12 @@ async def status(request: Request):
         "session_active": tracker.session_id is not None,
         "session_id": tracker.session_id,
         "session_best": tracker.best_lap_time,
+        # non-null while the recorder cannot write (disk full, database
+        # locked): packets keep arriving and the dashboard keeps animating,
+        # so without this the UI shows a healthy recording that isn't being
+        # stored. frames_dropped counts what the capped buffer had to shed.
+        "write_error": tracker.write_error,
+        "frames_dropped": tracker.frames_dropped,
     }
 
 
@@ -606,7 +613,8 @@ def dismiss_contact(lap_id: int, body: DismissBody, request: Request):
     lap = store.get_lap(lap_id)
     if lap is None:
         raise HTTPException(404, "lap not found")
-    _, collisions, _ = _scan_lap(store.lap_frames(lap), lap["start_distance"] or 0.0)
+    collisions, _ = _LapScan(store.lap_frames(lap),
+                             lap["start_distance"] or 0.0).events()
     _apply_dismissals(collisions, store.session_edits(lap["session_id"]))
     matched = [c for c in collisions
                if abs(c["t"] - body.t) <= DISMISS_MATCH_S and not c["landing"]]
@@ -648,10 +656,26 @@ def reset_edits(session_id: int, request: Request):
 DISMISS_MATCH_S = 0.5
 
 
-def _scan_lap(rows: list[tuple[float, bytes]], start_dist: float):
+# How far back a rewind can still reach. The scan hands frames to its caller
+# as it goes, so only the ones still inside this window can be trimmed - and
+# a frame this old is one the game can no longer undo. In-game rewind covers
+# a few seconds, and chaining rewinds only adds the frames driven in between,
+# so 30 s of telemetry is a wide margin (issue #65).
+REWIND_WINDOW = 1800  # frames (~30 s at 60 Hz)
+
+
+class _LapScan:
     """One lap's kept trace + collision/jump events, from its raw frames.
     Shared by lap_data and the contact-dismissal endpoint so both always see
-    the exact same events. Returns (kept, collisions, jumps).
+    the exact same events.
+
+    Iterating yields the kept frames as `(t, distance, parsed frame)`, in
+    order; `collisions` and `jumps` are complete once iteration ends (or use
+    `events()`, which consumes the trace without keeping any of it). It
+    streams because it used to return the whole trace as a list: a 28.9-minute
+    lap of 119k frames retained 506 MB of parsed frames, per request, in the
+    threadpool - three tabs on three long laps was 1.5 GB (issue #65). Only
+    REWIND_WINDOW frames are held now, whatever the lap's length.
 
     Rewind safety: when the in-game rewind scrubs DistanceTraveled backwards,
     drop the samples it rewound over so only the finally-driven pass remains
@@ -677,102 +701,136 @@ def _scan_lap(rows: list[tuple[float, bytes]], start_dist: float):
     takeoff -> touchdown segment so the map can draw where the car left the
     ground and where it came down; a landing-classified spike marks the
     segment "hard" with its peak g."""
-    kept: list[tuple[float, float, dict]] = []  # (t, distance, parsed frame)
-    for t, raw in rows:
-        p = parse(raw)
-        d = p["distance_traveled"]
-        if kept and d < kept[-1][1] - 0.5:
-            while kept and kept[-1][1] >= d:
-                kept.pop()
-        kept.append((t, d, p))
 
-    collisions: list[dict] = []
-    jumps: list[dict] = []
-    peak: tuple | None = None  # (g, t, d, frame) of the current impact burst
-    burst_landing = True       # all frames of the burst classified as landing
-    burst_impact = False       # some frame of the burst looked like an impact
-    prev_g: tuple[float, float] | None = None  # previous frame's (t, g)
-    air_since: float | None = None
-    air_start: tuple | None = None  # (t, d, frame) of the first airborne frame
-    grace_until = 0.0
-    pending_hard: float | None = None  # mid-flight landing peak (g) waiting for
-                                       # its own segment to be emitted
+    def __init__(self, rows: list[tuple[float, bytes]], start_dist: float) -> None:
+        self._rows = rows
+        self._start_dist = start_dist
+        self.collisions: list[dict] = []
+        self.jumps: list[dict] = []
 
-    def emit(peak: tuple, landing: bool) -> None:
-        nonlocal pending_hard
-        g0, t0, d0, p0 = peak
-        collisions.append({"x": round(p0["pos_x"], 2), "y": round(p0["pos_y"], 2),
-                           "z": round(p0["pos_z"], 2), "dist": round(d0 - start_dist, 2),
-                           "t": round(t0, 3),
-                           "g": round(g0 / 9.80665, 2), "landing": landing})
-        if landing:
-            peak_g = round(g0 / 9.80665, 2)
-            if air_since is not None:
-                # the burst resolved while still airborne (clipping something
-                # mid-flight): this flight's segment isn't emitted until
-                # touchdown, so hold the peak for emit_jump instead of
-                # marking the PREVIOUS jump hard (issue #41)
-                pending_hard = max(pending_hard or 0.0, peak_g)
-            elif jumps:
+    def events(self) -> tuple[list[dict], list[dict]]:
+        """Only the events: runs the scan through and keeps none of the trace."""
+        for _ in self:
+            pass
+        return self.collisions, self.jumps
+
+    def __iter__(self):
+        start_dist = self._start_dist
+        collisions = self.collisions
+        jumps = self.jumps
+        collisions.clear()  # a second pass rebuilds them rather than doubling
+        jumps.clear()
+        peak: tuple | None = None  # (g, t, d, frame) of the current impact burst
+        burst_landing = True       # all frames of the burst classified as landing
+        burst_impact = False       # some frame of the burst looked like an impact
+        prev_g: tuple[float, float] | None = None  # previous frame's (t, g)
+        air_since: float | None = None
+        air_start: tuple | None = None  # (t, d, frame) of the first airborne frame
+        grace_until = 0.0
+        pending_hard: float | None = None  # mid-flight landing peak (g) waiting for
+                                           # its own segment to be emitted
+        last: tuple | None = None  # last frame handed out (a trailing flight ends there)
+
+        def emit(peak: tuple, landing: bool) -> None:
+            nonlocal pending_hard
+            g0, t0, d0, p0 = peak
+            collisions.append({"x": round(p0["pos_x"], 2), "y": round(p0["pos_y"], 2),
+                               "z": round(p0["pos_z"], 2),
+                               "dist": round(d0 - start_dist, 2), "t": round(t0, 3),
+                               "g": round(g0 / 9.80665, 2), "landing": landing})
+            if landing:
+                peak_g = round(g0 / 9.80665, 2)
+                if air_since is not None:
+                    # the burst resolved while still airborne (clipping something
+                    # mid-flight): this flight's segment isn't emitted until
+                    # touchdown, so hold the peak for emit_jump instead of
+                    # marking the PREVIOUS jump hard (issue #41)
+                    pending_hard = max(pending_hard or 0.0, peak_g)
+                elif jumps:
+                    jumps[-1]["hard"] = True
+                    jumps[-1]["g"] = max(jumps[-1]["g"] or 0.0, peak_g)
+
+        def emit_burst() -> None:
+            """Close the burst that just ended. Landings are always emitted (the
+            map draws them amber and they mark their jump hard); a non-landing
+            burst only counts when it looked like an impact rather than a
+            downforce car leaning on its aero - see impulsive() in laps.py.
+            Rejected bursts are dropped outright: they are ordinary cornering,
+            not an event with anything to inspect (issue #49)."""
+            if burst_landing or burst_impact:
+                emit(peak, burst_landing)
+
+        def emit_jump(start: tuple, land: tuple) -> None:
+            nonlocal pending_hard
+            (t0, d0, p0), (t1, d1, p1) = start, land
+            jumps.append({"x0": round(p0["pos_x"], 2), "y0": round(p0["pos_y"], 2),
+                          "z0": round(p0["pos_z"], 2), "dist0": round(d0 - start_dist, 2),
+                          "x1": round(p1["pos_x"], 2), "y1": round(p1["pos_y"], 2),
+                          "z1": round(p1["pos_z"], 2), "dist1": round(d1 - start_dist, 2),
+                          "air_s": round(t1 - t0, 2), "hard": False, "g": None})
+            if pending_hard is not None:  # a mid-flight spike waited for this segment
                 jumps[-1]["hard"] = True
-                jumps[-1]["g"] = max(jumps[-1]["g"] or 0.0, peak_g)
+                jumps[-1]["g"] = pending_hard
+                pending_hard = None
 
-    def emit_burst() -> None:
-        """Close the burst that just ended. Landings are always emitted (the
-        map draws them amber and they mark their jump hard); a non-landing
-        burst only counts when it looked like an impact rather than a
-        downforce car leaning on its aero - see impulsive() in laps.py.
-        Rejected bursts are dropped outright: they are ordinary cornering,
-        not an event with anything to inspect (issue #49)."""
-        if burst_landing or burst_impact:
-            emit(peak, burst_landing)
+        def step(frame: tuple) -> None:
+            """Fold one finalized frame into the event state machine. Reads
+            only this frame and the running state, which is what lets the
+            trace stream past instead of piling up."""
+            nonlocal peak, burst_landing, burst_impact, prev_g
+            nonlocal air_since, air_start, grace_until, last
+            t, d, p = frame
+            airborne = (all(s < AIRBORNE_SUSP_MAX for s in p["norm_susp_travel"])
+                        and all(s < AIRBORNE_SLIP_MAX for s in p["tire_combined_slip"]))
+            if airborne:
+                if air_since is None:
+                    air_since = t
+                    air_start = frame
+            else:
+                if air_since is not None and t - air_since >= AIRBORNE_MIN_S:
+                    grace_until = t + LANDING_GRACE_S
+                    emit_jump(air_start, frame)  # this frame is the touchdown
+                air_since = None
+            flying = air_since is not None and t - air_since >= AIRBORNE_MIN_S
+            g = math.hypot(p["accel_x"], p["accel_z"])
+            if g >= IMPACT_ACCEL:
+                if peak is None:
+                    peak, burst_landing, burst_impact = (g, t, d, p), True, False
+                elif g > peak[0]:
+                    peak = (g, t, d, p)
+                burst_landing = burst_landing and (flying or t < grace_until)
+                burst_impact = burst_impact or impulsive(t, g, prev_g)
+            elif peak is not None:
+                emit_burst()
+                peak = None
+            prev_g = (t, g)
+            last = frame
 
-    def emit_jump(start: tuple, land: tuple) -> None:
-        nonlocal pending_hard
-        (t0, d0, p0), (t1, d1, p1) = start, land
-        jumps.append({"x0": round(p0["pos_x"], 2), "y0": round(p0["pos_y"], 2),
-                      "z0": round(p0["pos_z"], 2), "dist0": round(d0 - start_dist, 2),
-                      "x1": round(p1["pos_x"], 2), "y1": round(p1["pos_y"], 2),
-                      "z1": round(p1["pos_z"], 2), "dist1": round(d1 - start_dist, 2),
-                      "air_s": round(t1 - t0, 2), "hard": False, "g": None})
-        if pending_hard is not None:  # a mid-flight spike waited for this segment
-            jumps[-1]["hard"] = True
-            jumps[-1]["g"] = pending_hard
-            pending_hard = None
+        # frames wait in `pending` until a rewind can no longer take them
+        # back, then they are folded in and handed to the caller for good
+        pending: deque[tuple[float, float, dict]] = deque()
+        for t, raw in self._rows:
+            p = parse(raw)
+            d = p["distance_traveled"]
+            if pending and d < pending[-1][1] - 0.5:
+                while pending and pending[-1][1] >= d:
+                    pending.pop()
+            pending.append((t, d, p))
+            if len(pending) > REWIND_WINDOW:
+                frame = pending.popleft()
+                step(frame)
+                yield frame
+        while pending:
+            frame = pending.popleft()
+            step(frame)
+            yield frame
 
-    for t, d, p in kept:
-        airborne = (all(s < AIRBORNE_SUSP_MAX for s in p["norm_susp_travel"])
-                    and all(s < AIRBORNE_SLIP_MAX for s in p["tire_combined_slip"]))
-        if airborne:
-            if air_since is None:
-                air_since = t
-                air_start = (t, d, p)
-        else:
-            if air_since is not None and t - air_since >= AIRBORNE_MIN_S:
-                grace_until = t + LANDING_GRACE_S
-                emit_jump(air_start, (t, d, p))  # this frame is the touchdown
-            air_since = None
-        flying = air_since is not None and t - air_since >= AIRBORNE_MIN_S
-        g = math.hypot(p["accel_x"], p["accel_z"])
-        if g >= IMPACT_ACCEL:
-            if peak is None:
-                peak, burst_landing, burst_impact = (g, t, d, p), True, False
-            elif g > peak[0]:
-                peak = (g, t, d, p)
-            burst_landing = burst_landing and (flying or t < grace_until)
-            burst_impact = burst_impact or impulsive(t, g, prev_g)
-        elif peak is not None:
+        # resolve a trailing burst BEFORE a trailing flight: a trace ending
+        # mid-burst mid-flight must hand its peak to the segment emitted next
+        if peak is not None:  # impact ran to the last kept frame
             emit_burst()
-            peak = None
-        prev_g = (t, g)
-    # resolve a trailing burst BEFORE a trailing flight: a trace ending
-    # mid-burst mid-flight must hand its peak to the segment emitted next
-    if peak is not None:  # impact ran to the last kept frame
-        emit_burst()
-    if air_since is not None and kept and kept[-1][0] - air_since >= AIRBORNE_MIN_S:
-        emit_jump(air_start, kept[-1])  # lap trace ended mid-flight
-
-    return kept, collisions, jumps
+        if air_since is not None and last is not None and last[0] - air_since >= AIRBORNE_MIN_S:
+            emit_jump(air_start, last)  # lap trace ended mid-flight
 
 
 def _apply_dismissals(collisions: list[dict], edits: list[dict]) -> None:
@@ -813,21 +871,29 @@ def lap_data(
         raise HTTPException(400, f"unknown channels: {unknown}; available: {sorted(CHANNELS)}")
 
     rows = store.lap_frames(lap)
-    kept, collisions, jumps = _scan_lap(rows, lap["start_distance"] or 0.0)
-    _apply_dismissals(collisions, store.session_edits(lap["session_id"]))
+    scan = _LapScan(rows, lap["start_distance"] or 0.0)
 
-    stride = max(1, len(kept) // max_points)
+    # rounded up, or the budget is only an approximation: len(kept)//max_points
+    # is 1 for anything under 2x max_points, so a 2562-frame lap answered a
+    # request for 1500 points with all 2562 of them (issue #65). len(rows) is
+    # the bound on kept frames - a rewind only ever drops some of them.
+    stride = -(-len(rows) // max_points) if rows else 1
     start_dist = lap["start_distance"] or 0.0
     dist: list[float] = []
     t_rel: list[float] = []
     out: dict[str, list[float]] = {n: [] for n in names}
-    t0 = kept[0][0] if kept else 0.0
-    for i in range(0, len(kept), stride):
-        t, d, p = kept[i]
+    t0 = 0.0
+    for i, (t, d, p) in enumerate(scan):
+        if i == 0:
+            t0 = t
+        if i % stride:
+            continue
         dist.append(round(d - start_dist, 2))
         t_rel.append(round(t - t0, 3))
         for n in names:
             out[n].append(round(CHANNELS[n](p), 4))
+    collisions, jumps = scan.collisions, scan.jumps  # complete once it ran dry
+    _apply_dismissals(collisions, store.session_edits(lap["session_id"]))
 
     if "lap_time" in out:
         out["lap_time"] = _fix_dead_lap_clock(out["lap_time"], t_rel)
@@ -847,6 +913,8 @@ _EXPORT_CHANNELS = [
     ("pos_x_m", "pos_x"), ("pos_y_m", "pos_y"), ("pos_z_m", "pos_z"),
 ]
 _EXPORT_HEADER = ["lap", "t_s", "dist_m"] + [h for h, _ in _EXPORT_CHANNELS]
+# the one column filled in only after the whole lap is known (see _lap_csv_rows)
+_LAP_TIME_COL = _EXPORT_HEADER.index("lap_time_s")
 
 _FILENAME_UNSAFE = re.compile(r"[^A-Za-z0-9._ -]+")
 
@@ -873,23 +941,35 @@ def _export_filename(display_name: str, lap: dict | None = None) -> str:
 def _lap_csv_rows(lap: dict, rows: list[tuple[float, bytes]]):
     """One lap's telemetry as CSV rows, full resolution - /data's decimation
     is for charts, an export must keep every kept frame. Same rewind-trimmed
-    trace and rounding as /data, so the two never disagree."""
-    kept, _, _ = _scan_lap(rows, lap["start_distance"] or 0.0)
+    trace and rounding as /data, so the two never disagree.
+
+    The whole lap is still built before the first row is yielded, because
+    _fix_dead_lap_clock cannot tell a dead lap clock from a live one until it
+    has seen every sample. What is held is the finished rows - numbers - and
+    not the parsed frames behind them, which is roughly a tenth of the cost
+    (issue #65); the scan itself streams."""
     start_dist = lap["start_distance"] or 0.0
-    t0 = kept[0][0] if kept else 0.0
-    t_rel = [round(t - t0, 3) for t, _, _ in kept]
-    lap_times = _fix_dead_lap_clock(
-        [round(CHANNELS["lap_time"](p), 4) for _, _, p in kept], t_rel)
-    for i, (t, d, p) in enumerate(kept):
-        row: list = [lap["lap_number"] + 1, t_rel[i], round(d - start_dist, 2)]
-        for _, ch in _EXPORT_CHANNELS:
-            row.append(lap_times[i] if ch == "lap_time" else round(CHANNELS[ch](p), 4))
+    built: list[list] = []
+    t_rel: list[float] = []
+    lap_times: list[float] = []
+    t0 = 0.0
+    for i, (t, d, p) in enumerate(_LapScan(rows, start_dist)):
+        if i == 0:
+            t0 = t
+        t_rel.append(round(t - t0, 3))
+        row: list = [lap["lap_number"] + 1, t_rel[-1], round(d - start_dist, 2)]
+        row += [round(CHANNELS[ch](p), 4) for _, ch in _EXPORT_CHANNELS]
+        lap_times.append(row[_LAP_TIME_COL])
+        built.append(row)
+    for row, lap_time in zip(built, _fix_dead_lap_clock(lap_times, t_rel)):
+        row[_LAP_TIME_COL] = lap_time
         yield row
 
 
 def _csv_stream(store, laps: list[dict]):
     """One CSV document: header row, then every lap's frames in lap order.
-    Chunked per lap so a long session never materializes in memory at once."""
+    Chunked per lap: a long session never materializes at once, though one
+    lap's rows do - see _lap_csv_rows for why that last bit can't stream."""
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
     writer.writerow(_EXPORT_HEADER)
@@ -943,6 +1023,15 @@ def export_session_csv(session_id: int, request: Request):
 # columns an import can't do without; everything else defaults to 0
 _IMPORT_REQUIRED = {"lap", "t_s", "dist_m", "speed_kmh", "lap_time_s",
                     "pos_x_m", "pos_z_m"}
+
+# The packet's LapNumber is a uint16 and the CSV's lap column is 1-based, so
+# this is every lap an export can name.
+IMPORT_MAX_LAP = 65535
+
+# The whole upload becomes a str, then row dicts, then synthesized packets.
+# Unbounded, that is a 500 MB file turning into gigabytes with nothing to stop
+# it (issue #66) - 200 MB is still ~40x the biggest real export.
+IMPORT_MAX_BYTES = 200 * 1024 * 1024
 
 # NormalizedSuspensionTravel for synthesized frames: the CSV carries no
 # suspension channel, and all four wheels below AIRBORNE_SUSP_MAX reads as
@@ -1011,6 +1100,13 @@ def _parse_import_csv(body: str) -> list[tuple[int, list[dict]]]:
             lap_no = int(row.pop("lap"))
         except (KeyError, ValueError):
             raise HTTPException(400, f"line {ln}: malformed row")
+        if not 1 <= lap_no <= IMPORT_MAX_LAP:
+            # 70000 used to reach _synth_frame and die in struct.pack ("H"),
+            # an opaque 500 from an endpoint whose contract is that parse
+            # errors carry their line. 0 was the quiet version: it stored
+            # lap_number -1, exported as lap 0, and re-imported as -2 (#66)
+            raise HTTPException(
+                400, f"line {ln}: lap {lap_no} out of range (1-{IMPORT_MAX_LAP})")
         if not _IMPORT_REQUIRED - {"lap"} <= row.keys():
             raise HTTPException(400, f"line {ln}: a required value is empty")
         if not groups or groups[-1][0] != lap_no:
@@ -1024,26 +1120,10 @@ def _parse_import_csv(body: str) -> list[tuple[int, list[dict]]]:
     return groups
 
 
-@router.post("/import/csv")
-async def import_csv(request: Request, name: str = Query("", max_length=120)):
-    """Recreate a session from a LapScope CSV export (a lap's or a whole
-    session's). async def on purpose: imports write through the Store's
-    event-loop connection, same rule as reprocess - and the same 409 while
-    recording, since parsing a big file on the loop would stall live
-    telemetry. The CSV carries a subset of the packet (that is the point of
-    the export), so the synthesized frames hold neutral filler for the rest;
-    every lap group becomes a completed lap timed by its clock's last sample,
-    and car/route metadata is unknown (the session shows "Unknown car").
-    The raw body IS the file (text/csv) - no multipart, no new dependency."""
-    store = request.app.state.store
-    if request.app.state.tracker.session_id is not None:
-        raise HTTPException(409, "a session is recording; retry after it ends")
-    body = (await request.body()).decode("utf-8", "replace")
-    groups = _parse_import_csv(body)
-
-    # lay the lap groups end to end on fresh time / distance axes: exported
-    # t_s and dist_m are lap-relative, frames need session-global values
-    base = time.time()
+def _synth_session(groups: list[tuple[int, list[dict]]], base: float):
+    """Lay the lap groups end to end on fresh time / distance axes: exported
+    t_s and dist_m are lap-relative, frames need session-global values.
+    Returns (frames, laps) ready to write. Pure CPU - runs in the threadpool."""
     t_off, d_off = 0.0, 0.0
     frames: list[tuple[float, bytes]] = []
     laps: list[dict] = []
@@ -1065,6 +1145,57 @@ async def import_csv(request: Request, name: str = Query("", max_length=120)):
         step = (rows[-1]["t_s"] - rows[0]["t_s"]) / max(1, len(rows) - 1)
         t_off += rows[-1]["t_s"] + max(step, 1 / 60)
         d_off += rows[-1]["dist_m"] + 1.0
+    return frames, laps
+
+
+async def _read_import_body(request: Request) -> str:
+    """The uploaded file, refused rather than swallowed when it is too big or
+    isn't a CSV at all.
+
+    The content type is required for a second reason beyond catching the
+    wrong file: without it this endpoint is a CORS-simple request, which any
+    page the user happens to visit can POST to cross-origin and use to write
+    sessions into their database (issue #67). The size is checked twice -
+    Content-Length refuses before the transfer, and the running total catches
+    a chunked upload that declared nothing, or lied."""
+    if request.headers.get("content-type", "").split(";")[0].strip() != "text/csv":
+        raise HTTPException(415, "send the CSV file as text/csv")
+    limit_mb = IMPORT_MAX_BYTES // (1024 * 1024)
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > IMPORT_MAX_BYTES:
+        raise HTTPException(413, f"CSV too large (limit {limit_mb} MB)")
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > IMPORT_MAX_BYTES:
+            raise HTTPException(413, f"CSV too large (limit {limit_mb} MB)")
+        chunks.append(chunk)
+    return b"".join(chunks).decode("utf-8", "replace")
+
+
+@router.post("/import/csv")
+async def import_csv(request: Request, name: str = Query("", max_length=120)):
+    """Recreate a session from a LapScope CSV export (a lap's or a whole
+    session's). async def on purpose: imports write through the Store's
+    event-loop connection, same rule as reprocess - and the same 409 while
+    recording, since parsing a big file on the loop would stall live
+    telemetry. The CSV carries a subset of the packet (that is the point of
+    the export), so the synthesized frames hold neutral filler for the rest;
+    every lap group becomes a completed lap timed by its clock's last sample,
+    and car/route metadata is unknown (the session shows "Unknown car").
+    The raw body IS the file (text/csv) - no multipart, no new dependency."""
+    store = request.app.state.store
+    if request.app.state.tracker.session_id is not None:
+        raise HTTPException(409, "a session is recording; retry after it ends")
+    body = await _read_import_body(request)
+    # off the loop: parsing and synthesizing a large file used to run right
+    # here, and for its whole duration the kernel dropped incoming UDP and
+    # the live dashboard sat frozen (issue #66). Only the writes have to be
+    # on this thread - that is the Store's rule, and why this is `async def`.
+    groups = await run_in_threadpool(_parse_import_csv, body)
+    base = time.time()
+    frames, laps = await run_in_threadpool(_synth_session, groups, base)
 
     sid = store.create_session(base, {"car_ordinal": None, "car_class": None,
                                       "car_pi": None, "drivetrain_type": None})
