@@ -17,7 +17,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .. import __version__, cars, tracks
+from .. import OFFLINE, __version__, cars, tracks
 from ..cars import CAR_NAMES
 from ..recorder.laps import (AIRBORNE_MIN_S, AIRBORNE_SLIP_MAX,
                              AIRBORNE_SUSP_MAX, IMPACT_ACCEL, LANDING_GRACE_S,
@@ -127,12 +127,28 @@ async def status(request: Request):
     }
 
 
+def _require_online() -> None:
+    """Guard for the two endpoints that reach the internet. 403, not 502: the
+    download didn't fail, this install isn't allowed to make it. The message
+    names the switch, because the person clicking "Refresh now" in a browser is
+    often not the person who set the env var on the container."""
+    if OFFLINE:
+        raise HTTPException(
+            403, "Online refresh is turned off on this install (LS_OFFLINE). "
+                 "The bundled list is still in use.")
+
+
 @router.get("/version")
 def version():
     """The running app version. The frontend compares this against the latest
     GitHub Release (client-side) to surface a dismissible update notice.
-    "0.0.0" marks an unversioned dev/source run and suppresses the check."""
-    return {"version": __version__}
+    "0.0.0" marks an unversioned dev/source run and suppresses the check.
+
+    `offline` is LS_OFFLINE: it tells the page not to make the GitHub call at
+    all, rather than making it and having the server refuse the half it owns.
+    The frontend asks for this once per load and every online path waits on
+    it."""
+    return {"version": __version__, "offline": OFFLINE}
 
 
 @router.get("/storage")
@@ -335,6 +351,7 @@ async def refresh_tracks(request: Request):
     named without a restart. Blocking urllib fetch, hence the threadpool; the
     backfill writes through the Store's event-loop connection, so it stays on
     this thread (same reason /reprocess is async)."""
+    _require_online()
     try:
         total, added = await run_in_threadpool(tracks.refresh)
     except tracks.RefreshError as exc:
@@ -356,6 +373,7 @@ async def refresh_cars():
     """Re-download the community car list from the repo's main branch and
     hot-swap it in (bundled copy stays as the offline fallback, per-user DB
     overrides always win). Blocking urllib fetch, hence the threadpool."""
+    _require_online()
     try:
         total, added = await run_in_threadpool(cars.refresh)
     except cars.RefreshError as exc:

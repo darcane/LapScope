@@ -24,6 +24,7 @@ const SETTINGS_DEFAULTS = {
   defaultColor: "speed", // "speed" | "slip"
   rawLive: false,       // raw telemetry value grid on the live dashboard
   rawAnalysis: false,   // raw values-at-cursor table on the analysis page
+  onlineChecks: true,   // may this browser contact GitHub at all (issue #76)
 };
 
 /* ---------- accent theme (issue #25) ----------
@@ -256,6 +257,7 @@ function openSettings() {
     sw.onclick = () => { saveSettings({ [key]: !_settings[key] }); sync(); };
     row.appendChild(sw);
     body.appendChild(row);
+    return sw;
   };
 
   const group = (title) => {
@@ -263,6 +265,17 @@ function openSettings() {
     g.className = "settings-group-title";
     g.textContent = title;
     body.appendChild(g);
+  };
+
+  /* A muted paragraph under a group. Only the Privacy group has one: a switch
+     labelled "check for updates" can't say what is contacted, how often, or
+     what is sent, and that is the whole question it exists to answer. */
+  const note = (text) => {
+    const n = document.createElement("p");
+    n.className = "settings-note";
+    n.textContent = text;
+    body.appendChild(n);
+    return n;
   };
 
   // accent swatches: one color dot per curated preset (no free color wheel)
@@ -365,6 +378,29 @@ function openSettings() {
       btn.disabled = false;
     };
   };
+
+  // Everything LapScope sends anywhere, in one place, with a way to say no
+  // (issue #76). Sits directly above the two rows it governs.
+  group("Privacy");
+  const onlineSw = toggle("Check GitHub for updates and lists", "onlineChecks");
+  const onlineNote = note(
+    "On: once a day LapScope asks GitHub for the latest release, and asks it "
+    + "for the community car and track lists below. Nothing about you or your "
+    + "driving is sent — only the request itself. Off: it never reaches out on "
+    + "its own, and the bundled lists keep working. Refresh now is a manual "
+    + "call and works either way.");
+  // LS_OFFLINE is the whole install's answer and overrides the browser's, so
+  // show it as what it is rather than leaving a switch that does nothing.
+  serverInfo().then((info) => {
+    if (!info.offline) return;
+    onlineSw.disabled = true;
+    onlineSw.classList.remove("on");
+    onlineSw.setAttribute("aria-checked", "false");
+    onlineNote.textContent =
+      "Turned off for this whole install with LS_OFFLINE. LapScope makes no "
+      + "outbound calls at all, whatever this browser is set to, and the "
+      + "bundled car and track lists are the ones in use.";
+  });
 
   group("Car list");
   refreshRow("cars", "car names", (out) => ({
