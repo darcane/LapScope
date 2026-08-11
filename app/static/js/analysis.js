@@ -249,14 +249,16 @@ function cardBody(card, s, titleText) {
   const title = document.createElement("span");
   title.className = "title";
   title.textContent = titleText;
+  // the race type is a property of the track, so it rides with the track's
+  // name rather than sitting on the car's line as if it described the car
+  title.insertAdjacentHTML("beforeend", trackBadge(s.track_type));
   const sub = document.createElement("span");
   sub.className = "sub";
-  // the tags join the car chip's inline flow rather than claiming a row of
-  // their own: they usually fit on the line the car name ends on, and a row
-  // of card height across a list this long is worth more than the tidiness
-  const car = carChip(s);
-  car.insertAdjacentHTML("beforeend", trackBadge(s.track_type) + condBadge(s.conditions));
-  body.append(title, car, sub);
+  body.append(title, carChip(s));
+  // ...and the conditions describe the drive, not the track: their own line
+  // under the car, and no line at all when the session is untagged
+  body.insertAdjacentHTML("beforeend", condBadge(s.conditions));
+  body.append(sub);
   card.append(body);
   return body;
 }

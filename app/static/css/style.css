@@ -1137,6 +1137,12 @@ dialog.modal::backdrop {
 .card-body .class-badge .cls, .card-body .class-badge .pi { padding: 3px 6px; }
 .card-body .dt-badge { padding: 3px 5px; }
 .card-body .cond-badge { padding: 2px 8px; font-size: 0.72rem; }
+/* the race type rides with the track's name; it must not inherit the title's
+   weight, or it reads as part of the name rather than as a tag on it */
+.card-body .title .cond-badge { margin-left: 8px; font-weight: 400; vertical-align: middle; }
+/* the conditions get their own line under the car — a flex child would
+   otherwise stretch to the full card width */
+.card-body > .cond-badge { align-self: flex-start; }
 .session-card:hover { border-color: var(--accent); }
 .session-card.active { border-color: var(--panel-edge); border-left-color: var(--accent); background: #131c27; }
 .session-card .title { font-family: var(--display); font-weight: 600; font-size: 1rem; padding-right: 26px; }
@@ -1279,12 +1285,15 @@ table.laps .run-when .lap-act {
   min-width: 0;
   letter-spacing: 0.02em;
 }
+/* pairs, spaced further apart than their own contents, so "Road" reads as a
+   tag on the track and "Dry" as a tag on the drive */
 .detail-identity {
   display: flex;
   align-items: center;
-  gap: 8px 16px;
+  gap: 8px 22px;
   flex-wrap: wrap;
 }
+.ident-pair { display: inline-flex; align-items: center; gap: 9px; flex-wrap: wrap; min-width: 0; }
 
 /* ---------- overflow menu (common.js menuButton) ---------- */
 
