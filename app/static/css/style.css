@@ -155,6 +155,9 @@ nav a:hover:not(.active) { color: var(--text); background: var(--panel-hi); }
 .chip.ok .dot { background: var(--good); box-shadow: 0 0 8px var(--good); animation: pulse 2s infinite; }
 .chip.err { color: var(--bad); border-color: #5b2a2a; }
 .chip.err .dot { background: var(--bad); }
+/* the stream stalled but the socket is fine — FH6 pausing, not a fault (#69) */
+.chip.warn { color: var(--warn); border-color: #5b4a1f; }
+.chip.warn .dot { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
 #conn { margin-left: 0; }
 
 @keyframes pulse {
@@ -501,24 +504,27 @@ main.grid .lap-grid { margin-bottom: auto; }
 
 /* ---------- modal dialogs (rename / confirm / notice) ---------- */
 
-.modal-backdrop {
-  position: fixed; inset: 0;
-  background: rgba(4, 6, 10, 0.72);
-  backdrop-filter: blur(3px);
-  display: flex; align-items: center; justify-content: center;
-  z-index: 100;
-  animation: fade-in 0.12s ease-out;
-}
 @keyframes fade-in { from { opacity: 0; } }
 
-.modal {
+/* a real <dialog>: the browser centers it, traps focus in it, closes it on
+   Escape and hands focus back to whatever opened it (issue #70) */
+dialog.modal {
+  margin: auto;
+  color: var(--text);
   background: linear-gradient(165deg, var(--panel-hi), var(--panel-lo));
   border: 1px solid var(--panel-edge);
   border-radius: 14px;
   padding: 20px 22px;
   width: min(440px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
+  overflow: auto;
   box-shadow: 0 14px 60px rgba(0, 0, 0, 0.6);
   animation: modal-in 0.15s ease-out;
+}
+dialog.modal::backdrop {
+  background: rgba(4, 6, 10, 0.72);
+  backdrop-filter: blur(3px);
+  animation: fade-in 0.12s ease-out;
 }
 @keyframes modal-in { from { opacity: 0; transform: translateY(10px) scale(0.97); } }
 
@@ -943,9 +949,15 @@ main.grid .lap-grid { margin-bottom: auto; }
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
   padding: 4px 7px;
+  border: none;
   border-radius: 6px;
+  background: none;
+  color: inherit;
+  text-align: left;
   cursor: pointer;
+  font-family: inherit;
   font-size: 0.85rem;
 }
 .facet-row:hover { background: var(--panel-lo); }
@@ -1020,11 +1032,34 @@ main.grid .lap-grid { margin-bottom: auto; }
   gap: 8px;
   max-height: calc(100vh - 92px - var(--browse-h, 0px));
 }
+
+/* Below this the two columns don't fit: the sidebar stayed pinned at 290px
+   and the detail column was squeezed to 356px while the map still rendered
+   at 547px, so the page scrolled sideways (issue #74). One column, and the
+   session list takes a slice of the viewport rather than all of it. Must
+   stay after .sidebar — same specificity, so source order decides. */
+@media (max-width: 900px) {
+  .analysis-layout { grid-template-columns: 1fr; padding: 14px 12px 28px; }
+  .sidebar { max-height: 45vh; }
+  .detail-header { gap: 6px; }
+  /* nowrap, and long enough to hold the page open on its own */
+  #hint { display: none; }
+}
+/* the lap table is intrinsically wide (up to 8 columns); it scrolls inside
+   its own box rather than dragging the whole page sideways */
+.laps-scroll { overflow-x: auto; }
 .sidebar-actions { display: flex; }
 .sidebar-actions button { flex: 1; }
 #session-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+/* the card is a <button>, so the ＋ quick-add has to be a sibling rather
+   than nested inside it — this is what it is positioned against (#70) */
+.card-wrap { position: relative; display: flex; }
 .session-card {
-  position: relative;  /* anchors the ＋ quick-add */
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
   background: linear-gradient(165deg, var(--panel-hi), var(--panel-lo));
   border: 1px solid var(--panel-edge);
   border-left: 3px solid var(--panel-edge);
@@ -1032,10 +1067,13 @@ main.grid .lap-grid { margin-bottom: auto; }
   padding: 10px 12px;
   cursor: pointer;
 }
+/* the card's rows are spans (phrasing content inside a <button>), so the two
+   that aren't already flex need the block behaviour the divs had for free */
+.session-card > .car-line, .session-card > .sub { display: block; }
 .session-card:hover { border-color: var(--accent); }
 .session-card.active { border-color: var(--panel-edge); border-left-color: var(--accent); background: #131c27; }
 .session-card .title { font-family: var(--display); font-weight: 600; font-size: 1rem; padding-right: 26px; }
-.session-card .card-add {
+.card-wrap .card-add {
   position: absolute;
   top: 8px;
   right: 8px;
@@ -1047,7 +1085,7 @@ main.grid .lap-grid { margin-bottom: auto; }
   color: var(--muted);
   background: #0d1218;
 }
-.session-card .card-add:hover { color: var(--accent); }
+.card-wrap .card-add:hover { color: var(--accent); }
 .session-card .sub { color: var(--muted); font-size: 0.8rem; margin-top: 3px; }
 
 /* merged run groups: several attempts at one route, browsed as one card */
@@ -1145,7 +1183,23 @@ table.laps .run-when .lap-act {
 .merge-hint-actions button { flex: 1; font-size: 0.8rem; }
 .merge-hint-actions button:first-child { border-color: var(--warn); color: var(--warn); }
 
-.detail { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.detail { display: flex; flex-direction: column; gap: 14px; min-width: 0; position: relative; }
+/* the next session's payload is in flight: what is on screen stays readable
+   but goes visibly stale rather than looking like a dead click (issue #74) */
+.detail.busy { opacity: 0.45; pointer-events: none; }
+.detail.busy::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: busy-sweep 1.1s linear infinite;
+}
+@keyframes busy-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
 .detail-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .detail-header h1 {
   font-family: var(--display);
@@ -1208,9 +1262,11 @@ table.laps .lap-act:hover { border-color: var(--accent); background: var(--panel
 table.laps .pick {
   display: inline-block;
   width: 26px;
+  padding: 1px 0;
   text-align: center;
   border-radius: 5px;
   border: 1px solid var(--panel-edge);
+  background: none;
   cursor: pointer;
   margin-right: 4px;
   user-select: none;
@@ -1385,3 +1441,24 @@ select {
 .raw-table td:first-child em { font-style: normal; opacity: 0.65; margin-left: 4px; font-size: 0.7rem; }
 .raw-table tr:hover td { background: rgba(255, 255, 255, 0.03); }
 .raw-hint { color: var(--muted); font-size: 0.8rem; margin: 0 0 4px; }
+
+/* ---------- reduced motion (issue #70) ----------
+   Five animations here run forever, unconditionally. The loudest by far is
+   the limiter: `blink` alternates ten LEDs full/dim every 70 ms — about 7.1
+   flashes a second — for as long as the driver holds the rev limiter. The
+   flashing area is small enough to stay under WCAG 2.3.1's general flash
+   threshold, but it is not something to ship unguarded. With the OS setting
+   on, every one of them holds its lit state instead of moving. */
+@media (prefers-reduced-motion: reduce) {
+  .chip.ok .dot,
+  #shift-lights.limiter i,
+  .pulse-ring i::after,
+  .facet-pop,
+  .detail.busy::before,
+  dialog.modal,
+  dialog.modal::backdrop {
+    animation: none;
+  }
+  /* the ring's whole point is the sweep; a static one is just a smudge */
+  .pulse-ring i::after { display: none; }
+}

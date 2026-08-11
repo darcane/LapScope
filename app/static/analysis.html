@@ -17,7 +17,8 @@
     <a class="active" href="analysis.html">Analysis</a>
   </nav>
   <div class="chip" id="hint">pick a session, then tag laps to compare — up to 6, across sessions</div>
-  <div id="settings-btn" class="chip clickable" title="Settings" aria-label="Settings">⚙ Settings</div>
+  <div id="conn" class="chip"><i class="dot"></i><span>connecting…</span></div>
+  <button id="settings-btn" class="chip clickable" type="button" title="Settings" aria-label="Settings">⚙ Settings</button>
 </header>
 
 <div class="browse-bar">
@@ -83,17 +84,20 @@
     <div class="car-line" id="header-car"></div>
     <section class="panel">
       <h2 id="laps-heading">Laps</h2>
-      <table class="laps">
-        <thead><tr id="lap-head"></tr></thead>
-        <tbody id="lap-rows"></tbody>
-      </table>
+      <div class="laps-scroll">
+        <table class="laps">
+          <thead><tr id="lap-head"></tr></thead>
+          <tbody id="lap-rows"></tbody>
+        </table>
+      </div>
     </section>
     <div id="cmp-tray" class="cmp-tray" style="display:none"></div>
     <section class="panel">
       <h2>Track map</h2>
       <div class="map-row">
         <div>
-          <canvas id="trackmap"></canvas>
+          <canvas id="trackmap" role="img"
+                  aria-label="Track map of the tagged laps"></canvas>
           <div class="legend">
             <span class="seg" id="map-mode">
               <button data-mode="2d">2D</button><button data-mode="3d">3D</button>

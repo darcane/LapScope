@@ -270,20 +270,24 @@ function fmtRaw(v, dec) {
    the alt button is only ever paired with a dialog that has no text input. */
 const MODAL_ALT = Symbol("modal-alt");
 
+/* <dialog> + showModal(), not a hand-rolled backdrop: it brings the focus
+   trap (38 tabbable elements behind the old backdrop stayed reachable —
+   Tab walked straight out of the dialog), Escape, the ::backdrop, and
+   restoring focus to whatever opened it, all of which this used to lack
+   (issue #70). */
+let modalSeq = 0;
+
 function showModal({ title, message = "", extra = null, value = null, placeholder = "",
                      okText = "OK", cancelText = "Cancel", altText = "",
                      danger = false, showCancel = true, wide = false }) {
   return new Promise((resolve) => {
-    const backdrop = document.createElement("div");
-    backdrop.className = "modal-backdrop";
-    const box = document.createElement("div");
+    const box = document.createElement("dialog");
     box.className = "modal" + (danger ? " danger" : "") + (wide ? " modal-wide" : "");
-    box.setAttribute("role", "dialog");
-    box.setAttribute("aria-modal", "true");
-    backdrop.appendChild(box);
 
     const h = document.createElement("h3");
+    h.id = `modal-title-${++modalSeq}`;
     h.textContent = title;
+    box.setAttribute("aria-labelledby", h.id);
     box.appendChild(h);
 
     if (message) {
@@ -308,9 +312,12 @@ function showModal({ title, message = "", extra = null, value = null, placeholde
     actions.className = "modal-actions";
     box.appendChild(actions);
 
+    let settled = false;
     const done = (result) => {
-      document.removeEventListener("keydown", onKey, true);
-      backdrop.remove();
+      if (settled) return;  // Escape fires cancel and then close
+      settled = true;
+      box.close();
+      box.remove();
       resolve(result);
     };
     if (altText) {
@@ -335,19 +342,18 @@ function showModal({ title, message = "", extra = null, value = null, placeholde
     ok.onclick = () => done(inputEl ? inputEl.value : true);
     actions.appendChild(ok);
 
-    const onKey = (e) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        done(null);
-      } else if (e.key === "Enter" && inputEl && document.activeElement === inputEl) {
-        e.preventDefault();
-        done(inputEl.value);
-      }
-    };
-    document.addEventListener("keydown", onKey, true);
-    backdrop.addEventListener("pointerdown", (e) => { if (e.target === backdrop) done(null); });
+    box.addEventListener("cancel", (e) => { e.preventDefault(); done(null); });
+    if (inputEl) inputEl.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      done(inputEl.value);
+    });
+    // a click outside the box lands on the dialog element itself (the
+    // ::backdrop is not an element of its own)
+    box.addEventListener("pointerdown", (e) => { if (e.target === box) done(null); });
 
-    document.body.appendChild(backdrop);
+    document.body.appendChild(box);
+    box.showModal();
     (inputEl || ok).focus();
     if (inputEl) inputEl.select();
   });
@@ -366,6 +372,91 @@ function uiConfirm(title, message, { okText = "Confirm", danger = false } = {}) 
 function uiAlert(title, message) {
   return showModal({ title, message, okText: "OK", showCancel: false });
 }
+
+/* ---------- API calls (issue #68) ----------
+
+   Every write on the Analysis page used to be a bare `fetch` that checked
+   neither `res.ok` nor a network failure, fired from an `onclick` that never
+   awaited it. With the server closed, renames, tags, exclusions, flag edits
+   and deletes all appeared to do nothing — forever, with nothing on screen
+   to say why. This is the one funnel: it throws on any failure, reports it
+   in a single modal, and tells the page whether the server answered at all.
+
+   `quiet` is for the polls (loadSessions on its 15 s timer): they must not
+   pop a dialog every interval while the server is down — the connection chip
+   is what speaks for them. */
+
+class ApiError extends Error {
+  constructor(title, detail, offline) {
+    super(`${title}: ${detail}`);
+    this.name = "ApiError";
+    this.title = title;
+    this.detail = detail;
+    this.offline = offline;  // the request never reached the server
+    this.reported = false;   // a modal already showed this one
+  }
+}
+
+/* Reachability is simply what the last call did: a 500 is a reachable server,
+   a rejected fetch is not. The Analysis header chip subscribes to this.
+   Starts null, not true, so the very first call resolves the chip out of its
+   "connecting…" state either way. */
+let serverReachable = null;
+const reachListeners = new Set();
+
+function onServerReachable(cb) {
+  reachListeners.add(cb);
+  return () => reachListeners.delete(cb);
+}
+
+function noteReachable(ok) {
+  if (ok === serverReachable) return;
+  serverReachable = ok;
+  for (const cb of reachListeners) {
+    try { cb(ok); } catch { /* a bad listener must not block the rest */ }
+  }
+}
+
+/* One dialog at a time: a failed write usually drags its follow-up reload
+   down with it, and two stacked backdrops for one cause read as two faults. */
+let apiAlertOpen = false;
+
+function reportApiError(err, quiet) {
+  err.reported = true;
+  if (quiet || apiAlertOpen) return err;
+  apiAlertOpen = true;
+  uiAlert(err.title, err.detail).then(() => { apiAlertOpen = false; });
+  return err;
+}
+
+/* `what` completes "Couldn't …" in the failure dialog. Resolves to the parsed
+   JSON body, or null for an empty one. */
+async function apiFetch(url, { what = "do that", quiet = false, ...init } = {}) {
+  let res;
+  try {
+    res = await fetch(url, init);
+  } catch {
+    noteReachable(false);
+    throw reportApiError(new ApiError("Can't reach LapScope",
+      "The server didn't answer — it may have been closed or restarted."
+      + " Nothing was changed; the page picks up again on its own once it's back.",
+      true), quiet);
+  }
+  noteReachable(true);
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch { /* not JSON */ }
+    throw reportApiError(new ApiError(`Couldn't ${what}`, detail, false), quiet);
+  }
+  try { return await res.json(); } catch { return null; }
+}
+
+/* Writes hang off bare `onclick`s that cannot await, so an ApiError already
+   shown in a modal would still surface as an unhandled rejection. Swallow
+   exactly those — every other rejection stays loud. */
+window.addEventListener("unhandledrejection", (e) => {
+  if (e.reason instanceof ApiError && e.reason.reported) e.preventDefault();
+});
 
 /* ---------- update check (client-side, fail-soft, dismissible) ----------
    Exe users don't get `git pull`, so surface a "newer version available"
@@ -499,6 +590,27 @@ async function maybeRefreshTrackList() {
     // newly named routes show up as route names on the cards: redraw
     if (named > 0 && typeof loadSessions === "function") loadSessions();
   } catch { /* offline / server restarting: bundled catalogue keeps working */ }
+}
+
+/* At most one call per animation frame (issue #71). `resize` fires far faster
+   than the ~13 ms a full analysis redraw costs, and a map drag fires one
+   pointermove per pointer sample — both saturate the main thread otherwise. */
+function rafThrottle(fn) {
+  let queued = false;
+  return (...args) => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => { queued = false; fn(...args); });
+  };
+}
+
+/* setInterval that skips hidden tabs (issue #73): a background tab nobody is
+   looking at has no reason to keep polling the server, and browsers only
+   throttle these timers rather than stopping them. Becoming visible runs the
+   callback straight away, so the page is never a whole period out of date. */
+function setVisibleInterval(fn, ms) {
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) fn(); });
+  return setInterval(() => { if (!document.hidden) fn(); }, ms);
 }
 
 function onReady(fn) {

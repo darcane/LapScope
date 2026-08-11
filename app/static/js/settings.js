@@ -6,6 +6,11 @@
 
 const SETTINGS_KEY = "ls_settings";
 
+/* Schema version of the stored object. Nothing reads it yet — it exists so a
+   future release *can* migrate rather than guess, which is only possible if
+   1.0 ships the stamp before it puts this shape in everyone's browser. */
+const SETTINGS_V = 1;
+
 const SETTINGS_DEFAULTS = {
   speed: "kmh",         // "kmh" | "mph"
   temp: "c",            // "c" | "f"  (packet TireTemp is Fahrenheit)
@@ -21,26 +26,80 @@ const SETTINGS_DEFAULTS = {
   rawAnalysis: false,   // raw values-at-cursor table on the analysis page
 };
 
+/* ---------- accent theme (issue #25) ----------
+   Curated presets, not a free color wheel, so contrast against the dark
+   palette stays readable everywhere. Each entry:
+   - accent: what CSS --accent becomes (all light enough for the #001018
+     text that sits on accent-filled pills/buttons);
+   - pick: the chart-friendly shade used as overlay color A on the analysis
+     page (identical between map and charts);
+   - clash: index in the analysis BASE_PICK_COLORS palette that sits too
+     close to this accent — analysis.js swaps that one for cyan so six
+     overlaid laps stay tellable-apart.
+   Declared up here because loadSettings validates a stored accent against
+   its keys, and a `const` is unreachable until its own line runs. */
+const ACCENTS = {
+  cyan:    { label: "Cyan",    accent: "#00d4ff", pick: "#22d3ee", clash: -1 },
+  magenta: { label: "Magenta", accent: "#ff3d7f", pick: "#ff3d7f", clash: 4 },
+  violet:  { label: "Violet",  accent: "#9d6bff", pick: "#9d6bff", clash: 2 },
+  sunset:  { label: "Sunset",  accent: "#ff8c2e", pick: "#ff8c2e", clash: 1 },
+  lime:    { label: "Lime",    accent: "#a3e635", pick: "#a3e635", clash: 3 },
+  frost:   { label: "Frost",   accent: "#e8f1fb", pick: "#e8f1fb", clash: 5 },
+};
+
+/* What each non-boolean key is allowed to hold. Booleans coerce with !!, so
+   they need no entry. */
+const SETTINGS_VALUES = {
+  speed: ["kmh", "mph"],
+  temp: ["c", "f"],
+  dist: ["km", "mi"],
+  power: ["kw", "hp", "ps"],
+  boost: ["psi", "bar"],
+  accent: Object.keys(ACCENTS),
+  defaultMapMode: ["2d", "3d"],
+  defaultColor: ["speed", "slip"],
+};
+
+/* An unknown stored value never *broke* anything — every converter is
+   `x === "known" ? A : B`, so it silently took the default branch. But
+   _settings kept it, and the Settings panel marks a chip active by comparing
+   against _settings: a stale `accent: "teal"` rendered cyan while no swatch
+   showed as selected, and the same for every seg() row (issue #72).
+   browse.js has validated its own two keys this way since it was written. */
+function coerceSettings(stored) {
+  const out = { ...SETTINGS_DEFAULTS };
+  for (const [key, def] of Object.entries(SETTINGS_DEFAULTS)) {
+    const v = stored[key];
+    if (v === undefined) continue;
+    if (typeof def === "boolean") out[key] = !!v;
+    else if (SETTINGS_VALUES[key].includes(v)) out[key] = v;
+  }
+  return out;
+}
+
+function storeSettings(s) {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ v: SETTINGS_V, ...s }));
+  } catch { /* private mode */ }
+}
+
 /* One-time migration of the pre-Settings ad-hoc keys, then cached in memory. */
 function loadSettings() {
   let stored = {};
   try { stored = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") || {}; }
   catch { stored = {}; }
+  if (typeof stored !== "object" || Array.isArray(stored)) stored = {};
 
-  let migrated = false;
-  if (stored.speed === undefined && localStorage.getItem("fc_mph") !== null) {
+  if (stored.speed === undefined && localStorage.getItem("fc_mph") !== null)
     stored.speed = localStorage.getItem("fc_mph") === "1" ? "mph" : "kmh";
-    migrated = true;
-  }
-  if (stored.defaultMapMode === undefined && localStorage.getItem("fc_mapmode")) {
+  if (stored.defaultMapMode === undefined && localStorage.getItem("fc_mapmode"))
     stored.defaultMapMode = localStorage.getItem("fc_mapmode");
-    migrated = true;
-  }
 
-  const merged = { ...SETTINGS_DEFAULTS, ...stored };
-  if (migrated) {
-    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(merged)); } catch { /* private mode */ }
-  }
+  const merged = coerceSettings(stored);
+  // write back whenever the stored copy isn't already this version: that
+  // covers the legacy migration and, just as importantly, stamps the copies
+  // written by every build before this one
+  if (stored.v !== SETTINGS_V) storeSettings(merged);
   return merged;
 }
 
@@ -51,7 +110,7 @@ function getSettings() { return _settings; }
 
 function saveSettings(patch) {
   _settings = { ..._settings, ...patch };
-  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(_settings)); } catch { /* private mode */ }
+  storeSettings(_settings);
   // restyle the page before listeners run, so canvas redraws triggered by
   // them already see the new --accent
   if ("accent" in patch) applyAccent();
@@ -101,24 +160,7 @@ function fmtBoost(psi) { return boostFromPsi(psi).toFixed(_settings.boost === "b
 /* tire-temp cell string for the grip gauge, e.g. "71°C" (input is Fahrenheit) */
 function fmtTireTemp(f) { return `${Math.round(tempFromF(f))}${tempUnit()}`; }
 
-/* ---------- accent theme (issue #25) ----------
-   Curated presets, not a free color wheel, so contrast against the dark
-   palette stays readable everywhere. Each entry:
-   - accent: what CSS --accent becomes (all light enough for the #001018
-     text that sits on accent-filled pills/buttons);
-   - pick: the chart-friendly shade used as overlay color A on the analysis
-     page (identical between map and charts);
-   - clash: index in the analysis BASE_PICK_COLORS palette that sits too
-     close to this accent — analysis.js swaps that one for cyan so six
-     overlaid laps stay tellable-apart. */
-const ACCENTS = {
-  cyan:    { label: "Cyan",    accent: "#00d4ff", pick: "#22d3ee", clash: -1 },
-  magenta: { label: "Magenta", accent: "#ff3d7f", pick: "#ff3d7f", clash: 4 },
-  violet:  { label: "Violet",  accent: "#9d6bff", pick: "#9d6bff", clash: 2 },
-  sunset:  { label: "Sunset",  accent: "#ff8c2e", pick: "#ff8c2e", clash: 1 },
-  lime:    { label: "Lime",    accent: "#a3e635", pick: "#a3e635", clash: 3 },
-  frost:   { label: "Frost",   accent: "#e8f1fb", pick: "#e8f1fb", clash: 5 },
-};
+/* ---------- accent theme (issue #25) ---------- (ACCENTS is declared above) */
 
 function accentDef() { return ACCENTS[_settings.accent] || ACCENTS.cyan; }
 
@@ -149,15 +191,14 @@ function fmtBytes(n) {
 /* ---------- settings panel (themed modal, reuses common.js modal chrome) ---------- */
 
 function openSettings() {
-  const backdrop = document.createElement("div");
-  backdrop.className = "modal-backdrop";
-  const box = document.createElement("div");
+  // same <dialog> chrome as common.js showModal: focus trap, Escape and
+  // focus restored to the gear button, all for free (issue #70)
+  const box = document.createElement("dialog");
   box.className = "modal settings-modal";
-  box.setAttribute("role", "dialog");
-  box.setAttribute("aria-modal", "true");
-  backdrop.appendChild(box);
+  box.setAttribute("aria-labelledby", "settings-title");
 
   const h = document.createElement("h3");
+  h.id = "settings-title";
   h.textContent = "Settings";
   box.appendChild(h);
 
@@ -390,18 +431,15 @@ function openSettings() {
   const ok = document.createElement("button");
   ok.className = "modal-ok primary";
   ok.textContent = "Done";
-  const close = () => {
-    document.removeEventListener("keydown", onKey, true);
-    backdrop.remove();
-  };
+  const close = () => { box.close(); box.remove(); };
   ok.onclick = close;
   actions.appendChild(ok);
 
-  const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); close(); } };
-  document.addEventListener("keydown", onKey, true);
-  backdrop.addEventListener("pointerdown", (e) => { if (e.target === backdrop) close(); });
+  box.addEventListener("cancel", (e) => { e.preventDefault(); close(); });
+  box.addEventListener("pointerdown", (e) => { if (e.target === box) close(); });
 
-  document.body.appendChild(backdrop);
+  document.body.appendChild(box);
+  box.showModal();
   ok.focus();
 }
 

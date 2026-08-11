@@ -84,6 +84,13 @@ in Rivals.
   packet field as the game sends it, and a **raw-data-at-cursor table** on the analysis
   page — hover any chart to read every channel of every compared lap at that exact
   spot. Preferences are saved in your browser.
+- **Works when things go wrong** — the dashboard stays usable when the game pauses
+  (FH6 stops sending telemetry the moment it loses focus, so alt-tabbing to a second
+  screen just shows an amber **paused** chip instead of covering the page), and the
+  Analysis page tells you when the server has gone away instead of quietly ignoring
+  your clicks. Every control is reachable by keyboard, and looping animations —
+  including the shift lights on the limiter — stop if your system asks for reduced
+  motion.
 
 **Analysis — lap comparison** (distance-aligned delta, speed, inputs, steering, slip —
 overlay up to 6 laps, even from different sessions, each in its own color):

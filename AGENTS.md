@@ -109,6 +109,24 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
   WebSockets skip CORS; and anything accepting a raw body must require its
   content type, or it is a CORS-simple request any page can POST to. A new
   endpoint that reads a body inherits all three concerns.
+- **A write the user can't see fail is a write that didn't happen.** Every API
+  call on the Analysis page goes through `apiFetch` (common.js): it throws on a
+  network failure or a non-2xx and reports it once, so nothing is left to a
+  bare `fetch` whose `onclick` never awaits it. Use it for new calls; pass
+  `quiet: true` only for something on a timer, where the connection chip
+  speaks instead.
+- **Anything clickable must be focusable.** New controls are
+  `<button type="button">`, not a `<div onclick>` — with `aria-pressed` for a
+  toggle and `role="checkbox"` + `aria-checked` for a multi-select row. A
+  canvas needs `role="img"` and an `aria-label` saying what it shows, and any
+  animation that loops forever needs a line in style.css's
+  `prefers-reduced-motion` block.
+- **Per-event work belongs in a frame.** `resize`, `pointermove` and `wheel`
+  fire far faster than a redraw costs: wrap the handler in `rafThrottle`
+  (common.js), resize uPlot with `setSize()` instead of rebuilding it, and
+  reassign a canvas's `width`/`height` only when the pixel size really changed
+  (each assignment reallocates the backing store — and resets the transform,
+  so a skipped one has to `setTransform` by hand).
 
 ## FH6 packet facts (hard-won, don't re-derive)
 

@@ -151,6 +151,31 @@ You'll only hit this if you reach LapScope by some other name — through a
 reverse proxy, say. List the names you use in the `LS_ALLOWED_HOSTS` env var
 (comma-separated) and restart.
 
+## The Analysis page says "server not answering"
+
+The chip next to the ⚙ button on the Analysis page is red, or a dialog says
+"Can't reach LapScope". The page is fine; the server isn't answering. Usually
+it was closed, restarted, or the container stopped.
+
+Nothing you clicked was saved — renames, tags, exclusions and deletes all
+report the failure rather than pretending to work. Start LapScope again and
+the page picks up on its own within 15 seconds; the chip goes green and the
+session list refills. If it stays red with LapScope running, check that
+nothing else grabbed its port (see **Busy ports** above).
+
+## The dashboard says "paused"
+
+An amber `paused` chip on the Live page means the socket is connected but no
+telemetry has arrived for a few seconds. That is normal and expected:
+**Forza Horizon 6 stops sending Data Out whenever the game loses focus**, so
+alt-tabbing to read the dashboard on a second screen pauses the stream. Every
+gauge holds its last value and the page stays usable; click back into the game
+and it goes green again within a frame.
+
+A red `reconnecting…` chip is different — that is the WebSocket itself
+dropping, which means the server went away. Retries back off from 1.5 s to
+15 s and continue indefinitely.
+
 ## Still stuck?
 
 [Open a bug report](https://github.com/darcane/LapScope/issues/new?template=bug_report.yml)

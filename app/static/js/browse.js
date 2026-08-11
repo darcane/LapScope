@@ -163,9 +163,26 @@ function browseValues(f) {
 
 /* Any session carrying a stored facet value, so a value still under filter
    can be labelled and drawn from the full list rather than from the rows
-   that survived (a chip has to read "Seaside Park Sprint", not "19"). */
+   that survived (a chip has to read "Seaside Park Sprint", not "19").
+
+   Indexed on first use rather than scanned per lookup: the chip row calls
+   this once per active value and every menu open calls it again, all on the
+   15 s poll's repaint (issue #74). browseIndex drops the index. */
+let sampleIndex = null;
+
 function browseSample(f, value) {
-  return browseAll.find((s) => f.value(s) === value);
+  if (!sampleIndex) {
+    // one Map per facet, keyed by that facet's value - a single flat Map
+    // would need a separator that no route or car name can contain
+    sampleIndex = new Map(FACETS.map((g) => [g.key, new Map()]));
+    for (const s of browseAll)
+      for (const g of FACETS) {
+        const m = sampleIndex.get(g.key);
+        const v = g.value(s);
+        if (!m.has(v)) m.set(v, s);
+      }
+  }
+  return sampleIndex.get(f.key).get(value);
 }
 
 function browseLabel(f, value) {
@@ -211,10 +228,15 @@ function facetPop(btn, key, fill) {
 /* One checkbox row; toggling re-renders the list and the row in place so the
    menu can stay open for a second pick. */
 function facetRow(f, v, onToggle) {
-  const row = document.createElement("div");
+  // a button so it is reachable by keyboard, with the checkbox role and
+  // state it has always looked like it had (issue #70)
+  const row = document.createElement("button");
+  row.type = "button";
   row.className = "facet-row";
+  row.setAttribute("role", "checkbox");
   const on = browse[f.key].has(v.value);
   row.classList.toggle("on", on);
+  row.setAttribute("aria-checked", on ? "true" : "false");
   const label = document.createElement("span");
   label.className = "facet-label";
   if (v.html) label.innerHTML = v.html;         // badge markup, from common.js
@@ -415,6 +437,7 @@ function browseStatus(shown, total) {
    as soon as there is a list to name them from. */
 function browseIndex(list) {
   browseAll = list;
+  sampleIndex = null;   // rebuilt lazily against the new list
   renderBrowseBar();
 }
 

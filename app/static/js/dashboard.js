@@ -12,7 +12,9 @@ function initCanvases() {
   liveMapG = initCanvas("livemap", document.getElementById("livemap").parentElement.clientWidth - 34, 280);
 }
 initCanvases();
-window.addEventListener("resize", initCanvases);
+// same reason as the analysis page: a resize drag fires far faster than five
+// canvas reallocations take (issue #71)
+window.addEventListener("resize", rafThrottle(initCanvases));
 
 const STRIP_CAP = 12 * 60; // ~12 s at 60 Hz
 const state = {
@@ -20,6 +22,8 @@ const state = {
   lastMsg: 0,
   trail: [],       // [latG, lonG] history for friction circle
   strip: [],       // input history
+  connected: false, // WebSocket open (distinct from the stream being stale)
+  connLabel: null,  // last connection chip text (avoids per-frame DOM thrash)
 };
 
 const $ = (id) => document.getElementById(id);
@@ -202,9 +206,24 @@ function fmtLap(s) {
   return `${m}:${(s - m * 60).toFixed(3).padStart(6, "0")}`;
 }
 
+/* Reconnect backoff: a server that is gone for good was being retried every
+   1.5 s forever. Doubles up to RECONNECT_MAX, resets on a successful open
+   (issue #73). */
+const RECONNECT_MIN = 1500;
+const RECONNECT_MAX = 15000;
+let reconnectDelay = RECONNECT_MIN;
+
 function connect() {
-  const ws = new WebSocket(`ws://${location.host}/ws/live`);
+  // wss when the page itself is served over TLS: a hardcoded ws:// behind a
+  // reverse proxy is blocked as mixed content, and the socket never opens
+  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${scheme}//${location.host}/ws/live`);
   ws.onmessage = (ev) => {
+    // A hidden tab renders nothing (render() is rAF-paused by the browser),
+    // so parsing 64-field frames at 60 Hz into buffers nobody will see is
+    // pure CPU. Keep the socket open — reconnecting on every tab switch is
+    // worse — and drop the frames instead.
+    if (document.hidden) return;
     const f = JSON.parse(ev.data);
     state.frame = f;
     state.lastMsg = performance.now();
@@ -217,12 +236,30 @@ function connect() {
     feedLiveMap(f);
     feedCollision(f);
   };
-  ws.onopen = () => setConn("live", "ok");
-  ws.onclose = () => { setConn("reconnecting…", "err"); setTimeout(connect, 1500); };
+  ws.onopen = () => {
+    state.connected = true;
+    reconnectDelay = RECONNECT_MIN;
+    setConn("live", "ok");
+  };
+  ws.onclose = () => {
+    state.connected = false;
+    setConn("reconnecting…", "err");
+    setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(RECONNECT_MAX, reconnectDelay * 2);
+  };
   ws.onerror = () => ws.close();
 }
 
+/* Coming back to the tab after frames were dropped: the last one on screen is
+   however old, so re-arm the staleness clock from now rather than showing a
+   PAUSED chip for a stream that is running fine. */
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && state.frame) state.lastMsg = performance.now();
+});
+
 function setConn(text, cls) {
+  if (state.connLabel === text) return; // idempotent: skip redundant DOM writes
+  state.connLabel = text;
   const el = $("conn");
   el.querySelector("span").textContent = text;
   el.className = `chip ${cls}`;
@@ -276,7 +313,7 @@ async function pollStatus() {
     }
   } catch { /* server briefly unavailable */ }
 }
-setInterval(pollStatus, 2000);
+setVisibleInterval(pollStatus, 2000);
 pollStatus();
 
 let chipOrdinal = null;
@@ -410,11 +447,37 @@ function syncRawPanel() {
   $("raw-panel").style.display = getSettings().rawLive ? "" : "none";
 }
 
+/* The two canvases whose numbers appear nowhere else on the page (speed, g,
+   inputs, gear and the lap clock are all DOM text already). Refreshed at
+   1 Hz onto a plain aria-label rather than a live region: a screen reader
+   reads it on demand instead of announcing it 60 times a second (#70). */
+let lastCanvasLabel = 0;
+const WHEEL_NAMES = ["front left", "front right", "rear left", "rear right"];
+
+function describeCanvases(f) {
+  const now = performance.now();
+  if (now - lastCanvasLabel < 1000) return;
+  lastCanvasLabel = now;
+  $("grip").setAttribute("aria-label", "Tire grip — " + WHEEL_NAMES.map(
+    (w, i) => `${w}: slip ${f.tire_combined_slip[i].toFixed(2)},`
+      + ` ${fmtTireTemp(f.tire_temp[i])}`).join("; "));
+  $("rpm").setAttribute("aria-label",
+    `${Math.round(f.current_engine_rpm)} of ${Math.round(f.engine_max_rpm)} rpm,`
+    + ` gear ${f.gear === 0 ? "reverse" : f.gear === 11 ? "neutral" : f.gear}`);
+}
+
 function render() {
   requestAnimationFrame(render);
   const f = state.frame;
   const stale = performance.now() - state.lastMsg > 2500;
-  $("nodata").classList.toggle("hidden", !(stale || !f));
+  // The full-screen "waiting for telemetry" overlay is for the first-run case
+  // only (no frame ever). Once data has arrived, a stall must NOT re-cover the
+  // page: FH6 stops Data Out whenever it loses focus, so clicking away from
+  // the game to read the dashboard on a second screen would otherwise slam an
+  // opaque overlay — with the wrong diagnosis — over everything (issue #69).
+  // A stale-but-connected stream just flips the chip to PAUSED.
+  $("nodata").classList.toggle("hidden", !!f);
+  if (f && state.connected) setConn(stale ? "paused" : "live", stale ? "warn" : "ok");
   if (!f) return;
 
   updateCarChip(f);
@@ -476,6 +539,7 @@ function render() {
   }
 
   if (getSettings().rawLive && !rawPanel.held) updateRawPanel(f);
+  describeCanvases(f);
 }
 
 initRawPanel();

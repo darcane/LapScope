@@ -55,12 +55,17 @@ function shortName(session) {
   const n = displayName(session);
   return n.length > 14 ? n.slice(0, 13) + "…" : n;
 }
+/* The number a lap wears anywhere in the UI. In a merged group every sprint
+   member's own lap_number is 0, so the position has to come from the group's
+   ordering (run_index); outside a group there is none and the lap's own
+   number stands. Every label has to use this or a merged sprint group reads
+   "Run 1" six times over (issue #74). */
+const lapNo = (lap) => lap.run_index ?? lap.lap_number + 1;
+
 /* tray chips / captions: the plain lap number is enough while every pick is
    from the displayed session; session names only appear once picks cross */
 function chipLabel(pick, crossSession) {
-  // run_index numbers a pick within a merged group, where every sprint
-  // member's own lap_number is 0
-  const n = pick.lap.run_index ?? pick.lap.lap_number + 1;
+  const n = lapNo(pick.lap);
   return crossSession
     ? `${shortName(pick.session)} · ${pick.session.route_kind === "sprint" ? "R" : "L"}${n}`
     : lapLabel(pick.session.route_kind, n);
@@ -103,18 +108,52 @@ function displayName(s) {
 /* Overlapping polls can land out of order and paint a stale list (the same
    rule selectSession applies to its payload). */
 let sessionsSeq = 0;
+let everLoaded = false;
 
 async function loadSessions() {
   const seq = ++sessionsSeq;
   let list;
   try {
-    list = await (await fetch("/api/sessions")).json();
-  } catch { return; }  // server briefly away (restart): keep the current list
+    // quiet: this runs on a 15 s timer, and a dialog every 15 s while the
+    // server is down is worse than the outage. The chip says it instead.
+    list = await apiFetch("/api/sessions", { quiet: true, what: "load the sessions" });
+  } catch {
+    // a blip mid-session keeps the list that is already on screen; only a
+    // page that never got one has nothing to say (issue #68)
+    if (!everLoaded) showSessionListError();
+    return;
+  }
   if (seq !== sessionsSeq) return;  // an older poll landed late
+  everLoaded = true;
   state.allSessions = list;
   browseIndex(list);   // the facet menus read the unfiltered list
   renderSessionList();
 }
+
+/* The sidebar's initial "loading…" is indistinguishable from a server that
+   never answered, so say which it is. */
+function showSessionListError() {
+  const el = $("#session-list");
+  if (!el) return;
+  const box = document.createElement("div");
+  box.className = "empty-hint";
+  box.textContent = "Can't reach LapScope — the server isn't answering."
+    + " Check that it is still running; this page retries every 15 seconds.";
+  el.replaceChildren(box);
+  lastListSig = null;  // so the real list paints as soon as one arrives
+}
+
+/* Mirrors the Live page's chip. Analysis has no socket, so the API calls are
+   the heartbeat: apiFetch reports whether the server answered, and every
+   call — including the 15 s poll — keeps this honest. */
+function setConn(text, cls) {
+  const el = $("#conn");
+  if (!el) return;
+  $("span", el).textContent = text;
+  el.className = `chip ${cls}`;
+}
+onServerReachable((ok) =>
+  setConn(ok ? "connected" : "server not answering", ok ? "ok" : "err"));
 
 /* Exactly the fields a card renders — nothing else may enter the signature.
    state.sessionId in particular must stay out: selection is a class toggle
@@ -151,14 +190,23 @@ function renderSessionList() {
    the position of its most recent member. Built from the FILTERED rows, so a
    filter matching 3 of 5 members says so rather than misreporting the group. */
 function collapseGroups(rows) {
+  // indexed, not two Array.filter scans per group inside a loop over every
+  // row: this runs on the 15 s poll and after every edit (issue #74)
+  const byGroup = (list) => {
+    const m = new Map();
+    for (const s of list)
+      if (s.group_id != null) (m.get(s.group_id) || m.set(s.group_id, []).get(s.group_id)).push(s);
+    return m;
+  };
+  const shown = byGroup(rows);
+  const all = byGroup(state.allSessions);
   const seen = new Set();
   const out = [];
   for (const s of rows) {
     if (s.group_id == null) { out.push(sessionCard(s)); continue; }
     if (seen.has(s.group_id)) continue;
     seen.add(s.group_id);
-    out.push(groupCard(rows.filter((x) => x.group_id === s.group_id),
-                       state.allSessions.filter((x) => x.group_id === s.group_id)));
+    out.push(groupCard(shown.get(s.group_id), all.get(s.group_id)));
   }
   return out;
 }
@@ -168,14 +216,17 @@ function groupCard(shown, all) {
   const runs = all.reduce((n, s) => n + s.lap_count, 0);
   const bests = all.filter((s) => s.best_lap).map((s) => s.best_lap);
   const times = all.map((s) => s.started_at);
-  const card = document.createElement("div");
+  const card = document.createElement("button");
+  card.type = "button";
   card.className = "session-card group-card";
   card.dataset.gid = lead.group_id;
+  // spans, not divs: a <button>'s content model is phrasing content, and
+  // the card is a button now
   card.innerHTML = `
-    <div class="title"><span class="group-mark" title="merged run group">⛓</span><span></span></div>
-    <div class="meta-row">${classBadge(lead.car_class_letter, lead.car_pi)}${dtBadge(lead.drivetrain)}${trackBadge(lead.track_type)}${condBadge(lead.conditions)}</div>
-    <div class="car-line"></div>
-    <div class="sub"></div>`;
+    <span class="title"><span class="group-mark" title="merged run group">⛓</span><span></span></span>
+    <span class="meta-row">${classBadge(lead.car_class_letter, lead.car_pi)}${dtBadge(lead.drivetrain)}${trackBadge(lead.track_type)}${condBadge(lead.conditions)}</span>
+    <span class="car-line"></span>
+    <span class="sub"></span>`;
   $(".title span:last-child", card).textContent =
     lead.group_name || lead.route_name || fmtDate(Math.min(...times));
   $(".car-line", card).textContent = lead.car_name;
@@ -186,7 +237,19 @@ function groupCard(shown, all) {
     + ` · ${runs} ${lapWord(lead.route_kind, runs)}`
     + ` · best ${fmtLap(bests.length ? Math.min(...bests) : null)}`;
   card.onclick = () => selectGroup(lead.group_id);
-  return card;
+  return cardWrap(card);
+}
+
+/* A card is one button, so it is reachable by keyboard like anything else
+   that acts on a click (issue #70) — but the ＋ quick-add is a second button
+   and a button inside a button is invalid and unreachable. The wrapper is
+   what the ＋ is positioned against, so the two are siblings. */
+function cardWrap(card, extra) {
+  const wrap = document.createElement("div");
+  wrap.className = "card-wrap";
+  wrap.append(card);
+  if (extra) wrap.append(extra);
+  return wrap;
 }
 
 /* Sittings worth merging: two or more ungrouped attempts at one route in one
@@ -378,15 +441,17 @@ async function reviewMerges() {
   // on the third must not cost the two that already landed
   const failed = [];
   for (const { cluster } of picked) {
-    const res = await fetch("/api/groups", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_ids: cluster.map((s) => s.id) }),
-    });
-    if (!res.ok) {
-      const why = await res.json().catch(() => ({}));
-      failed.push(`${cluster[0].route_name || "Unnamed route"}: `
-        + (why.detail || `HTTP ${res.status}`));
+    try {
+      // quiet: the roll-up below reports all of them at once, and one dialog
+      // per failed sitting would be a queue of modals
+      await apiFetch("/api/groups", {
+        quiet: true,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_ids: cluster.map((s) => s.id) }),
+      });
+    } catch (err) {
+      failed.push(`${cluster[0].route_name || "Unnamed route"}: ${err.detail}`);
     }
   }
   await loadSessions();
@@ -414,14 +479,15 @@ function markActive(el) {
 }
 
 function sessionCard(s) {
-  const card = document.createElement("div");
+  const card = document.createElement("button");
+  card.type = "button";
   card.className = "session-card";
   card.dataset.sid = s.id;
   card.innerHTML = `
-    <div class="title"></div>
-    <div class="meta-row">${classBadge(s.car_class_letter, s.car_pi)}${dtBadge(s.drivetrain)}${trackBadge(s.track_type)}${condBadge(s.conditions)}</div>
-    <div class="car-line"></div>
-    <div class="sub">${fmtDate(s.started_at)} · ${s.lap_count} ${lapWord(s.route_kind, s.lap_count)} · best ${fmtLap(s.best_lap)}</div>`;
+    <span class="title"></span>
+    <span class="meta-row">${classBadge(s.car_class_letter, s.car_pi)}${dtBadge(s.drivetrain)}${trackBadge(s.track_type)}${condBadge(s.conditions)}</span>
+    <span class="car-line"></span>
+    <span class="sub">${fmtDate(s.started_at)} · ${s.lap_count} ${lapWord(s.route_kind, s.lap_count)} · best ${fmtLap(s.best_lap)}</span>`;
   $(".title", card).textContent = displayName(s);
   $(".car-line", card).textContent = s.car_name;
   if (!s.car_known) {
@@ -429,29 +495,27 @@ function sessionCard(s) {
     $(".car-line", card).title = "Unknown car — open the session to name or report it";
   }
   card.onclick = () => selectSession(s.id);
+  let add = null;
   if (s.best_lap) {
     // grind workflow: build the overlay straight from the sidebar, one
     // best lap per attempt, without opening each session (issue #30)
-    const add = document.createElement("button");
+    add = document.createElement("button");
+    add.type = "button";
     add.className = "card-add";
     add.title = `Add this session's best ${lapWord(s.route_kind)} to the comparison (click again to remove)`;
     add.textContent = "＋";
     add.onclick = async (e) => {
       e.stopPropagation();
-      try {
-        const payload = await (await fetch(`/api/sessions/${s.id}/laps`)).json();
-        const best = payload.laps.find((l) => l.is_best);
-        if (!best) return;
-        const existing = pickOf(best.id);
-        if (existing) { promoteManual(); removePick(existing); }
-        else await addPick(best, payload.session);
-      } catch (err) {
-        uiAlert("Couldn't load session", String(err.message || err));
-      }
+      const payload = await apiFetch(`/api/sessions/${s.id}/laps`,
+                                     { what: "load that session" });
+      const best = payload.laps.find((l) => l.is_best);
+      if (!best) return;
+      const existing = pickOf(best.id);
+      if (existing) { promoteManual(); removePick(existing); }
+      else await addPick(best, payload.session);
     };
-    card.appendChild(add);
   }
-  return card;
+  return cardWrap(card, add);
 }
 
 /* rapid clicks race their fetches: only the latest selection may render its
@@ -461,14 +525,14 @@ function sessionCard(s) {
    over a session the user has already clicked, and vice versa */
 let selectSeq = 0;
 
-async function selectView(seq, url, onError) {
+async function selectView(seq, url, what) {
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const payload = await res.json();
+    // quiet, then reported by hand: a selection the user has already replaced
+    // must fail silently, and apiFetch cannot know that until it comes back
+    const payload = await apiFetch(url, { what, quiet: true });
     return seq === selectSeq ? payload : null;  // newer selection landed
   } catch (err) {
-    if (seq === selectSeq) uiAlert(onError, String(err.message || err));
+    if (seq === selectSeq) uiAlert(err.title, err.detail);
     return null;
   }
 }
@@ -478,6 +542,8 @@ async function selectView(seq, url, onError) {
    lap-table header. */
 function mountDetail() {
   const detail = $("#detail");
+  destroyCharts();     // the pane about to be replaced owns them
+  detail.classList.remove("busy");
   detail.innerHTML = "";
   detail.appendChild($("#detail-template").content.cloneNode(true));
   $("#btn-map-png").onclick = exportMapPng;
@@ -529,13 +595,26 @@ function applyPayload(laps, sessions) {
   renderPicks();
 }
 
+/* The detail pane while its next payload is in flight. Deliberately not a
+   wipe-and-spinner: the previous session stays readable (and its charts
+   alive) but goes visibly stale, so a slow load against a big database looks
+   like work rather than like a dead click — the most-clicked action in the
+   app had no feedback at all (issue #74). addPick has done this since it was
+   written; this is the same idea. */
+function setDetailBusy(on) {
+  const el = $("#detail");
+  if (el) el.classList.toggle("busy", on);
+}
+
 async function selectSession(id) {
   const seq = ++selectSeq;
   state.sessionId = id;
   state.groupId = null;
+  setDetailBusy(true);
   const payload = await selectView(
-    seq, `/api/sessions/${id}/laps`, "Couldn't load session");
-  if (!payload) return;
+    seq, `/api/sessions/${id}/laps`, "open that session");
+  // a superseded selection must not clear the busy state its successor set
+  if (!payload) { if (seq === selectSeq) setDetailBusy(false); return; }
   state.session = payload.session;  // PNG export captions from it
   mountDetail();
   wireSessionHeader(payload.session);
@@ -557,16 +636,20 @@ function wireSessionHeader(s) {
     help.onclick = () => renameCar(s);
     $("#header-car").appendChild(help);
   }
-  const patch = (body) => fetch(`/api/sessions/${s.id}`, {
+  const patch = (body, what) => apiFetch(`/api/sessions/${s.id}`, {
+    what,
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   $("#cond-select").value = s.conditions || "";
-  $("#cond-select").onchange = async (e) => { await patch({ conditions: e.target.value }); loadSessions(); };
+  $("#cond-select").onchange = async (e) => {
+    await patch({ conditions: e.target.value }, "save the conditions");
+    loadSessions();
+  };
   $("#track-select").value = s.track_type || "";
   $("#track-select").onchange = async (e) => {
-    await patch({ track_type: e.target.value });
+    await patch({ track_type: e.target.value }, "save the race type");
     await maybeRetagRoute(s, e.target.value);
     loadSessions();
   };
@@ -576,7 +659,7 @@ function wireSessionHeader(s) {
   $("#btn-reprocess").onclick = () => reprocessSession(s);
   $("#btn-reset-edits").style.display = s.edit_count ? "" : "none";
   $("#btn-reset-edits").onclick = () => resetEdits(s);
-  $("#btn-export").onclick = () => { window.location = `/api/sessions/${s.id}/export.csv`; };
+  $("#btn-export").onclick = () => downloadUrl(`/api/sessions/${s.id}/export.csv`);
   $("#btn-delete").onclick = () => deleteSession(s);
   $("#btn-merge").onclick = () => mergeRuns(s);
   $("#btn-merge").style.display = mergeCandidates(s).length ? "" : "none";
@@ -590,9 +673,10 @@ async function selectGroup(id) {
   const seq = ++selectSeq;
   state.sessionId = null;
   state.groupId = id;
+  setDetailBusy(true);
   const payload = await selectView(
-    seq, `/api/groups/${id}/laps`, "Couldn't load group");
-  if (!payload) return;
+    seq, `/api/groups/${id}/laps`, "open that group");
+  if (!payload) { if (seq === selectSeq) setDetailBusy(false); return; }
   const g = payload.group;
   state.group = g;
   state.session = payload.sessions[0];  // PNG export captions from it
@@ -673,15 +757,17 @@ function renderLapRows() {
     // an override never changes the icons' meaning, just their source
     const edited = (l.flags || "") !== (l.flags_auto || "");
     const pick = pickOf(l.id);
-    // one toggle per lap; a picked lap wears its overlay letter + color
+    // one toggle per lap; a picked lap wears its overlay letter + color.
+    // A real button with aria-pressed, so it is reachable and its state is
+    // readable without seeing the color (issue #70).
     const pickChip = pick
-      ? `<span class="pick on" style="color:${pick.color};border-color:${pick.color};background:${pick.color}26" title="Remove from the comparison">${pickLetter(pick)}</span>`
-      : `<span class="pick" title="Add to the comparison (up to ${MAX_PICKS} laps, across sessions)">+</span>`;
+      ? `<button type="button" class="pick on" aria-pressed="true" style="color:${pick.color};border-color:${pick.color};background:${pick.color}26" title="Remove from the comparison">${pickLetter(pick)}</button>`
+      : `<button type="button" class="pick" aria-pressed="false" title="Add to the comparison (up to ${MAX_PICKS} laps, across sessions)">+</button>`;
     // in a group every sprint member's own lap_number is 0, so the number
     // has to come from the group's ordering
     tr.innerHTML = `
       <td>${pickChip}</td>
-      <td>${group ? l.run_index : l.lap_number + 1}</td>
+      <td>${lapNo(l)}</td>
       ${group ? `<td class="run-when"><button class="lap-act act-open" title="Open this session on its own">${fmtDate(state.sessionsById[l.session_id].started_at)}</button></td>` : ""}
       <td class="lap-time">${fmtLap(l.lap_time)}</td>
       <td>${l.gap_to_best != null && l.gap_to_best > 0 ? "+" + l.gap_to_best.toFixed(3) : (l.is_best ? "best" : "")}</td>
@@ -693,7 +779,7 @@ function renderLapRows() {
         ${group ? `<button class="lap-act act-unmerge" title="Take this session back out of the group">⛓</button>` : ""}
       </td>`;
     $(".pick", tr).onclick = () => pickLap(l.id);
-    $(".act-csv", tr).onclick = () => { window.location = `/api/laps/${l.id}/export.csv`; };
+    $(".act-csv", tr).onclick = () => downloadUrl(`/api/laps/${l.id}/export.csv`);
     $(".act-flags", tr).onclick = () => editLapFlags(l);
     $(".act-exclude", tr).onclick = () => toggleLapExcluded(l);
     if (group) {
@@ -707,20 +793,19 @@ function renderLapRows() {
 /* Re-fetch every picked lap's channel data (after a manual edit, or because
    the raw-data toggle changed the channel list). */
 async function refetchPickData() {
-  for (const p of state.picks) {
-    const res = await fetch(
-      `/api/laps/${p.lapId}/data?channels=${channelList()}&max_points=1500`);
-    if (res.ok) p.data = await res.json();
-  }
+  for (const p of state.picks)
+    p.data = await apiFetch(
+      `/api/laps/${p.lapId}/data?channels=${channelList()}&max_points=1500`,
+      { what: "reload the lap data" });
 }
 
 /* Re-fetch the session's laps + every picked lap's data after a manual edit,
    keeping the comparison tray (unlike selectSession's auto-pick reset). */
 async function reloadSession() {
   const group = state.groupId !== null;
-  const payload = await (await fetch(group
+  const payload = await apiFetch(group
     ? `/api/groups/${state.groupId}/laps`
-    : `/api/sessions/${state.sessionId}/laps`)).json();
+    : `/api/sessions/${state.sessionId}/laps`, { what: "refresh this view" });
   const sessions = group ? payload.sessions : [payload.session];
   state.laps = payload.laps;
   state.sessionsById = Object.fromEntries(sessions.map((x) => [x.id, x]));
@@ -745,7 +830,8 @@ async function reloadSession() {
   loadSessions();  // lap counts / best on the session cards may have moved
 }
 
-const lapPatch = (lapId, body) => fetch(`/api/laps/${lapId}`, {
+const lapPatch = (lapId, body, what) => apiFetch(`/api/laps/${lapId}`, {
+  what,
   method: "PATCH",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify(body),
@@ -776,21 +862,22 @@ async function editLapFlags(lap) {
   hint.textContent = `Detected by the recorder: ${detected}. Matching it removes your override.`;
   extra.appendChild(hint);
   const ok = await showModal({
-    title: `${lapLabel(kind, lap.lap_number + 1)} — flags`,
+    title: `${lapLabel(kind, lapNo(lap))} — flags`,
     message: `Detection is heuristic; correct this ${lapWord(kind)}'s markers here.`
       + " Reprocess keeps your choice.",
     extra, okText: "Save",
   });
   if (!ok) return;
   const flags = Object.keys(boxes).filter((f) => boxes[f].checked).join(",");
-  await lapPatch(lap.id, { flags });
+  await lapPatch(lap.id, { flags }, "save the flags");
   reloadSession();
 }
 
 /* excluded laps stay listed (grayed) but drop out of best/gap and the
    session card's lap count - reversible, so no confirm */
 async function toggleLapExcluded(lap) {
-  await lapPatch(lap.id, { excluded: !lap.excluded });
+  await lapPatch(lap.id, { excluded: !lap.excluded },
+                 lap.excluded ? "restore it" : "exclude it");
   reloadSession();
 }
 
@@ -800,7 +887,8 @@ async function resetEdits(session) {
     + "overrides, and excluded laps — and show exactly what the recorder detected?",
     { okText: "Reset", danger: true });
   if (!sure) return;
-  await fetch(`/api/sessions/${session.id}/edits`, { method: "DELETE" });
+  await apiFetch(`/api/sessions/${session.id}/edits`,
+                 { what: "reset the edits", method: "DELETE" });
   reloadSession();
 }
 
@@ -824,18 +912,17 @@ async function addPick(lap, session, { auto = false } = {}) {
   if (!auto) promoteManual();
   renderPicks();  // the chip/row shows up right away, data follows
   try {
-    const res = await fetch(
-      `/api/laps/${lap.id}/data?channels=${channelList()}&max_points=1500`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    const data = await apiFetch(
+      `/api/laps/${lap.id}/data?channels=${channelList()}&max_points=1500`,
+      { what: "load that lap's data" });
     // rapid clicks race their fetches: only a pick still in the tray may
     // land its data - a removed pick's late response must be dropped
     if (!state.picks.includes(pick)) return;
     pick.data = data;
-  } catch (err) {
-    if (!state.picks.includes(pick)) return; // stale failure; nothing to untag
-    removePick(pick);                        // untag so the row doesn't lie
-    uiAlert("Couldn't load lap data", String(err.message || err));
+  } catch {
+    // apiFetch already said why; untag so the row doesn't claim a lap that
+    // has no trace behind it
+    if (state.picks.includes(pick)) removePick(pick);
     return;
   }
   renderPicks();
@@ -1047,16 +1134,12 @@ async function mergeRuns(session) {
     await uiAlert("Nothing to merge", "Pick at least two sessions.");
     return;
   }
-  const res = await fetch("/api/groups", {
+  const { group } = await apiFetch("/api/groups", {
+    what: "merge those sessions",
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name: name.trim(), session_ids: [...chosen] }),
   });
-  if (!res.ok) {
-    await uiAlert("Couldn't merge", (await res.json()).detail || "failed");
-    return;
-  }
-  const { group } = await res.json();
   await loadSessions();
   selectGroup(group.id);
 }
@@ -1068,7 +1151,8 @@ async function renameGroup(group) {
     message: "Shown on the merged card. Leave empty to fall back to the route name.",
   });
   if (name === null) return;
-  await fetch(`/api/groups/${group.id}`, {
+  await apiFetch(`/api/groups/${group.id}`, {
+    what: "rename the group",
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name: name.trim() }),
@@ -1083,8 +1167,10 @@ async function ungroup(group) {
     + " sessions, their telemetry and every manual edit stay exactly as they are.",
     { okText: "Ungroup" });
   if (!sure) return;
-  await fetch(`/api/groups/${group.id}`, { method: "DELETE" });
+  await apiFetch(`/api/groups/${group.id}`,
+                 { what: "ungroup those sessions", method: "DELETE" });
   await loadSessions();
+  destroyCharts();
   $("#detail").innerHTML =
     `<div class="empty-hint">Ungrouped — the sessions are back in the list.</div>`;
   state.groupId = null;
@@ -1094,13 +1180,14 @@ async function ungroup(group) {
 
 async function removeFromGroup(sessionId) {
   const gid = state.groupId;
-  const res = await fetch(`/api/groups/${gid}/sessions/${sessionId}`,
-                          { method: "DELETE" });
-  const out = await res.json();
-  if (!res.ok) {  // the group moved on since this view was rendered
-    await uiAlert("Remove failed", out.detail || "remove failed");
-    await loadSessions();
-    selectGroup(gid);
+  let out;
+  try {
+    out = await apiFetch(`/api/groups/${gid}/sessions/${sessionId}`,
+                         { what: "take that session out", method: "DELETE" });
+  } catch (err) {
+    // the group moved on since this view was rendered; repaint it from the
+    // server so the stale row goes away (a dead server has nothing to repaint)
+    if (!err.offline) { await loadSessions(); selectGroup(gid); }
     return;
   }
   await loadSessions();
@@ -1115,7 +1202,8 @@ async function renameSession(session) {
     message: "Shown in the session list on the left. Leave empty to reset.",
   });
   if (name === null) return;  // cancelled; "" clears back to the fallback name
-  await fetch(`/api/sessions/${session.id}`, {
+  await apiFetch(`/api/sessions/${session.id}`, {
+    what: "rename the session",
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name: name.trim() }),
@@ -1173,7 +1261,8 @@ async function renameRoute(session) {
   if (name === null) return;  // cancelled: neither the name nor the shape changes
   const body = { kind };  // "" clears the override back to the detected shape
   if (name.trim()) body.name = name.trim();
-  await fetch(`/api/routes/${session.route_id}`, {
+  await apiFetch(`/api/routes/${session.route_id}`, {
+    what: "save the route",
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -1186,7 +1275,7 @@ async function renameRoute(session) {
    type to every session recorded on the same (fingerprint-recognized) route */
 async function maybeRetagRoute(session, type) {
   if (!type || !session.route_id) return;
-  const all = await (await fetch("/api/sessions")).json();
+  const all = await apiFetch("/api/sessions", { what: "check the other sessions" });
   const others = all.filter((x) => x.route_id === session.route_id && x.id !== session.id);
   if (!others.length) return;
   const [icon, label] = TRACK_META[type];
@@ -1195,7 +1284,8 @@ async function maybeRetagRoute(session, type) {
     `${others.length} other session${others.length > 1 ? "s" : ""} recorded on the same route`
     + " will be retagged too (future sessions inherit it automatically).");
   if (!ok) return;
-  await fetch(`/api/routes/${session.route_id}`, {
+  await apiFetch(`/api/routes/${session.route_id}`, {
+    what: "retag the route",
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ track_type: type }),
@@ -1222,7 +1312,8 @@ async function renameCar(session) {
     extra,
   });
   if (name === null) return;  // cancelled; "" reverts to the bundled name
-  await fetch(`/api/cars/${session.car_ordinal}`, {
+  await apiFetch(`/api/cars/${session.car_ordinal}`, {
+    what: "name the car",
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name: name.trim() }),
@@ -1238,12 +1329,16 @@ async function reprocessSession(session) {
     + "contacts, flag overrides, excluded laps — are kept.",
     { okText: "Reprocess" });
   if (!sure) return;
-  const res = await fetch(`/api/sessions/${session.id}/reprocess`, { method: "POST" });
-  if (!res.ok) {
-    await uiAlert("Reprocess failed", (await res.json()).detail || "failed");
-    return;
+  // a whole session replayed server-side, with nothing on screen while it
+  // runs (issue #74)
+  setDetailBusy(true);
+  let laps;
+  try {
+    ({ laps } = await apiFetch(`/api/sessions/${session.id}/reprocess`,
+                               { what: "reprocess the session", method: "POST" }));
+  } finally {
+    setDetailBusy(false);
   }
-  const { laps } = await res.json();
   await uiAlert("Reprocess complete",
     `${laps} completed ${lapWord(session.route_kind, laps)} found.`);
   // the replay recreates lap rows under recycled rowids: a kept pick could
@@ -1258,13 +1353,11 @@ async function deleteSession(session) {
     `Delete "${displayName(session)}" and all of its telemetry? This cannot be undone.`,
     { okText: "Delete", danger: true });
   if (!sure) return;
-  const res = await fetch(`/api/sessions/${session.id}`, { method: "DELETE" });
-  if (!res.ok) {
-    await uiAlert("Delete failed", (await res.json()).detail || "delete failed");
-    return;
-  }
+  await apiFetch(`/api/sessions/${session.id}`,
+                 { what: "delete the session", method: "DELETE" });
   state.picks = state.picks.filter((p) => p.session.id !== session.id);
   state.sessionId = null;
+  destroyCharts();
   $("#detail").innerHTML = `<div class="empty-hint">Session deleted.</div>`;
   loadSessions();
 }
@@ -1394,15 +1487,12 @@ function bindMapContext(canvas) {
       + "💥 flag lifts once no real contact remains). Reset edits brings it back.",
       { okText: "Dismiss" });
     if (!ok) return;
-    const res = await fetch(`/api/laps/${hit.lapId}/dismiss_contact`, {
+    await apiFetch(`/api/laps/${hit.lapId}/dismiss_contact`, {
+      what: "dismiss that marker",
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ t: hit.t }),
     });
-    if (!res.ok) {
-      await uiAlert("Dismiss failed", (await res.json()).detail || "failed");
-      return;
-    }
     reloadSession();
   });
 }
@@ -1415,6 +1505,10 @@ function updateMapHint() {
     ? "↔ drag to rotate · scroll to zoom · shift-drag to pan · double-click resets"
     : "scroll to zoom · drag to pan · double-click resets";
 }
+
+/* the drag/wheel handlers fire per pointer sample; one redraw per frame is
+   all the display can show anyway (issue #71) */
+const redrawMap = rafThrottle(() => drawMap());
 
 function bindMapDrag(canvas) {
   canvas.addEventListener("pointerdown", (e) => {
@@ -1435,7 +1529,7 @@ function bindMapDrag(canvas) {
       mapView.panX = d.panX + (e.clientX - d.x);
       mapView.panY = d.panY + (e.clientY - d.y);
     }
-    drawMap();
+    redrawMap();
   });
   const stop = () => { map3d.drag = null; };
   canvas.addEventListener("pointerup", stop);
@@ -1450,20 +1544,30 @@ function bindMapDrag(canvas) {
     mapView.panY = e.offsetY - (e.offsetY - mapView.panY) * k;
     mapView.zoom = zoom;
     if (zoom === 1) { mapView.panX = 0; mapView.panY = 0; }
-    drawMap();
+    redrawMap();
   }, { passive: false });
-  canvas.addEventListener("dblclick", () => { resetMapView(); drawMap(); });
+  canvas.addEventListener("dblclick", () => { resetMapView(); redrawMap(); });
 }
 
 function drawMap() {
   const canvas = $("#trackmap");
   if (!canvas) return;
-  const cssW = canvas.parentElement.clientWidth - 4, cssH = 420;
+  const cssW = Math.max(1, canvas.parentElement.clientWidth - 4);
+  // a fixed 420 leaves a nearly-square map on a phone-width column; below
+  // ~760 px it follows the width instead (issue #74)
+  const cssH = Math.round(Math.min(420, Math.max(240, cssW * 0.55)));
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = cssW * dpr; canvas.height = cssH * dpr;
-  canvas.style.width = cssW + "px";
-  canvas.style.height = cssH + "px";
+  const w = Math.round(cssW * dpr), h = Math.round(cssH * dpr);
+  // only on a real size change: a drag redraws at pointer rate, and each
+  // reassignment reallocates the backing store — ~8 MB at 1200 px x dpr 2
+  // (issue #71). The transform survives now, so reset it by hand.
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w; canvas.height = h;
+    canvas.style.width = cssW + "px";
+    canvas.style.height = cssH + "px";
+  }
   const ctx = canvas.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, cssW, cssH);
 
@@ -1471,6 +1575,12 @@ function drawMap() {
   hitMarkers.length = 0; // refilled by drawHits below
 
   const loaded = state.picks.filter((p) => p.data);
+  // the drawing is the only place this is said (issue #70)
+  canvas.setAttribute("aria-label", loaded.length
+    ? `Track map of ${loaded.length} tagged `
+      + `${lapWord(state.session && state.session.route_kind, loaded.length)}`
+      + `, ${state.mapMode === "3d" ? "3D" : "2D"} view`
+    : "Track map — no laps tagged yet");
   const ref = refPick();
   const multi = state.picks.length >= 2;  // overlay mode: solid distinct colors
   const three = state.mapMode === "3d";
@@ -1717,7 +1827,7 @@ function drawMap() {
     // letters and numbers only - session names stay in the tray, which
     // renders them via textContent (user-named sessions must not hit innerHTML)
     const lapCells = state.picks.map((p) => `
-      <div><div class="label"><span class="swatch" style="background:${p.color}"></span> ${pickLetter(p)} · ${lapLabel(p.session.route_kind, p.lap.lap_number + 1)}</div>
+      <div><div class="label"><span class="swatch" style="background:${p.color}"></span> ${pickLetter(p)} · ${lapLabel(p.session.route_kind, lapNo(p.lap))}</div>
       <div class="value">${fmtLap(p.lap.lap_time)}</div></div>`).join("");
     side.innerHTML = `<div class="lap-grid" style="text-align:left">
       ${lapCells}
@@ -1782,9 +1892,16 @@ function drawMap() {
   mapCursor.proj = P;
   mapCursor.dpr = dpr;
   if (!mapCursor.snap) mapCursor.snap = document.createElement("canvas");
-  mapCursor.snap.width = canvas.width;
-  mapCursor.snap.height = canvas.height;
-  mapCursor.snap.getContext("2d").drawImage(canvas, 0, 0);
+  const snap = mapCursor.snap;
+  // same reason as the visible canvas above: resize only when it really
+  // changed, and clear by hand because assigning width no longer does it
+  if (snap.width !== canvas.width || snap.height !== canvas.height) {
+    snap.width = canvas.width;
+    snap.height = canvas.height;
+  }
+  const sctx = snap.getContext("2d");
+  sctx.clearRect(0, 0, snap.width, snap.height);
+  sctx.drawImage(canvas, 0, 0);
   if (mapCursor.idx != null || mapCursor.pin != null) drawMapMarker();
 }
 
@@ -1794,6 +1911,17 @@ function drawMap() {
    together in a download folder */
 function safeFilename(name) {
   return name.replace(/[^A-Za-z0-9._ -]+/g, "_").replace(/^[ .]+|[ .]+$/g, "") || "export";
+}
+
+/* A hidden <a download>, not `window.location`. On success both save the file
+   from Content-Disposition; on an error response `window.location` navigated
+   the browser to a JSON error page, throwing away the comparison tray, the
+   zoom window and the pin (issue #74). */
+function downloadUrl(url) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "";   // the filename still comes from Content-Disposition
+  a.click();
 }
 
 function downloadBlob(blob, filename) {
@@ -1844,7 +1972,7 @@ function exportMapPng() {
   // every picked lap, in tray order; laps from other sessions carry their
   // session's name so a cross-session overlay stays readable
   const lapsTxt = state.picks.map((p) => {
-    const t = `${lapLabel(p.session.route_kind, p.lap.lap_number + 1)} — ${fmtLap(p.lap.lap_time)}`;
+    const t = `${lapLabel(p.session.route_kind, lapNo(p.lap))} — ${fmtLap(p.lap.lap_time)}`;
     return p.session.id !== s.id ? `${shortName(p.session)} ${t}` : t;
   }).join("  ·  ");
   ctx.fillStyle = color("--muted", "#8494a7");
@@ -1852,7 +1980,7 @@ function exportMapPng() {
   ctx.fillText(lapsTxt + (tags ? `  ·  ${tags}` : ""), pad, yCap + lineH);
 
   const time = lapMeta.lap_time ? `_${fmtLap(lapMeta.lap_time).replace(":", "-")}` : "";
-  const name = `lapscope_${safeFilename(displayName(s))}_lap${lapMeta.lap_number + 1}${time}`
+  const name = `lapscope_${safeFilename(displayName(s))}_lap${lapNo(lapMeta)}${time}`
     + (state.picks.length > 1 ? `_overlay${state.picks.length}` : "") + ".png";
   out.toBlob((blob) => { if (blob) downloadBlob(blob, name); }, "image/png");
 }
@@ -1963,11 +2091,20 @@ function makeChart(el, title, xVals, seriesDefs, height = 150) {
   state.charts.push(new uPlot(opts, data, el));
 }
 
-function drawCharts() {
-  const holder = $("#charts");
-  if (!holder) return;
+/* Above every early return that follows, and called by anything that tears
+   the detail pane down: an instance whose root was removed with innerHTML
+   stays registered in uPlot's "fc" cursor-sync group and keeps its own
+   listeners, so a delete used to leave four live charts pointing at detached
+   DOM until the next successful draw (issue #74). */
+function destroyCharts() {
   for (const c of state.charts) c.destroy();
   state.charts = [];
+}
+
+function drawCharts() {
+  destroyCharts();
+  const holder = $("#charts");
+  if (!holder) return;
   holder.innerHTML = "";
 
   const ref = refPick();
@@ -2075,7 +2212,7 @@ function renderRawSection() {
   head.appendChild(document.createElement("th"));
   for (const p of rawView.cols) {
     const th = document.createElement("th");
-    th.textContent = `${pickLetter(p)} · ${lapLabel(p.session.route_kind, p.lap.lap_number + 1)}`;
+    th.textContent = `${pickLetter(p)} · ${lapLabel(p.session.route_kind, lapNo(p.lap))}`;
     th.style.color = p.color;
     head.appendChild(th);
   }
@@ -2145,25 +2282,39 @@ function bindImport() {
     const file = input.files[0];
     input.value = ""; // so the same file can be re-imported
     if (!file) return;
-    const res = await fetch(
-      `/api/import/csv?name=${encodeURIComponent(file.name.replace(/\.csv$/i, ""))}`, {
-        method: "POST",
-        headers: { "Content-Type": "text/csv" },
-        body: await file.text(),
-      });
-    if (!res.ok) {
-      let detail = `HTTP ${res.status}`;
-      try { detail = (await res.json()).detail || detail; } catch { /* not JSON */ }
-      uiAlert("Couldn't import", detail);
-      return;
+    // reading a full-rate CSV and posting it takes real seconds: say so, and
+    // take the button out of the running so a second click can't start a
+    // duplicate import (issue #74)
+    const btn = $("#btn-import");
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Importing…";
+    try {
+      const out = await apiFetch(
+        `/api/import/csv?name=${encodeURIComponent(file.name.replace(/\.csv$/i, ""))}`, {
+          what: "import that file",
+          method: "POST",
+          headers: { "Content-Type": "text/csv" },
+          body: await file.text(),
+        });
+      await loadSessions();
+      selectSession(out.session_id);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
     }
-    const out = await res.json();
-    await loadSessions();
-    selectSession(out.session_id);
   };
 }
 
-window.addEventListener("resize", () => { drawMap(); drawCharts(); });
+/* Dragging a window edge fires `resize` far faster than the ~13 ms a redraw
+   costs, and drawCharts() destroys and reconstructs all five uPlot instances
+   and re-interpolates every non-reference pick. Coalesce to one frame, and
+   resize the charts in place instead of rebuilding them (issue #71). */
+window.addEventListener("resize", rafThrottle(() => {
+  drawMap();
+  for (const c of state.charts)
+    c.setSize({ width: c.root.parentElement.clientWidth, height: c.height });
+}));
 // live-apply unit / layer / accent changes from the settings panel
 onSettingsChange(() => {
   const pal = accentPickPalette();
@@ -2181,4 +2332,4 @@ onSettingsChange(() => {
 bindImport();
 bindBrowse();
 loadSessions();
-setInterval(loadSessions, 15000); // pick up newly finished sessions
+setVisibleInterval(loadSessions, 15000); // pick up newly finished sessions
