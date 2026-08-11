@@ -250,6 +250,16 @@ function carChip(s, { edit = null } = {}) {
   // a session recorded before the field existed has no drivetrain; an empty
   // badge reading "undefined" is worse than no badge
   if (s.drivetrain) host.insertAdjacentHTML("beforeend", dtBadge(s.drivetrain));
+  if (s.car_known === false && edit) {
+    // a visible nudge, not just an amber name: a name entered here also gets
+    // reported upstream, which is the only way the community list grows
+    const help = document.createElement("button");
+    help.type = "button";
+    help.className = "car-unknown-hint";
+    help.textContent = "unknown car — help name it";
+    help.onclick = edit;
+    host.appendChild(help);
+  }
   return host;
 }
 

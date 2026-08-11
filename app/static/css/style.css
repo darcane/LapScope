@@ -816,15 +816,17 @@ dialog.modal::backdrop {
 .car-chip, .route-chip { min-width: 0; line-height: 1.7; }
 .car-chip .class-badge { margin-right: 7px; }
 .car-chip .dt-badge { margin-left: 7px; }
-.car-nm, .route-nm {
+/* scoped to the chips: the Live page builds its own #car-chip with a
+   .car-nm inside it, and its typography is not this change's business */
+.car-chip .car-nm, .route-chip .route-nm {
   font-family: var(--display);
   font-weight: 600;
   font-size: 0.95rem;
   color: var(--text);
 }
-.route-nm { font-weight: 500; }
-.route-untitled { color: var(--muted); font-style: italic; }
-.car-unknown { color: var(--warn); }
+.route-chip .route-nm { font-weight: 500; }
+.route-chip .route-untitled { color: var(--muted); font-style: italic; }
+.car-chip .car-unknown { color: var(--warn); }
 .group-count { color: var(--muted); font-size: 0.8rem; margin-left: 10px; }
 
 .lap-flag { margin-right: 4px; cursor: help; }
