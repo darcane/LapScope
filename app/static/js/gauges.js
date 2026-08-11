@@ -4,6 +4,11 @@
 
 function initCanvas(id, cssW, cssH) {
   const c = document.getElementById(id);
+  // a very narrow window measured cssW at -2, which leaves the backing store
+  // at the browser default 300 while the CSS width keeps a stale inline
+  // value — the gauge then renders at the wrong scale (issue #74)
+  cssW = Math.max(1, Math.round(cssW));
+  cssH = Math.max(1, Math.round(cssH));
   // read per call, not once at module load: browser zoom / moving to a
   // different-DPI monitor changes devicePixelRatio, and the resize re-init
   // must pick up the new value or every canvas renders blurry

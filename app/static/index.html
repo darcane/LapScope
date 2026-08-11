@@ -17,7 +17,7 @@
   </nav>
   <div id="car-chip" class="chip" style="display:none"></div>
   <div id="conn" class="chip"><i class="dot"></i><span>connecting…</span></div>
-  <div id="settings-btn" class="chip clickable" title="Settings" aria-label="Settings">⚙ Settings</div>
+  <button id="settings-btn" class="chip clickable" type="button" title="Settings" aria-label="Settings">⚙ Settings</button>
 </header>
 
 <div id="nodata" class="overlay hidden">
@@ -41,7 +41,8 @@
   <section class="panel cluster span7">
     <div id="shift-lights"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
     <div class="cluster-flex">
-      <canvas id="rpm"></canvas>
+      <canvas id="rpm" role="img"
+                aria-label="Engine RPM dial and current gear"></canvas>
       <div class="speed-block">
         <div id="speed">0</div>
         <div id="speed-unit">km/h</div>
@@ -66,7 +67,8 @@
 
   <section class="panel span4">
     <h2>Friction circle</h2>
-    <canvas id="friction"></canvas>
+    <canvas id="friction" role="img"
+            aria-label="Friction circle — lateral and longitudinal g, with a recent trail. The current values are listed below it."></canvas>
     <div class="g-readout">
       <span>Lat <b id="latg">0.00</b> g</span>
       <span>Lon <b id="long">0.00</b> g</span>
@@ -76,7 +78,8 @@
 
   <section class="panel span4">
     <h2>Tire grip · slip / temp / spring</h2>
-    <canvas id="grip"></canvas>
+    <canvas id="grip" role="img"
+            aria-label="Tire grip diagram — combined slip, temperature and spring travel per wheel"></canvas>
     <div id="balance" class="balance">—</div>
   </section>
 
@@ -101,12 +104,14 @@
 
   <section class="panel span5">
     <h2>Track map — drawn live during a race</h2>
-    <canvas id="livemap"></canvas>
+    <canvas id="livemap" role="img"
+            aria-label="Track map drawn from the current event's path, with the car's position and heading"></canvas>
   </section>
 
   <section class="panel span7">
     <h2>Input trace — <span class="lg-th">throttle</span> · <span class="lg-br">brake</span> · <span class="lg-st">steering</span></h2>
-    <canvas id="strip"></canvas>
+    <canvas id="strip" role="img"
+            aria-label="Input trace — the last 12 seconds of throttle, brake and steering"></canvas>
   </section>
 
   <section class="panel span12" id="raw-panel" style="display:none">
