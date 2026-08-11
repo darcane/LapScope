@@ -127,6 +127,17 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
   reassign a canvas's `width`/`height` only when the pixel size really changed
   (each assignment reallocates the backing store — and resets the transform,
   so a skipped one has to `setTransform` by hand).
+- **A new feature is not a new header button.** The Analysis header grew one
+  per iteration until twelve controls shared a wrapping row and Delete landed
+  wherever the title's length pushed it. Actions go in the ⋯ `menuButton`
+  (common.js) with a `hint` line stating what the action reaches; only
+  something contextual, with a moment to act on, earns a place in the row.
+- **A name is edited where it is shown.** Three menu entries that all start
+  with a naming verb are a choice made in the abstract, so the session title,
+  the car chip's name and the route chip's name are each the button that
+  renames that thing. Facts that describe one object (class, PI, car name,
+  drivetrain) render as one chip, not as badges in one row and muted text in
+  another.
 
 ## FH6 packet facts (hard-won, don't re-derive)
 

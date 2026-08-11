@@ -53,35 +53,38 @@
 
 <template id="detail-template">
   <div>
+    <!-- Two rows, deliberately: what this IS (name, place, car, tags) above
+         what you can DO to it. The actions used to share one wrapping row
+         with the title and the tags — twelve controls, and Delete landed
+         wherever the title's length pushed it. -->
     <div class="detail-header">
-      <h1 id="session-title"></h1>
-      <span id="header-badges"></span>
-      <select id="track-select" title="Track type">
-        <option value="">— race type —</option>
-        <option value="road">🛣️ Road</option>
-        <option value="street">🏙️ Street</option>
-        <option value="touge">⛰️ Touge</option>
-        <option value="dirt">🟫 Dirt</option>
-        <option value="cross">🏞️ Cross-Country</option>
-        <option value="drag">🏁 Drag</option>
-        <option value="wtc">⏱️ WTC</option>
-      </select>
-      <select id="cond-select" title="Track conditions">
-        <option value="">— conditions —</option>
-        <option value="dry">☀️ Dry</option>
-        <option value="wet">🌧️ Wet</option>
-        <option value="snow">❄️ Snow</option>
-      </select>
-      <button id="btn-rename">Rename</button>
-      <button id="btn-route">Name route</button>
-      <button id="btn-car">Name car</button>
-      <button id="btn-merge" style="display:none" title="Merge attempts at this route in this car into one run group — nothing is rewritten">Merge runs</button>
-      <button id="btn-reprocess" title="Re-run lap detection over the stored telemetry (manual edits are kept)">Reprocess</button>
-      <button id="btn-reset-edits" style="display:none" title="Remove every manual edit — dismissed contacts, flag overrides, excluded laps">Reset edits</button>
-      <button id="btn-export" title="Download the whole session as CSV — full-rate telemetry, one lap column (excluded laps are skipped)">Export CSV</button>
-      <button id="btn-delete" class="danger">Delete</button>
+      <div class="detail-title-row">
+        <h1 id="session-title"></h1>
+        <span id="header-badges"></span>
+        <button id="btn-merge" style="display:none" title="Merge attempts at this route in this car into one run group — nothing is rewritten">Merge runs</button>
+        <span id="header-menu"></span>
+      </div>
+      <div class="detail-identity">
+        <span id="header-route"></span>
+        <span id="header-car"></span>
+        <select id="track-select" class="tag-select" title="Race type">
+          <option value="">— race type —</option>
+          <option value="road">🛣️ Road</option>
+          <option value="street">🏙️ Street</option>
+          <option value="touge">⛰️ Touge</option>
+          <option value="dirt">🟫 Dirt</option>
+          <option value="cross">🏞️ Cross-Country</option>
+          <option value="drag">🏁 Drag</option>
+          <option value="wtc">⏱️ WTC</option>
+        </select>
+        <select id="cond-select" class="tag-select" title="Track conditions">
+          <option value="">— conditions —</option>
+          <option value="dry">☀️ Dry</option>
+          <option value="wet">🌧️ Wet</option>
+          <option value="snow">❄️ Snow</option>
+        </select>
+      </div>
     </div>
-    <div class="car-line" id="header-car"></div>
     <section class="panel">
       <h2 id="laps-heading">Laps</h2>
       <div class="laps-scroll">
