@@ -138,6 +138,20 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
   renames that thing. Facts that describe one object (class, PI, car name,
   drivetrain) render as one chip, not as badges in one row and muted text in
   another.
+- **Chrome for an empty list is not neutral — it's the first impression.** A
+  brand-new install opened Analysis onto a search box, five facet dropdowns, a
+  "0 sessions" counter and a sort picker, all filtering nothing, and was asked
+  90 seconds into its first drive whether to merge its run groups. Anything
+  that only makes sense once there is history (the browse bar, the header hint
+  chip, the merge banner) stays out of the way until there is; anything shown
+  at zero has to say what to do next, in words someone who just double-clicked
+  an exe can act on — "or run the simulator" names a script they do not have.
+- **Every outbound call is opt-out-able.** "No cloud, no account, your data
+  stays on your machine" is the pitch, so a new request to anything off this
+  machine waits on `onlineAllowed()` (common.js — the per-browser setting AND
+  `LS_OFFLINE`) and gets a line in the README's "What LapScope contacts". A
+  server-side one refuses with a 403 naming the switch: nothing failed, this
+  install is not allowed.
 
 ## FH6 packet facts (hard-won, don't re-derive)
 

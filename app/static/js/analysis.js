@@ -174,6 +174,12 @@ function renderSessionList() {
   const el = $("#session-list");
   if (!el) return;
   const total = state.allSessions.length;
+  // nothing recorded yet = nothing to browse and nothing to pick: the bar and
+  // the chip are chrome for a list that doesn't exist (issue #75)
+  const bar = document.querySelector(".browse-bar");
+  if (bar) bar.style.display = total ? "" : "none";
+  setHint(total);
+  renderDetailEmpty(total);
   const rows = browseApply(state.allSessions);
   browseStatus(rows.length, total);
   const sig = rows.map(cardSig).join("/");
@@ -184,6 +190,61 @@ function renderSessionList() {
   el.scrollTop = top;
   markActive(el);
   renderMergeHint();
+}
+
+/* The header chip. It said "pick a session, then tag laps to compare — up to
+   6, across sessions" unconditionally: an instruction to pick from an empty
+   list on a first run, and a repeated one afterwards. */
+function setHint(total) {
+  const el = $("#hint");
+  if (!el) return;
+  el.style.display = total ? "" : "none";
+  el.textContent = (state.sessionId != null || state.groupId != null)
+    ? "tag laps to compare — up to 6, across sessions"
+    : "pick a session, then tag laps to compare — up to 6, across sessions";
+}
+
+/* The detail pane before anything is selected — two states, not one. Someone
+   with 200 sessions needs "pick one"; someone who just double-clicked
+   LapScope.exe needs to be told how to make Forza send anything at all, and
+   the Live tab already holds those instructions, so this points at them
+   instead of repeating them. (The old copy answered with "Drive with Data Out
+   enabled (or run the simulator)" — naming a script that only exists in a
+   source checkout, to a person who has an exe, and never saying where Data
+   Out lives.) */
+function renderDetailEmpty(total) {
+  const host = $("#detail");
+  const cur = host && host.firstElementChild;
+  // only ever replaces itself: never a mounted session, and never the
+  // transient "Session deleted." / "Ungrouped" notes, which are answers to
+  // something the user just did
+  if (!cur || cur.id !== "detail-empty") return;
+
+  const box = document.createElement("div");
+  box.id = "detail-empty";
+  if (total) {
+    box.className = "empty-hint";
+    box.textContent = "No session selected — pick one from the list on the left.";
+    host.replaceChildren(box);
+    return;
+  }
+  box.className = "first-run";
+  const h = document.createElement("h2");
+  h.textContent = "No sessions yet";
+  const p = document.createElement("p");
+  p.textContent = "LapScope records by itself while you drive — there is nothing"
+    + " to start here. It only needs Forza Horizon 6 to send its telemetry.";
+  const go = document.createElement("a");
+  go.className = "first-run-go";
+  go.href = "index.html";
+  go.textContent = "Set up Forza on the Live tab →";
+  const sub = document.createElement("p");
+  sub.className = "first-run-sub";
+  sub.textContent = "The Live tab has the three settings to enter, the port this"
+    + " install is listening on, and it says the moment the first packet"
+    + " arrives. Your drives then show up in the list on the left.";
+  box.append(h, p, go, sub);
+  host.replaceChildren(box);
 }
 
 /* A merged group is one card where its members would have been several, at
@@ -305,11 +366,22 @@ function dismissMerges(sigs) {
                        JSON.stringify([...new Set([...seen, ...sigs])].slice(-200)));
 }
 
+/* Not on someone's first afternoon. Two events — four laps, ninety seconds in
+   — already raised "4 laps on this route in one sitting — merge them?", which
+   asks a brand-new user to decide about run groups, a concept nothing has
+   introduced yet. The offer is only worth making once there is a history
+   worth tidying: either several sittings are waiting, or the library is big
+   enough that merging is housekeeping rather than a first decision (#75). */
+const MERGE_HINT_MIN_SITTINGS = 3;
+const MERGE_HINT_MIN_SESSIONS = 5;
+
 function renderMergeHint() {
   const host = $("#merge-hint");
   if (!host) return;
   const all = mergeSuggestions();
-  const [top] = all;
+  const worthAsking = all.length >= MERGE_HINT_MIN_SITTINGS
+    || state.allSessions.length >= MERGE_HINT_MIN_SESSIONS;
+  const [top] = worthAsking ? all : [];
   host.innerHTML = "";
   host.style.display = top ? "" : "none";
   if (!top) return;
@@ -507,8 +579,13 @@ function sessionCard(s) {
   card.className = "session-card";
   card.dataset.sid = s.id;
   cardBody(card, s, displayName(s));
+  // displayName falls back to the session's date, and this line used to open
+  // with that same date — so on a fresh install, where nothing is named and no
+  // route is known yet, EVERY card printed its timestamp twice (issue #75)
+  const named = !!(s.name || s.route_name);
   $(".sub", card).textContent =
-    `${fmtDate(s.started_at)} · ${s.lap_count} ${lapWord(s.route_kind, s.lap_count)}`
+    (named ? `${fmtDate(s.started_at)} · ` : "")
+    + `${s.lap_count} ${lapWord(s.route_kind, s.lap_count)}`
     + ` · best ${fmtLap(s.best_lap)}`;
   card.onclick = () => selectSession(s.id);
   let add = null;

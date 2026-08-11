@@ -1387,6 +1387,34 @@ def test_status_reports_a_recorder_that_cannot_write():
     assert out["session_active"] is True  # still "recording", which is the trap
 
 
+def test_offline_mode_refuses_the_two_outbound_refreshes(monkeypatch):
+    """Issue #76: LapScope's pitch is "no cloud, your data stays on your
+    machine", so an install has to be able to opt out of the network entirely.
+    LS_OFFLINE is the install-wide switch (the Settings toggle only covers one
+    browser) and it has to stop the refresh *before* urllib is reached - a 403
+    naming the switch, not a 502 that reads like the download failed."""
+    from app.api import routes
+
+    monkeypatch.setattr(routes, "OFFLINE", True)
+    # would raise on any network attempt: the guard has to come first
+    monkeypatch.setattr(routes.cars, "refresh",
+                        lambda: pytest.fail("reached the network with LS_OFFLINE set"))
+    monkeypatch.setattr(routes.tracks, "refresh",
+                        lambda: pytest.fail("reached the network with LS_OFFLINE set"))
+
+    for call in (lambda: routes.refresh_cars(),
+                 lambda: routes.refresh_tracks(_request_for(None))):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(call())
+        assert exc.value.status_code == 403
+        assert "LS_OFFLINE" in exc.value.detail
+
+    # and the page is told, so it never makes the GitHub call it owns itself
+    assert routes.version()["offline"] is True
+    monkeypatch.setattr(routes, "OFFLINE", False)
+    assert routes.version()["offline"] is False
+
+
 def test_import_csv_rejects_an_out_of_range_lap_number(tmp_path):
     """Issue #66: the lap column went unchecked into a uint16 packet field.
     70000 raised struct.error - an uncaught 500 from an endpoint that

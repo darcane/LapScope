@@ -142,7 +142,9 @@ conditions ribbons, plus the auto-named route:
 > can rebuild and verify the download yourself: see [docs/BUILDING.md](docs/BUILDING.md).
 >
 > LapScope also shows a dismissible "newer version available" notice in the
-> dashboard when a newer GitHub release exists (it never auto-downloads).
+> dashboard when a newer GitHub release exists (it never auto-downloads). That
+> check, and the two reference-list refreshes, are the only things it ever sends
+> anywhere — see [What LapScope contacts](#what-lapscope-contacts) to turn them off.
 
 ### Docker (power / cross-platform users)
 
@@ -217,11 +219,32 @@ and `tools/inspect_session.py`) has its own page:
 | `LS_KEEP_DISCARDED`  | `0`              | `1` = keep sessions with no completed laps |
 | `LS_CAR_LIST_URL`    | this repo's list | Where "Refresh car names" downloads from   |
 | `LS_TRACK_LIST_URL`  | this repo's list | Where "Refresh tracks" downloads from      |
+| `LS_OFFLINE`         | `0`              | `1` = never contact the internet (see below) |
 | `LS_ALLOWED_HOSTS`   | *(empty)*        | Extra `Host` names to answer to (see below) |
 
-`LS_KEEP_DISCARDED` is read once when the app starts, so it has to be set before
-launch — changing it later needs a restart. The two list URLs point at this repo's
-`main` branch by default and only exist so a fork can serve its own lists.
+`LS_KEEP_DISCARDED` and `LS_OFFLINE` are read once when the app starts, so they have
+to be set before launch — changing either later needs a restart. The two list URLs
+point at this repo's `main` branch by default and only exist so a fork can serve its
+own lists.
+
+### What LapScope contacts
+
+Your telemetry never leaves the machine: no account, no upload, no analytics, and
+nothing about your driving is sent anywhere. LapScope does make three *optional*
+requests, all to GitHub, all fail-soft, none of them more than once a day:
+
+- **the browser → `api.github.com`** — is there a newer release? (that's the
+  dismissible update notice; it never downloads anything)
+- **the server → `raw.githubusercontent.com`** — the community car-name list
+- **the server → `raw.githubusercontent.com`** — the official-route catalogue
+
+They are plain GETs for public files, so the only thing they reveal is that some IP
+asked for one. Turn all three off in **Settings → Privacy**, which covers that
+browser; set **`LS_OFFLINE=1`** to cover the whole install (a headless container, an
+air-gapped box), which also stops the server serving the refreshes at all. The
+bundled car and track lists keep working either way, and **Refresh now** stays a
+manual button you can press whenever you like — unless `LS_OFFLINE` is set, in which
+case nothing reaches out at all.
 
 LapScope answers to `localhost`, any `.local` name, and any IP address —
 loopback, the exe, and reaching a Docker host by its LAN IP all work untouched.

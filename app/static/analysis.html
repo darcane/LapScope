@@ -16,12 +16,17 @@
     <a href="index.html">Live</a>
     <a class="active" href="analysis.html">Analysis</a>
   </nav>
+  <!-- rewritten by setHint(): it used to read the same sentence at 0 sessions
+       and at 200, telling a first-time user to pick from an empty list -->
   <div class="chip" id="hint">pick a session, then tag laps to compare — up to 6, across sessions</div>
   <div id="conn" class="chip"><i class="dot"></i><span>connecting…</span></div>
   <button id="settings-btn" class="chip clickable" type="button" title="Settings" aria-label="Settings">⚙ Settings</button>
 </header>
 
-<div class="browse-bar">
+<!-- hidden until there is something to browse (renderSessionList): six controls
+     filtering an empty list is the loudest "this app is complicated" signal a
+     first run has -->
+<div class="browse-bar" style="display:none">
   <div class="browse-row">
     <label class="browse-search">
       <span aria-hidden="true">⌕</span>
@@ -46,8 +51,9 @@
   </aside>
 
   <div class="detail" id="detail">
-    <div class="empty-hint">No session selected. Drive with Data Out enabled (or run the
-      simulator) and sessions will appear on the left.</div>
+    <!-- replaced by renderDetailEmpty() once the session count is known: an
+         install with no sessions needs setup instructions, not "pick one" -->
+    <div class="empty-hint" id="detail-empty">No session selected.</div>
   </div>
 </div>
 

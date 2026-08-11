@@ -664,6 +664,39 @@ window.addEventListener("unhandledrejection", (e) => {
   if (e.reason instanceof ApiError && e.reason.reported) e.preventDefault();
 });
 
+/* ---------- what this app is allowed to contact (issue #76) ----------
+
+   LapScope makes three outbound calls, all optional: the update check below
+   (browser → GitHub Releases) and the two reference-list refreshes further
+   down (server → raw.githubusercontent.com). For a project whose pitch is
+   "no cloud, no account, your data stays on your machine", offering no way to
+   decline was the problem — not the calls themselves.
+
+   Two independent switches, and either one being off means nothing leaves:
+   the per-browser Settings toggle, and LS_OFFLINE on the server, which wins
+   because a headless container has no browser to open Settings in. Both are
+   resolved BEFORE the outbound call, never after. */
+
+/* /api/version is local and every online path needs it, so ask once and share
+   the promise. Resolves to {} if even that fails, which reads as "no version,
+   not marked offline" — and since the update check then has no version to
+   compare and the refreshes POST to the same unreachable server, nothing
+   goes out either way. */
+let _serverInfo = null;
+
+function serverInfo() {
+  if (!_serverInfo)
+    _serverInfo = fetch("/api/version").then((r) => r.json()).catch(() => ({}));
+  return _serverInfo;
+}
+
+/* settings.js loads after this file, so getSettings() only exists by the time
+   a handler runs — never call this at parse time. */
+async function onlineAllowed() {
+  if (typeof getSettings === "function" && !getSettings().onlineChecks) return false;
+  return !(await serverInfo()).offline;
+}
+
 /* ---------- update check (client-side, fail-soft, dismissible) ----------
    Exe users don't get `git pull`, so surface a "newer version available"
    notice: ask the backend which version we're running (/api/version), then
@@ -732,10 +765,8 @@ function showUpdateBanner(latest) {
 }
 
 async function checkForUpdate() {
-  let current;
-  try {
-    current = (await (await fetch("/api/version")).json()).version;
-  } catch { return; }
+  if (!await onlineAllowed()) return;
+  const current = (await serverInfo()).version;
   if (!current || current === "0.0.0") return;  // dev/source run: don't nag
 
   const latest = await fetchLatestVersion();
@@ -764,6 +795,9 @@ const CARDB_CHECK_KEY = "ls_cardb_check";      // ts of the last attempt
 const CARDB_CHECK_TTL = 24 * 60 * 60 * 1000;   // 1 day
 
 async function maybeRefreshCarList() {
+  // before the timestamp, not after: turning the setting back on should take
+  // effect on the next load, not a day later
+  if (!await onlineAllowed()) return;
   const last = parseInt(localStorage.getItem(CARDB_CHECK_KEY) || "0", 10);
   if (Date.now() - last < CARDB_CHECK_TTL) return;
   localStorage.setItem(CARDB_CHECK_KEY, String(Date.now()));  // even on failure: don't hammer
@@ -786,6 +820,7 @@ const TRACKDB_CHECK_KEY = "ls_trackdb_check";    // ts of the last attempt
 const TRACKDB_CHECK_TTL = 24 * 60 * 60 * 1000;   // 1 day
 
 async function maybeRefreshTrackList() {
+  if (!await onlineAllowed()) return;
   const last = parseInt(localStorage.getItem(TRACKDB_CHECK_KEY) || "0", 10);
   if (Date.now() - last < TRACKDB_CHECK_TTL) return;
   localStorage.setItem(TRACKDB_CHECK_KEY, String(Date.now()));  // even on failure: don't hammer
