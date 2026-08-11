@@ -213,6 +213,79 @@ function dtBadge(dt) {
   return `<span class="dt-badge dt-${dt}">${dt}</span>`;
 }
 
+/* ---------- car identity ----------
+
+   Class, PI, name and drivetrain are four facts about one car, and the
+   Analysis page used to scatter them: the two badges sat beside the session
+   title while the name was a muted 0.8rem line below the whole button row,
+   so the one part a human actually reads was also the faintest thing on the
+   page. They travel as one chip now — built here, used by the session
+   header and both sidebar card types, so the shape only has to change once.
+
+   `edit` makes the NAME (and only the name) a button: a car name is edited
+   where it is shown, which is what stops "Rename / Name route / Name car"
+   from being three similar verbs to choose between. */
+function carChip(s, { edit = null } = {}) {
+  const host = document.createElement("span");
+  host.className = "car-chip";
+  host.innerHTML = classBadge(s.car_class_letter, s.car_pi);
+  const nm = document.createElement(edit ? "button" : "span");
+  nm.className = "car-nm";
+  nm.textContent = s.car_name || "Unknown car";
+  if (edit) {
+    nm.type = "button";
+    nm.classList.add("name-edit");
+    nm.setAttribute("aria-label", "Name this car");
+    nm.title = "Name this car — applies everywhere this car appears";
+    nm.onclick = edit;
+  }
+  // an ordinal the community list doesn't know yet: the name shown is a
+  // placeholder, and saying so is what gets it reported (unknownCarIssueUrl)
+  if (s.car_known === false) {
+    nm.classList.add("car-unknown");
+    nm.title = "Unknown car — not in the community list yet."
+      + (edit ? " Name it here, and report it so everyone gets the name." : "");
+  }
+  host.appendChild(nm);
+  // a session recorded before the field existed has no drivetrain; an empty
+  // badge reading "undefined" is worse than no badge
+  if (s.drivetrain) host.insertAdjacentHTML("beforeend", dtBadge(s.drivetrain));
+  if (s.car_known === false && edit) {
+    // a visible nudge, not just an amber name: a name entered here also gets
+    // reported upstream, which is the only way the community list grows
+    const help = document.createElement("button");
+    help.type = "button";
+    help.className = "car-unknown-hint";
+    help.textContent = "unknown car — help name it";
+    help.onclick = edit;
+    host.appendChild(help);
+  }
+  return host;
+}
+
+/* The place, named. Deliberately text only — route outlines belong to the
+   browse facets, where you are picking between routes you can't name; here
+   the route is already identified and a thumbnail is just noise. Same
+   `edit` rule as carChip. */
+function routeChip(s, { edit = null } = {}) {
+  const host = document.createElement("span");
+  host.className = "route-chip";
+  const nm = document.createElement(edit ? "button" : "span");
+  nm.className = "route-nm";
+  nm.textContent = s.route_name
+    || (s.route_id ? "Unnamed route" : "Route not identified yet");
+  if (!s.route_name) nm.classList.add("route-untitled");
+  if (edit) {
+    nm.type = "button";
+    nm.classList.add("name-edit");
+    nm.setAttribute("aria-label", "Name this route");
+    nm.title = "Name this route — applies to every session driven here";
+    nm.onclick = edit;
+  }
+  host.appendChild(nm);
+  return host;
+}
+
 /* ---------- raw packet fields ----------
    [name, count, unit, decimals] for every FH6 Data Out field, in packet order —
    mirrors FIELDS in app/telemetry/packet.py (keep the two in lockstep; the
@@ -371,6 +444,139 @@ function uiConfirm(title, message, { okText = "Confirm", danger = false } = {}) 
 
 function uiAlert(title, message) {
   return showModal({ title, message, okText: "OK", showCancel: false });
+}
+
+/* ---------- overflow menu ----------
+
+   The Analysis header grew one button per feature until twelve controls
+   shared one wrapping row, and Delete ended up wherever the title's length
+   happened to push it. Actions live in here instead.
+
+   Hand-rolled rather than reusing <dialog>: a menu that dims the page and
+   traps focus is heavier than the choice it offers, and it can't be
+   dismissed by clicking the thing behind it. So it brings its own keyboard
+   contract — arrows move, Home/End jump, Escape and Tab close, focus goes
+   back to the trigger — which is the contract issue #70 asked of every
+   other control on the page.
+
+   Each item may carry a `hint`: the muted second line is what tells apart
+   three actions whose names all start with a naming verb but whose blast
+   radius runs from one session to every session ever driven in that car. */
+
+let openMenu = null;   // at most one, page-wide
+
+function closeMenu({ focusTrigger = false } = {}) {
+  if (!openMenu) return;
+  const { wrap, trigger, menu } = openMenu;
+  openMenu = null;
+  menu.hidden = true;
+  wrap.classList.remove("open");
+  trigger.setAttribute("aria-expanded", "false");
+  // only when the keyboard closed it: stealing focus back on an outside
+  // click would yank it off whatever the click was aimed at
+  if (focusTrigger && trigger.isConnected) trigger.focus();
+}
+
+document.addEventListener("pointerdown", (e) => {
+  if (openMenu && !openMenu.wrap.contains(e.target)) closeMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && openMenu) closeMenu({ focusTrigger: true });
+});
+
+/* sections: [{ heading, items: [{ label, hint, onSelect, danger } | falsy] }]
+   — falsy items and emptied sections drop out, so a caller can write
+   `edits && { label: "Reset edits", … }` instead of branching. */
+function menuButton({ label, title = "", ariaLabel = "", items }) {
+  const wrap = document.createElement("span");
+  wrap.className = "menu-wrap";
+
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "menu-trigger";
+  trigger.textContent = label;
+  if (title) trigger.title = title;
+  if (ariaLabel) trigger.setAttribute("aria-label", ariaLabel);
+  trigger.setAttribute("aria-haspopup", "menu");
+  trigger.setAttribute("aria-expanded", "false");
+
+  const menu = document.createElement("div");
+  menu.className = "menu";
+  menu.setAttribute("role", "menu");
+  menu.hidden = true;
+
+  const itemEls = [];
+  for (const sec of items) {
+    const live = (sec.items || []).filter(Boolean);
+    if (!live.length) continue;
+    const group = document.createElement("div");
+    group.className = "menu-group";
+    group.setAttribute("role", "group");
+    if (sec.heading) {
+      group.setAttribute("aria-label", sec.heading);
+      const h = document.createElement("span");
+      h.className = "menu-heading";
+      h.textContent = sec.heading;
+      h.setAttribute("aria-hidden", "true");  // the group label already says it
+      group.appendChild(h);
+    }
+    for (const it of live) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "menu-item" + (it.danger ? " danger" : "");
+      b.setAttribute("role", "menuitem");
+      b.tabIndex = -1;                        // roving: the menu owns Tab
+      const lab = document.createElement("span");
+      lab.className = "menu-label";
+      lab.textContent = it.label;
+      b.appendChild(lab);
+      if (it.hint) {
+        const hint = document.createElement("span");
+        hint.className = "menu-hint";
+        hint.textContent = it.hint;
+        b.appendChild(hint);
+      }
+      // close first, restoring focus to the trigger, THEN act: a dialog
+      // opened from here hands focus back to whatever had it, and that
+      // should be the ⋯ button rather than a menu item that no longer exists
+      b.onclick = () => { closeMenu({ focusTrigger: true }); it.onSelect(); };
+      group.appendChild(b);
+      itemEls.push(b);
+    }
+    menu.appendChild(group);
+  }
+
+  const move = (step) => {
+    const i = itemEls.indexOf(document.activeElement);
+    itemEls[(Math.max(0, i) + step + itemEls.length) % itemEls.length].focus();
+  };
+  menu.addEventListener("keydown", (e) => {
+    const keys = {
+      ArrowDown: () => move(1),
+      ArrowUp: () => move(-1),
+      Home: () => itemEls[0].focus(),
+      End: () => itemEls[itemEls.length - 1].focus(),
+    };
+    if (keys[e.key]) { e.preventDefault(); keys[e.key](); }
+    else if (e.key === "Tab") closeMenu();   // let focus leave naturally
+  });
+
+  trigger.onclick = () => {
+    if (openMenu && openMenu.trigger === trigger) {
+      closeMenu({ focusTrigger: true });
+      return;
+    }
+    closeMenu();
+    openMenu = { wrap, trigger, menu };
+    menu.hidden = false;
+    wrap.classList.add("open");
+    trigger.setAttribute("aria-expanded", "true");
+    itemEls[0].focus();
+  };
+  trigger.disabled = !itemEls.length;
+
+  wrap.append(trigger, menu);
+  return wrap;
 }
 
 /* ---------- API calls (issue #68) ----------

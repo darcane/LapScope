@@ -220,16 +220,13 @@ function groupCard(shown, all) {
   card.type = "button";
   card.className = "session-card group-card";
   card.dataset.gid = lead.group_id;
-  // spans, not divs: a <button>'s content model is phrasing content, and
-  // the card is a button now
-  card.innerHTML = `
-    <span class="title"><span class="group-mark" title="merged run group">⛓</span><span></span></span>
-    <span class="meta-row">${classBadge(lead.car_class_letter, lead.car_pi)}${dtBadge(lead.drivetrain)}${trackBadge(lead.track_type)}${condBadge(lead.conditions)}</span>
-    <span class="car-line"></span>
-    <span class="sub"></span>`;
-  $(".title span:last-child", card).textContent =
-    lead.group_name || lead.route_name || fmtDate(Math.min(...times));
-  $(".car-line", card).textContent = lead.car_name;
+  cardBody(card, lead,
+    lead.group_name || lead.route_name || fmtDate(Math.min(...times)));
+  const mark = document.createElement("span");
+  mark.className = "group-mark";
+  mark.title = "merged run group";
+  mark.textContent = "⛓";
+  $(".title", card).prepend(mark);
   const partial = shown.length < all.length
     ? ` (${shown.length} match)` : "";
   $(".sub", card).textContent =
@@ -238,6 +235,32 @@ function groupCard(shown, all) {
     + ` · best ${fmtLap(bests.length ? Math.min(...bests) : null)}`;
   card.onclick = () => selectGroup(lead.group_id);
   return cardWrap(card);
+}
+
+/* Both card types are laid out the same way: name / car / tags / numbers.
+   The car is one chip here for the same reason it is one in the header — a
+   class badge on one line and a muted name two lines under it are two
+   halves of a fact nobody reassembles. Everything inside is a span: a
+   <button>'s content model is phrasing content, and the card is a button
+   (issue #70). */
+function cardBody(card, s, titleText) {
+  const body = document.createElement("span");
+  body.className = "card-body";
+  const title = document.createElement("span");
+  title.className = "title";
+  title.textContent = titleText;
+  // the race type is a property of the track, so it rides with the track's
+  // name rather than sitting on the car's line as if it described the car
+  title.insertAdjacentHTML("beforeend", trackBadge(s.track_type));
+  const sub = document.createElement("span");
+  sub.className = "sub";
+  body.append(title, carChip(s));
+  // ...and the conditions describe the drive, not the track: their own line
+  // under the car, and no line at all when the session is untagged
+  body.insertAdjacentHTML("beforeend", condBadge(s.conditions));
+  body.append(sub);
+  card.append(body);
+  return body;
 }
 
 /* A card is one button, so it is reachable by keyboard like anything else
@@ -483,17 +506,10 @@ function sessionCard(s) {
   card.type = "button";
   card.className = "session-card";
   card.dataset.sid = s.id;
-  card.innerHTML = `
-    <span class="title"></span>
-    <span class="meta-row">${classBadge(s.car_class_letter, s.car_pi)}${dtBadge(s.drivetrain)}${trackBadge(s.track_type)}${condBadge(s.conditions)}</span>
-    <span class="car-line"></span>
-    <span class="sub">${fmtDate(s.started_at)} · ${s.lap_count} ${lapWord(s.route_kind, s.lap_count)} · best ${fmtLap(s.best_lap)}</span>`;
-  $(".title", card).textContent = displayName(s);
-  $(".car-line", card).textContent = s.car_name;
-  if (!s.car_known) {
-    $(".car-line", card).classList.add("car-unknown");
-    $(".car-line", card).title = "Unknown car — open the session to name or report it";
-  }
+  cardBody(card, s, displayName(s));
+  $(".sub", card).textContent =
+    `${fmtDate(s.started_at)} · ${s.lap_count} ${lapWord(s.route_kind, s.lap_count)}`
+    + ` · best ${fmtLap(s.best_lap)}`;
   card.onclick = () => selectSession(s.id);
   let add = null;
   if (s.best_lap) {
@@ -543,6 +559,7 @@ async function selectView(seq, url, what) {
 function mountDetail() {
   const detail = $("#detail");
   destroyCharts();     // the pane about to be replaced owns them
+  closeMenu();         // ...and its ⋯ menu, if one was left open
   detail.classList.remove("busy");
   detail.innerHTML = "";
   detail.appendChild($("#detail-template").content.cloneNode(true));
@@ -621,21 +638,34 @@ async function selectSession(id) {
   applyPayload(payload.laps, [payload.session]);
 }
 
+/* The title is the one name that means "this sitting". Making it the button
+   that renames it — like the route chip names the place and the car chip
+   names the car — is what stops three similar-sounding verbs from being a
+   choice you have to make in the abstract. The menu still lists all three;
+   this is the shortcut for anyone who has learned the page. */
+function editableTitle(text, { label, tip, onEdit }) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "name-edit title-edit";
+  b.textContent = text;
+  b.setAttribute("aria-label", label);
+  b.title = tip;
+  b.onclick = onEdit;
+  return b;
+}
+
 function wireSessionHeader(s) {
-  $("#session-title").textContent = displayName(s);
-  $("#header-badges").innerHTML = classBadge(s.car_class_letter, s.car_pi) + dtBadge(s.drivetrain);
-  // route_id, not route_name: routes are created nameless, so an
-  // identified-but-unnamed route must not read as "not identified"
-  $("#header-car").textContent = s.car_name + (s.route_id ? "" : "  ·  route not identified yet (complete a lap)");
-  if (!s.car_known) {
-    // community list doesn't know this ordinal yet: make it one click to fix
-    const help = document.createElement("button");
-    help.type = "button";
-    help.className = "car-unknown-hint";
-    help.textContent = "unknown car — help name it";
-    help.onclick = () => renameCar(s);
-    $("#header-car").appendChild(help);
-  }
+  $("#session-title").replaceChildren(editableTitle(displayName(s), {
+    label: "Rename this session",
+    tip: "Rename this session — the label in the list on the left, this session only",
+    onEdit: () => renameSession(s),
+  }));
+  // not lazy: one chip, already on screen, and the header must not wait for
+  // an IntersectionObserver callback to stop being blank
+  $("#header-route").replaceChildren(
+    routeChip(s, { edit: () => renameRoute(s) }));
+  $("#header-car").replaceChildren(carChip(s, { edit: () => renameCar(s) }));
+  wireSessionMenu(s);
   const patch = (body, what) => apiFetch(`/api/sessions/${s.id}`, {
     what,
     method: "PATCH",
@@ -643,26 +673,65 @@ function wireSessionHeader(s) {
     body: JSON.stringify(body),
   });
   $("#cond-select").value = s.conditions || "";
+  syncTagSelect($("#cond-select"));
   $("#cond-select").onchange = async (e) => {
+    syncTagSelect(e.target);
     await patch({ conditions: e.target.value }, "save the conditions");
     loadSessions();
   };
   $("#track-select").value = s.track_type || "";
+  syncTagSelect($("#track-select"));
   $("#track-select").onchange = async (e) => {
+    syncTagSelect(e.target);
     await patch({ track_type: e.target.value }, "save the race type");
     await maybeRetagRoute(s, e.target.value);
     loadSessions();
   };
-  $("#btn-rename").onclick = () => renameSession(s);
-  $("#btn-route").onclick = () => renameRoute(s);
-  $("#btn-car").onclick = () => renameCar(s);
-  $("#btn-reprocess").onclick = () => reprocessSession(s);
-  $("#btn-reset-edits").style.display = s.edit_count ? "" : "none";
-  $("#btn-reset-edits").onclick = () => resetEdits(s);
-  $("#btn-export").onclick = () => downloadUrl(`/api/sessions/${s.id}/export.csv`);
-  $("#btn-delete").onclick = () => deleteSession(s);
+  // the one action left in the row: it only appears when there is a sitting
+  // to merge, and it is the only header action with a moment to act on
   $("#btn-merge").onclick = () => mergeRuns(s);
   $("#btn-merge").style.display = mergeCandidates(s).length ? "" : "none";
+}
+
+/* An untagged select shows its "— race type —" placeholder and should read
+   as an empty slot, not as a value someone chose. */
+function syncTagSelect(sel) {
+  sel.classList.toggle("unset", !sel.value);
+}
+
+/* Built separately from the rest of the header because "Reset edits" exists
+   only while there are edits, and an edit can create or clear the last one
+   (this used to be a style.display toggle on a permanently mounted button). */
+function wireSessionMenu(s) {
+  closeMenu();   // the wrap about to be replaced may be the open one
+  $("#header-menu").replaceChildren(menuButton({
+    label: "⋯",
+    title: "Session actions",
+    ariaLabel: "Session actions",
+    items: [
+      { heading: "Names", items: [
+        { label: "Rename session…", hint: "this session only",
+          onSelect: () => renameSession(s) },
+        { label: "Name route…", hint: "every session driven at this place",
+          onSelect: () => renameRoute(s) },
+        { label: "Name car…", hint: "every session driven in this car",
+          onSelect: () => renameCar(s) },
+      ] },
+      { heading: "Data", items: [
+        { label: "Reprocess", hint: "re-run lap detection; manual edits are kept",
+          onSelect: () => reprocessSession(s) },
+        s.edit_count && { label: "Reset edits",
+          hint: "undo every dismissed contact, flag override and exclusion",
+          onSelect: () => resetEdits(s) },
+        { label: "Export CSV", hint: "full-rate telemetry, one column per lap",
+          onSelect: () => downloadUrl(`/api/sessions/${s.id}/export.csv`) },
+      ] },
+      { items: [
+        { label: "Delete session", hint: "with all of its telemetry — cannot be undone",
+          danger: true, onSelect: () => deleteSession(s) },
+      ] },
+    ],
+  }));
 }
 
 /* A merged group: several attempts at one route, browsed and scored as one.
@@ -686,30 +755,56 @@ async function selectGroup(id) {
 }
 
 function wireGroupHeader(g, members) {
-  $("#session-title").textContent = g.display_name;
+  $("#session-title").replaceChildren(editableTitle(g.display_name, {
+    label: "Rename this group",
+    tip: "Rename this group — the label on the merged card, this group only",
+    onEdit: () => renameGroup(g),
+  }));
   $("#header-badges").innerHTML =
-    classBadge(g.car_class_letter, g.car_pi) + dtBadge(g.drivetrain)
-    + `<span class="group-badge" title="${members.length} sessions merged into one run group">⛓ merged</span>`;
-  $("#header-car").textContent =
-    `${g.car_name}  ·  ${members.length} sessions, ${g.run_count} ${lapWord(g.route_kind, g.run_count)}`;
+    `<span class="group-badge" title="${members.length} sessions merged into one run group">⛓ merged</span>`;
+  // members[0] carries the route: the group's own row has no route_id
+  $("#header-route").replaceChildren(
+    routeChip(members[0], { edit: () => renameRoute(members[0]) }));
+  const car = carChip(g);   // a group's car is not nameable here — see the menu
+  const count = document.createElement("span");
+  count.className = "group-count";
+  count.textContent =
+    `${members.length} sessions · ${g.run_count} ${lapWord(g.route_kind, g.run_count)}`;
+  car.appendChild(count);
   if (g.mixed) {
     const warn = document.createElement("span");
     warn.className = "tray-warn";
     warn.textContent = "⚠ members disagree on route or car";
     warn.title = "A reprocess re-fingerprinted a member onto another route."
       + " Times across it aren't comparable — remove it from the group.";
-    $("#header-car").appendChild(warn);
+    car.appendChild(warn);
   }
+  $("#header-car").replaceChildren(car);
+  // the tags are session-scoped; each run row opens its own session for those
   for (const sel of ["#track-select", "#cond-select"]) $(sel).style.display = "none";
-  for (const btn of ["#btn-car", "#btn-reprocess", "#btn-reset-edits",
-                     "#btn-export", "#btn-merge"])
-    $(btn).style.display = "none";
-  $("#btn-rename").onclick = () => renameGroup(g);
-  $("#btn-route").onclick = () => renameRoute(members[0]);
-  $("#btn-delete").textContent = "Ungroup";
-  $("#btn-delete").classList.remove("danger");
-  $("#btn-delete").title = "Split back into separate sessions — nothing is deleted";
-  $("#btn-delete").onclick = () => ungroup(g);
+  $("#btn-merge").style.display = "none";
+  wireGroupMenu(g, members);
+}
+
+function wireGroupMenu(g, members) {
+  closeMenu();
+  $("#header-menu").replaceChildren(menuButton({
+    label: "⋯",
+    title: "Group actions",
+    ariaLabel: "Group actions",
+    items: [
+      { heading: "Names", items: [
+        { label: "Rename group…", hint: "this group only",
+          onSelect: () => renameGroup(g) },
+        { label: "Name route…", hint: "every session driven at this place",
+          onSelect: () => renameRoute(members[0]) },
+      ] },
+      { items: [
+        { label: "Ungroup", hint: "split back into separate sessions — nothing is deleted",
+          onSelect: () => ungroup(g) },
+      ] },
+    ],
+  }));
 }
 
 const cap = (s) => s.replace(/^./, (c) => c.toUpperCase());
@@ -811,9 +906,13 @@ async function reloadSession() {
   state.sessionsById = Object.fromEntries(sessions.map((x) => [x.id, x]));
   state.session = sessions[0];
   if (group) state.group = payload.group;
-  const reset = $("#btn-reset-edits");
-  if (reset) reset.style.display =
-    (group ? payload.group.edit_count : payload.session.edit_count) ? "" : "none";
+  // "Reset edits" exists only while there are edits, and this is the call
+  // that can create or clear the last one, so the menu is rebuilt rather
+  // than a mounted button being shown or hidden
+  if ($("#header-menu")) {
+    if (group) wireGroupMenu(payload.group, sessions);
+    else wireSessionMenu(payload.session);
+  }
   for (const p of state.picks) {
     // lap meta (flags / excluded / is_best) moved for picks of the shown view
     const fresh = state.sessionsById[p.session.id];

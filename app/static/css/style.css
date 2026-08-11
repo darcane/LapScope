@@ -768,9 +768,66 @@ dialog.modal::backdrop {
 .dt-badge.dt-RWD { color: var(--accent2); border-color: #522034; }
 .dt-badge.dt-FWD { color: var(--warn); border-color: #4f3d18; }
 
-.meta-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
-.car-line { color: var(--muted); font-size: 0.8rem; margin-top: 5px; }
 #car-chip { display: inline-flex; align-items: center; gap: 8px; color: var(--text); }
+
+/* Each name is edited where it is shown — the title renames the session,
+   the chips below name the place and the car — which is what stops three
+   similar-sounding verbs from being a choice made in the abstract. The ✎ is
+   dimmed rather than hidden until hover: revealing it would reflow the row
+   it sits in, and an affordance nobody ever sees is not an affordance.
+
+   Declared BEFORE the chips: `font: inherit` is what makes the title button
+   look like an h1, but it also resets weight and size, and it would beat an
+   equally specific .car-nm coming after it. */
+.name-edit {
+  background: none;
+  border: 0;
+  border-bottom: 1px dashed transparent;
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.name-edit::after {
+  content: "✎";
+  margin-left: 5px;
+  font-size: 0.8em;
+  color: var(--accent);
+  opacity: 0.3;
+}
+.name-edit:hover, .name-edit:focus-visible { border-bottom-color: var(--accent); }
+.name-edit:hover::after, .name-edit:focus-visible::after { opacity: 1; }
+
+/* ---------- identity chips: the car, and the place ----------
+
+   Class, PI, name and drivetrain are four facts about one car, so they read
+   as one thing and the name carries the weight — it is the part a human
+   actually reads. It used to be var(--muted) at 0.8rem, on its own line
+   below its own badges with a row of buttons in between.
+
+   Inline flow, not flex: in a 275 px sidebar card a flex chip wraps at item
+   boundaries and parks the class plate on a line of its own, away from the
+   name it qualifies. Inline, it wraps like a sentence and the plate stays
+   where the name starts. */
+.car-chip, .route-chip { min-width: 0; line-height: 1.7; }
+.car-chip .class-badge { margin-right: 7px; }
+.car-chip .dt-badge { margin-left: 7px; }
+/* scoped to the chips: the Live page builds its own #car-chip with a
+   .car-nm inside it, and its typography is not this change's business */
+.car-chip .car-nm, .route-chip .route-nm {
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+.route-chip .route-nm { font-weight: 500; }
+.route-chip .route-untitled { color: var(--muted); font-style: italic; }
+.car-chip .car-unknown { color: var(--warn); }
+.group-count { color: var(--muted); font-size: 0.8rem; margin-left: 10px; }
 
 .lap-flag { margin-right: 4px; cursor: help; }
 
@@ -1067,9 +1124,25 @@ dialog.modal::backdrop {
   padding: 10px 12px;
   cursor: pointer;
 }
-/* the card's rows are spans (phrasing content inside a <button>), so the two
-   that aren't already flex need the block behaviour the divs had for free */
-.session-card > .car-line, .session-card > .sub { display: block; }
+/* the card's rows are spans (phrasing content inside a <button>), so the
+   column they used to get from being divs is spelled out here */
+.card-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.card-body .sub { margin-top: 0; }
+/* a 199 px column fits maybe fourteen characters of car name per line, so
+   every point of leading and padding here is a line of card height across
+   a list that is meant to be scanned */
+.card-body .car-chip { line-height: 1.45; }
+.card-body .car-nm { font-size: 0.85rem; }
+.card-body .class-badge, .card-body .dt-badge { font-size: 0.7rem; }
+.card-body .class-badge .cls, .card-body .class-badge .pi { padding: 3px 6px; }
+.card-body .dt-badge { padding: 3px 5px; }
+.card-body .cond-badge { padding: 2px 8px; font-size: 0.72rem; }
+/* the race type rides with the track's name; it must not inherit the title's
+   weight, or it reads as part of the name rather than as a tag on it */
+.card-body .title .cond-badge { margin-left: 8px; font-weight: 400; vertical-align: middle; }
+/* the conditions get their own line under the car — a flex child would
+   otherwise stretch to the full card width */
+.card-body > .cond-badge { align-self: flex-start; }
 .session-card:hover { border-color: var(--accent); }
 .session-card.active { border-color: var(--panel-edge); border-left-color: var(--accent); background: #131c27; }
 .session-card .title { font-family: var(--display); font-weight: 600; font-size: 1rem; padding-right: 26px; }
@@ -1200,14 +1273,84 @@ table.laps .run-when .lap-act {
   from { transform: translateX(-100%); }
   to { transform: translateX(100%); }
 }
-.detail-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.detail-header h1 {
+/* Two rows: what this IS on top, what you can DO to it on the right of the
+   first one. They used to share a single wrapping row of twelve controls. */
+.detail-header { display: flex; flex-direction: column; gap: 8px; }
+.detail-title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.detail-title-row h1 {
   font-family: var(--display);
   font-size: 1.35rem;
   margin: 0;
   flex: 1;
+  min-width: 0;
   letter-spacing: 0.02em;
 }
+/* pairs, spaced further apart than their own contents, so "Road" reads as a
+   tag on the track and "Dry" as a tag on the drive */
+.detail-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px 22px;
+  flex-wrap: wrap;
+}
+.ident-pair { display: inline-flex; align-items: center; gap: 9px; flex-wrap: wrap; min-width: 0; }
+
+/* ---------- overflow menu (common.js menuButton) ---------- */
+
+.menu-wrap { position: relative; display: inline-flex; }
+.menu-trigger { font-size: 1rem; line-height: 1.2; padding: 5px 11px; }
+.menu-wrap.open .menu-trigger { border-color: var(--accent); color: var(--accent); }
+.menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  /* above the page's own content, below the sticky app header (20) */
+  z-index: 15;
+  min-width: 268px;
+  max-width: min(340px, calc(100vw - 24px));
+  padding: 6px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 10px;
+  background: var(--panel-lo);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.55);
+}
+.menu-group + .menu-group {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--panel-edge);
+}
+.menu-heading {
+  display: block;
+  padding: 4px 10px 2px;
+  font-family: var(--display);
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 7px;
+  padding: 7px 10px;
+  color: var(--text);
+}
+.menu-item:hover, .menu-item:focus-visible { background: #16202c; }
+.menu-label { display: block; font-size: 0.88rem; }
+/* the muted second line is what tells the three naming actions apart: their
+   labels all start with a naming verb, but one touches this session and the
+   others touch every session ever driven at that place or in that car */
+.menu-hint { display: block; margin-top: 2px; color: var(--muted); font-size: 0.75rem; }
+.menu-item.danger .menu-label { color: var(--bad); }
+.menu-item.danger:hover, .menu-item.danger:focus-visible { background: rgba(239, 68, 68, 0.12); }
+
+/* the tags are values, not actions: pill-shaped like the badges they set,
+   and muted while they still read "— race type —" */
+.tag-select { border-radius: 999px; padding: 4px 10px; font-size: 0.78rem; }
+.tag-select.unset { color: var(--muted); }
 button {
   background: var(--panel-lo);
   color: var(--text);
@@ -1340,6 +1483,12 @@ table.laps .pick.on { font-weight: 600; }
 
 .map-row { display: grid; grid-template-columns: 1fr 320px; gap: 12px; }
 @media (max-width: 1100px) { .map-row { grid-template-columns: 1fr; } }
+/* A grid item's min-width defaults to min-content, and the canvas's own
+   inline width IS that content: once the map had been drawn at 1200 px the
+   column could never shrink again, so drawMap kept reading the blown-out
+   parent and narrowing the window left the page scrolling sideways for good
+   (measured: 375 px viewport, scrollWidth 576). */
+.map-row > * { min-width: 0; }
 #trackmap { width: 100%; touch-action: none; }
 .legend {
   display: flex;
