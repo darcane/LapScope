@@ -277,17 +277,57 @@ assert them here.
 ### Windows exe (plug-and-play build for normal users)
 
 - Entry point [run_desktop.py](run_desktop.py): defaults `DATA_DIR` to
-  `%LOCALAPPDATA%\LapScope`, runs uvicorn on `127.0.0.1:8000`, and opens the
-  browser. It imports the `app.main:app` object by reference (not the string
-  form) so PyInstaller statically follows the whole `app` package. A busy
-  HTTP port is pre-checked with an actionable message + pause-before-exit
-  (a second double-clicked exe must not crash-exit with an unreadable
-  console flash — mirrors the UDP-port handling in `app/main.py`).
-- [LapScope.spec](LapScope.spec): PyInstaller **onedir** build. Bundles the full
-  `app/static/` tree via `Tree(...)` (HTML/CSS/JS **plus** the binary
-  `fonts/*.woff2`, `css/uplot.min.css`, `js/vendor/uplot.iife.min.js`) to
-  `app/static` and `app/car_ordinals.json` to `app/`, matching the runtime paths
+  `%LOCALAPPDATA%\LapScope`, installs logging, then hands the app to the
+  launcher window. It imports the `app.main:app` object by reference (not the
+  string form) so PyInstaller statically follows the whole `app` package, and
+  it does so *after* `DATA_DIR` is set.
+- [desktop/](desktop/): the launcher — a small tkinter control panel that owns
+  the server. `paths.py` (the repo's only `sys.frozen`/`_MEIPASS` helper),
+  `state.py` (a pure function from `/api/status` fields to the one line the
+  window shows), `logs.py` (a bounded in-memory handler for the pane plus a
+  `RotatingFileHandler`), `server.py` (`ServerController`), `ui.py`, and
+  `selftest.py`. **Only `ui.py` may import tkinter** — the rest stay importable
+  on a headless Linux CI box so they can be tested there, which is locked by
+  `tests/test_desktop_no_tkinter.py`. It is a top-level package rather than
+  `app/desktop/` because `Dockerfile` does `COPY app ./app`, and a GUI has no
+  business in the container.
+- Server lifecycle (`desktop/server.py`) — four non-obvious choices, each
+  load-bearing:
+  - The **listening socket is bound by the launcher**, on the main thread, and
+    passed in as `sockets=[sock]`. uvicorn's own `Config.bind_socket()` calls
+    `sys.exit()` on a busy port, and `threading.excepthook` ignores
+    `SystemExit`, so on a background thread the server would vanish with no
+    traceback and nothing to show the user.
+  - `log_config=None`. `uvicorn.Config.__init__` configures logging, whose
+    formatter calls `sys.stdout.isatty()` — and a windowed build has no
+    `sys.stdout`. Without this the exe dies in the constructor, before the
+    window appears.
+  - `lifespan="on"`. Under the default `"auto"`, uvicorn catches lifespan
+    exceptions, logs `ASGI 'lifespan' protocol appears unsupported` at INFO
+    *without the traceback*, and serves on with no `app.state.store` — every
+    request 500s. A failed migration has to be loud.
+  - Stopping sets `should_exit` and waits; **never `force_exit`**, which skips
+    the lifespan shutdown and with it `SessionTracker.shutdown()` — i.e. the
+    lap in progress. Closing the window therefore saves the session, and the
+    window stays up and repainting while it happens rather than freezing on a
+    join.
+  - The port doubles as a single-instance guard: the launcher holds it even
+    while the server is stopped, so a second copy cannot open the same
+    `telemetry.db` with its own `SessionTracker`.
+- What a **Restart** can change: `DATA_DIR` and `TELEMETRY_UDP_PORT` (read
+  inside `lifespan()`). What it cannot: `LS_OFFLINE`, `LS_KEEP_DISCARDED`,
+  `LS_ALLOWED_HOSTS` (read at module import, before the app object existed) —
+  those need the process restarted, and the docs say so.
+- [LapScope.spec](LapScope.spec): PyInstaller **onedir**, **windowed**
+  (`console=False`) build. Bundles the full `app/static/` tree via `Tree(...)`
+  (HTML/CSS/JS **plus** the binary `fonts/*.woff2`, `css/uplot.min.css`,
+  `js/vendor/uplot.iife.min.js`) to `app/static`, `app/car_ordinals.json` to
+  `app/`, and `assets/lapscope.ico` to `assets/` (the window's title-bar icon,
+  resolved at runtime through `desktop/paths.py`), matching the runtime paths
   in [app/main.py](app/main.py) and [app/api/routes.py](app/api/routes.py).
+  Windowed means `sys.stdout`/`sys.stderr` are `None`: nothing in the bundled
+  code may `print()`, and `run_desktop.py` redirects both to `os.devnull`
+  defensively. tkinter pulls tcl/tk in, adding ~10 MB to the zip.
   `hiddenimports` cover uvicorn/websockets submodules that are imported lazily.
   Build locally: `pip install -r requirements.txt -r requirements-build.txt &&
   pyinstaller LapScope.spec` -> `dist/LapScope/LapScope.exe`. For a
@@ -311,6 +351,13 @@ assert them here.
   (inert unless the `SIGNPATH_API_TOKEN` secret is set), zips `dist/LapScope`,
   writes SHA256 `checksums.txt` over the final (signed) zip, and publishes a
   GitHub Release with both attached (notes templated on whether it was signed).
+  Between the build and signing it runs the exe once with
+  `LS_DESKTOP_SELFTEST=server` (`desktop/selftest.py`): start the real server,
+  fetch `/api/status`, stop, write PASS/FAIL to a file. That is the only place
+  a `LapScope.exe` is ever executed before a user executes it — PR CI is Linux
+  and never builds one — so it is what catches a missing `datas` entry or the
+  `None`-stdout traps above. It never opens a Tk window, and the verdict is
+  read from a file because a windowed exe has no stdout to capture.
 
 ## Cross-file invariants (change one → change all)
 
@@ -325,9 +372,19 @@ assert them here.
   next. `tools/export_track_catalog.py` imports the same three to prove a
   generated catalogue is unambiguous.
 - Bundled data files: anything read as `Path(__file__).parent / "<file>"` from
-  the `app` package (`car_ordinals.json`, `track_catalog.json`) needs a `datas`
-  entry in `LapScope.spec`, or it is missing from the Windows exe. Files under
+  the `app` package (`car_ordinals.json`, `track_catalog.json`), **or resolved
+  through `desktop.paths.asset()`** (`lapscope.ico`), needs a `datas` entry in
+  `LapScope.spec`, or it is missing from the Windows exe. Files under
   `app/static/` are covered by the `Tree(...)` in `COLLECT` and need nothing.
+- Stale-stream threshold: `STALE_S` (desktop/state.py) = the 2500 ms after
+  which `dashboard.js` flips its chip to "paused". The launcher window and the
+  live page describe the same moment; if they drift, one says *Recording* while
+  the other says *paused* (locked by a test in test_desktop_state.py).
+- Log format: `LOG_FORMAT` (desktop/logs.py) = the format string in
+  `app/main.py`'s `basicConfig`. The launcher installs the handlers first,
+  which makes that call a no-op, but Docker still runs it — the same line must
+  not look different depending on how LapScope was started (locked by a test in
+  test_desktop_logs.py).
 - Track-type set: `TRACK_TYPES` (api/routes.py) = `TRACK_META` (common.js)
   = `#track-select` options (analysis.html); everything `suggest_track_type`
   (laps.py) can return must be a member of `TRACK_TYPES` (locked by a test

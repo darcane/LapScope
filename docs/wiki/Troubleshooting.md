@@ -18,9 +18,23 @@ answers most questions in one glance:
 | `session_active` / `session_id` / `session_best` | What the recorder is doing right now. |
 | `version` | The running build (`0.0.0` = unversioned source run). |
 
-**Where the logs are:** the console window for the Windows exe,
+**Where the logs are:** the log pane in the LapScope window for the Windows exe,
 `docker compose logs -f` for Docker. Every recorder decision (session opened,
 lap completed, session discarded + why) is logged there.
+
+The exe also writes the same lines to a file, which is the one to attach to a
+bug report — the window's **Open log folder** button goes straight to it:
+
+```
+%LOCALAPPDATA%\LapScope\logs\lapscope.log
+```
+
+It rotates at 2 MB and keeps four files, so the last few runs are always there.
+**Copy** puts the visible pane on the clipboard if that's quicker.
+
+The window itself answers the same questions as `/api/status` in one line —
+*Waiting for telemetry*, *Recording — session 12*, *Telemetry port blocked*,
+*Recording — NOT saving* — so check it before opening anything.
 
 ## No packets arriving
 
@@ -63,7 +77,8 @@ with `TELEMETRY_UDP_PORT` — then restart:
 `docker compose down && docker compose up -d`.
 
 The native exe doesn't have this failure mode: if it can't bind the port it
-says so, in the console and in `/api/status` → `udp_error`.
+says so — *Telemetry port blocked* in the LapScope window, and
+`/api/status` → `udp_error`.
 
 ### 4. Last resort: a UWP loopback exemption
 
@@ -80,15 +95,22 @@ Then set the Data Out IP back to `127.0.0.1`.
 ## Busy ports
 
 - **UDP 9999 already in use** — LapScope starts anyway (the dashboard and past
-  sessions still work) but shows the problem in the console and in
-  `/api/status` → `udp_error`. Close the other program (often a second LapScope
-  window, or another telemetry tool), or set `TELEMETRY_UDP_PORT` to a free
-  port, then restart — and remember to change the port in the game too.
-- **HTTP 8000 already in use** (exe) — the exe checks before starting and
-  explains instead of crash-closing the console. Usually it's an
-  already-running LapScope: open http://127.0.0.1:8000 — if the dashboard
-  loads, use that window. To find another culprit:
+  sessions still work) but shows the problem as *Telemetry port blocked* in the
+  window and in `/api/status` → `udp_error`. Close the other program (often a
+  second LapScope window, or another telemetry tool), or set
+  `TELEMETRY_UDP_PORT` to a free port, then restart — and remember to change
+  the port in the game too. On the exe the **Restart** button is enough for
+  this one.
+- **HTTP 8000 already in use** (exe) — the window opens as normal and shows an
+  amber row explaining the conflict, with **Open dashboard** and **Retry**
+  buttons; nothing crash-closes. Usually it's an already-running LapScope: open
+  http://127.0.0.1:8000 — if the dashboard loads, use that one and close this
+  window. Otherwise free the port and press **Retry**. To find the culprit:
   `Get-NetTCPConnection -LocalPort 8000 | Format-Table OwningProcess`.
+
+  Note that a LapScope window keeps hold of port 8000 even while its server is
+  stopped. That is deliberate: it is what stops a second copy starting up and
+  writing to the same database.
 
 ## Wrong-size packets
 
@@ -117,11 +139,16 @@ works.
 
 ## A trailing lap with no time, after a crash or power cut
 
-Normal. If LapScope is killed mid-lap (closing the window, `docker kill`, the
-machine losing power), the lap that was in progress is left open — it never
-crossed a finish line, so it has no time. The next startup closes it at the
-last frame that was recorded, and the session keeps every lap it did finish.
-Excluding it with 🗑 in the lap table is safe.
+Normal. If LapScope is killed mid-lap (`docker kill`, Task Manager, the machine
+losing power), the lap that was in progress is left open — it never crossed a
+finish line, so it has no time. The next startup closes it at the last frame
+that was recorded, and the session keeps every lap it did finish. Excluding it
+with 🗑 in the lap table is safe.
+
+**Closing the LapScope window is not one of these cases.** It stops the server
+properly — the window stays up saying *Stopping — saving the session in
+progress…* until the recorder has finalised the session — so the normal way of
+quitting doesn't leave a trailing lap behind.
 
 ## "Not recording — the database write failed"
 

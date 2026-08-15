@@ -21,8 +21,11 @@ a = Analysis(
     binaries=[],
     # car_ordinals.json and track_catalog.json sit next to the app package
     # (cars.py / tracks.py read Path(__file__).parent / …); the static tree is
-    # added to COLLECT.
-    datas=[("app/car_ordinals.json", "app"), ("app/track_catalog.json", "app")],
+    # added to COLLECT. lapscope.ico is bundled as well as being the exe's
+    # icon: the launcher window sets its own title-bar icon at runtime through
+    # desktop/paths.py, which resolves it under sys._MEIPASS.
+    datas=[("app/car_ordinals.json", "app"), ("app/track_catalog.json", "app"),
+           ("assets/lapscope.ico", "assets")],
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
@@ -41,9 +44,16 @@ exe = EXE(
     debug=False,
     strip=False,
     upx=False,
-    # Keep the console so users/support can read the "Listening…/Session ended"
-    # logs; the dashboard is the real UI, this window is a live status/error log.
-    console=True,
+    # Windowed: the launcher (desktop/ui.py) is the status/error surface now,
+    # and it writes the same lines to DATA_DIR/logs/lapscope.log so support can
+    # ask for a file instead of a screenshot of a console.
+    #
+    # Anything that prints, or writes to a stream, breaks under this — stdout
+    # and stderr are None. run_desktop.py guards them, and desktop/server.py
+    # passes log_config=None because uvicorn's default logging config calls
+    # sys.stdout.isatty() while building its formatter and would otherwise take
+    # the whole exe down before the window ever appeared.
+    console=False,
     icon="assets/lapscope.ico",
 )
 

@@ -21,7 +21,10 @@ leftovers are cleaned again at startup).
 ## Step 1 — read the discard line
 
 Every discard logs a one-line signal summary. After driving the event, look in
-the console (exe) or `docker compose logs` (Docker):
+the log pane of the LapScope window (exe) or `docker compose logs` (Docker).
+The line is long, so **Copy** in the window — or the log file itself,
+`%LOCALAPPDATA%\LapScope\logs\lapscope.log`, reachable via **Open log
+folder** — is easier to paste into an issue than reading it off the pane:
 
 ```
 Session 12 discarded (no completed laps, 4210 frames) | diag: dur=70s rt=0.0..68.2 maxLapNumber=0 maxCurrentLap=0.0 finish_seen=False gridded=True launch=True lastSpeed=51.3 dist=+1893
@@ -55,7 +58,10 @@ To preserve the session (raw frames included) instead of losing it, set
   $env:LS_KEEP_DISCARDED = "1"; docker compose up -d
   ```
 
-- **Windows exe** — start it from a shell with the variable set:
+- **Windows exe** — start it from a shell with the variable set. This still
+  works exactly as written even though the exe is windowed now: a launched
+  process inherits the shell's environment either way, and the shell returns
+  immediately instead of waiting.
 
   ```powershell
   cd <your LapScope folder>
@@ -64,6 +70,9 @@ To preserve the session (raw frames included) instead of losing it, set
 
   (Or `setx LS_KEEP_DISCARDED 1`, then double-click as usual — but remember to
   `setx LS_KEEP_DISCARDED 0` afterwards, since that variant persists.)
+
+  `LS_KEEP_DISCARDED` is read once at startup, so the window's **Restart**
+  button will *not* pick up a change — close the window and start it again.
 
 - **Running from source** — same variable, before `python run_desktop.py`.
 

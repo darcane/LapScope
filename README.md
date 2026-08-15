@@ -134,8 +134,14 @@ conditions ribbons, plus the auto-named route:
 1. Download the latest **`LapScope-<version>-win64.zip`** from the
    [Releases page](../../releases).
 2. Unzip it anywhere and double-click **`LapScope.exe`**.
-3. Your browser opens automatically at **http://127.0.0.1:8000**. Leave the little
-   console window running while you play.
+3. The LapScope window opens and your browser follows at **http://127.0.0.1:8000**.
+   Leave the window open while you play — it is the server.
+
+The window is a small control panel, not the dashboard: it shows one line telling
+you what the recorder is doing (*Waiting for telemetry*, *Recording — session 12*,
+*Telemetry port blocked*), a live log, and four buttons — **Open Dashboard**,
+**Stop**, **Restart**, **Open Data Folder**. Closing it stops the server cleanly
+and saves the lap you were on.
 
 > If the build isn't code-signed yet, Windows SmartScreen may warn on first run —
 > click **More info → Run anyway**. Every release lists SHA256 checksums, and you
@@ -222,10 +228,12 @@ and `tools/inspect_session.py`) has its own page:
 | `LS_OFFLINE`         | `0`              | `1` = never contact the internet (see below) |
 | `LS_ALLOWED_HOSTS`   | *(empty)*        | Extra `Host` names to answer to (see below) |
 
-`LS_KEEP_DISCARDED` and `LS_OFFLINE` are read once when the app starts, so they have
-to be set before launch — changing either later needs a restart. The two list URLs
-point at this repo's `main` branch by default and only exist so a fork can serve its
-own lists.
+`LS_KEEP_DISCARDED`, `LS_OFFLINE` and `LS_ALLOWED_HOSTS` are read once when the app
+starts, so they have to be set before launch. On the exe that means closing the
+LapScope window and opening it again — the **Restart** button restarts the *server*,
+which is enough for `DATA_DIR` and `TELEMETRY_UDP_PORT` but not for these three. The
+two list URLs point at this repo's `main` branch by default and only exist so a fork
+can serve its own lists.
 
 ### What LapScope contacts
 
@@ -258,7 +266,9 @@ from the Analysis page frees that space *inside* the database file for future
 recordings, but the file itself never shrinks on its own — use **Settings → Storage →
 Compact now** to hand the space back to the drive (it needs as much free disk space as
 the database currently uses, and can't run while a session is recording). The Windows
-exe stores its DB in `%LOCALAPPDATA%\LapScope` and serves on `127.0.0.1:8000`.
+exe stores its DB in `%LOCALAPPDATA%\LapScope` and serves on `127.0.0.1:8000`; its
+log is written alongside, in `%LOCALAPPDATA%\LapScope\logs\lapscope.log` (rotated,
+2 MB × 4), which is the file to attach to a bug report.
 
 ## How it works
 
