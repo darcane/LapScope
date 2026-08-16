@@ -62,6 +62,19 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
   protected, release branch. The owner pushes and opens the PR.
 - **Static files are baked into the image.** Any change under `app/` requires
   `docker compose build` + restart. There is no bind mount for code.
+- **Only `desktop/ui.py` may import tkinter.** The rest of the launcher
+  (`state.py`, `logs.py`, `server.py`, `paths.py`) has to stay importable on a
+  headless Linux box, because that is where CI runs and it is the only reason
+  any of that logic is testable. Put decisions in those modules and keep
+  `ui.py` to painting and event wiring. `tests/test_desktop_no_tkinter.py`
+  fails if this slips.
+- **The exe is windowed** (`console=False`), so `sys.stdout` and `sys.stderr`
+  are `None` in the frozen build: nothing on the exe's import path may
+  `print()`. Anything the user needs to see goes through `logging` — it reaches
+  both the window's log pane and `DATA_DIR/logs/lapscope.log`. CI never builds
+  the exe; the release workflow's `LS_DESKTOP_SELFTEST` step is what catches
+  this class of break, so run it locally if you touch `run_desktop.py`,
+  `LapScope.spec`, or `desktop/`.
 - The Claude Code preview config (`.claude/launch.json`) runs `docker compose up`
   and owns the process — stop the preview server AND `docker compose down` before
   rebuilding, then start the preview again.

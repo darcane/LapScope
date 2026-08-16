@@ -42,6 +42,28 @@ jobs:
       - name: Build exe (PyInstaller onedir)
         run: pyinstaller LapScope.spec
 
+      # The only place a LapScope.exe is ever run before a user runs it. CI
+      # tests on Linux from source and never builds the exe, so this is what
+      # catches the failures only the frozen windowed build has: a missing
+      # `datas` entry, or the None sys.stdout that takes uvicorn's default
+      # logging config down before the window appears.
+      #
+      # Mechanics matter here. A windowed (console=False) exe has no stdout to
+      # capture and returns immediately when invoked normally, so the run must
+      # be waited on explicitly and the verdict read from a file. Placed before
+      # signing so a broken build never reaches SignPath or the Release.
+      - name: Smoke-test the exe (headless)
+        shell: pwsh
+        run: |
+          $env:DATA_DIR = Join-Path $env:RUNNER_TEMP "lapscope-selftest"
+          $env:LS_DESKTOP_SELFTEST = "server"
+          $p = Start-Process .\dist\LapScope\LapScope.exe -Wait -PassThru
+          $result = Join-Path $env:DATA_DIR "logs\selftest.txt"
+          if (Test-Path $result) { Get-Content $result } else { Write-Host "no result file written" }
+          $log = Join-Path $env:DATA_DIR "logs\lapscope.log"
+          if (Test-Path $log) { Write-Host "--- lapscope.log ---"; Get-Content $log }
+          if ($p.ExitCode -ne 0) { throw "Self-test failed (exit $($p.ExitCode))" }
+
       # --- Code signing (SignPath Foundation, free for OSS) ---
       # Inert until enrolled: with no SIGNPATH_API_TOKEN secret set, every step
       # below is skipped and the release ships unsigned exactly as before. Once
@@ -107,10 +129,12 @@ jobs:
           ## LapScope ${{ github.ref_name }} — Windows
 
           Plug-and-play build for normal users: download the zip, unzip, and
-          double-click **LapScope.exe**. The dashboard opens automatically at
-          http://127.0.0.1:8000 and telemetry records to
-          ``%LOCALAPPDATA%\LapScope``. Power/cross-platform users: see the Docker
-          path in the README.
+          double-click **LapScope.exe**. The LapScope window opens and your
+          browser follows at http://127.0.0.1:8000; telemetry records to
+          ``%LOCALAPPDATA%\LapScope``. Leave the window open while you play —
+          it shows what the recorder is doing, keeps a log, and closing it saves
+          the lap you were on. Power/cross-platform users: see the Docker path
+          in the README.
 
           **In-game:** enable FH6 "Data Out" to your PC's IP on UDP port 9999.
 

@@ -180,12 +180,31 @@ async def ws_live(ws: WebSocket) -> None:
     await ws.accept()
     hub: Hub = ws.app.state.hub
     q = hub.subscribe()
+    # Watch the socket as well as the queue. Nothing is ever sent *to* this
+    # endpoint, so this only completes on a disconnect - the tab closing, or
+    # the server asking the connection to shut down. Waiting on q.get() alone
+    # cannot see either: FH6 stops publishing the moment you pause, so a
+    # handler with no frames to send would block until something arrived.
+    # That made shutdown wait out its whole grace period on a client that had
+    # already gone away, then log the cancellation as an ASGI error.
+    watcher = asyncio.ensure_future(ws.receive())
     try:
         while True:
-            await ws.send_json(await q.get())
+            getter = asyncio.ensure_future(q.get())
+            done, _ = await asyncio.wait({getter, watcher},
+                                         return_when=asyncio.FIRST_COMPLETED)
+            if getter in done:
+                await ws.send_json(getter.result())
+            else:
+                getter.cancel()
+            if watcher in done:
+                if watcher.result().get("type") == "websocket.disconnect":
+                    break
+                watcher = asyncio.ensure_future(ws.receive())  # ignore stray frames
     except WebSocketDisconnect:
         pass
     finally:
+        watcher.cancel()
         hub.unsubscribe(q)
 
 

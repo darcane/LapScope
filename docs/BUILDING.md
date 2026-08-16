@@ -31,10 +31,26 @@ pyinstaller LapScope.spec
 Output: `dist\LapScope\LapScope.exe` plus its bundled runtime, static assets,
 and `car_ordinals.json`.
 
-Run it straight from the tree without packaging:
+The exe is a **windowed** build (`console=False`): double-clicking it opens the
+LapScope control panel, not a console. tkinter brings tcl/tk along, so the zip
+is roughly 10 MB larger than a headless build of the same code would be.
+
+Run it straight from the tree without packaging — same window, same behaviour:
 
 ```powershell
 python run_desktop.py
+```
+
+To check a build without a display (what the release workflow does between
+building and signing), run it once in self-test mode. It starts the real
+server, fetches `/api/status`, stops, and writes the verdict to a file —
+a windowed exe has no stdout to capture, and it returns immediately unless
+you wait on it:
+
+```powershell
+$env:DATA_DIR = "$env:TEMP\lapscope-selftest"; $env:LS_DESKTOP_SELFTEST = "server"
+$p = Start-Process .\dist\LapScope\LapScope.exe -Wait -PassThru
+Get-Content "$env:DATA_DIR\logs\selftest.txt"; "exit $($p.ExitCode)"
 ```
 
 ## Verifying a downloaded release

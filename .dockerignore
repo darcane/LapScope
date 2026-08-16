@@ -1,6 +1,7 @@
 data/
 tools/
 tests/
+desktop/
 .github/
 *.md
 .git/
