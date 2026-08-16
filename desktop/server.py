@@ -217,6 +217,11 @@ class ServerController:
         self.request_stop()
         self._restart_pending = True
 
+    def cancel_restart(self) -> None:
+        """Drop a restart that hasn't happened yet. The stop it already asked
+        for stands - this only stops the server coming back up."""
+        self._restart_pending = False
+
     def poll_restart(self) -> bool:
         """Finish a pending restart once the old thread is gone. Returns True
         if it started the server this tick."""

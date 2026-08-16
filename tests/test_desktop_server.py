@@ -19,7 +19,7 @@ import pytest
 
 from app import cars, tracks
 from app.main import app
-from desktop.server import ServerController
+from desktop.server import GRACEFUL_DRAIN_S, ServerController
 from desktop.state import ServerPhase
 
 
@@ -93,6 +93,32 @@ def test_stopping_runs_the_lifespan_teardown(controller, caplog):
     assert "Application shutdown complete" in caplog.text
 
 
+def test_stopping_does_not_wait_out_the_grace_period_on_an_idle_dashboard(controller, caplog):
+    """A dashboard tab holds /ws/live open, and that handler only has something
+    to send while you are driving - FH6 stops the moment you pause. If it
+    cannot also see the connection closing, a stop waits out the entire
+    graceful-shutdown grace period on a client that has already been told to go
+    away, then logs the cancellation as an ASGI error in the file we tell
+    people to attach to bug reports. Closing the window has to be quick and
+    quiet, with a browser tab open, every time.
+    """
+    import websockets.sync.client  # a uvicorn[standard] dependency, not a new one
+
+    caplog.set_level(logging.INFO)
+    controller.start()
+    assert wait_for(controller, ServerPhase.RUNNING)
+
+    with websockets.sync.client.connect(f"ws://127.0.0.1:{controller.port}/ws/live"):
+        started = time.monotonic()
+        assert controller.stop(timeout=30) is True
+        elapsed = time.monotonic() - started
+
+    assert elapsed < GRACEFUL_DRAIN_S, (
+        f"stop took {elapsed:.1f}s - it waited on the socket instead of closing it")
+    assert "Exception in ASGI application" not in caplog.text
+    assert "timeout graceful shutdown exceeded" not in caplog.text
+
+
 def test_it_can_be_started_again_after_stopping(controller):
     """Restart is the real regression risk: uvicorn closes the socket it was
     handed, Config.loaded is one-shot, and Server carries started/should_exit
@@ -104,6 +130,45 @@ def test_it_can_be_started_again_after_stopping(controller):
     controller.start()
     assert wait_for(controller, ServerPhase.RUNNING), "second start never came up"
     assert get_json(controller.port)["version"] == "0.0.0"
+
+
+def drive(controller, until, timeout: float = 30.0) -> bool:
+    """Run the controller's tick the way the window's after() loop does."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        controller.poll()
+        controller.poll_restart()
+        if until():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_restart_takes_the_server_down_and_brings_it_back(controller):
+    controller.start()
+    assert wait_for(controller, ServerPhase.RUNNING)
+    controller.restart()
+    assert controller.phase is ServerPhase.STOPPING
+
+    assert drive(controller, lambda: controller.phase is ServerPhase.RUNNING), \
+        "the restart never came back up"
+    assert get_json(controller.port)["version"] == "0.0.0"
+
+
+def test_a_cancelled_restart_stays_down(controller):
+    """Closing the window during a Restart cancels it. Without that the stop
+    completes, the restart behind it starts a fresh server, and the window is
+    left attached to something it has already given up the means to stop."""
+    controller.start()
+    assert wait_for(controller, ServerPhase.RUNNING)
+    controller.restart()
+    controller.cancel_restart()
+
+    assert drive(controller, lambda: controller.phase is ServerPhase.STOPPED)
+    time.sleep(0.3)  # and it does not come back a tick later
+    controller.poll()
+    assert controller.poll_restart() is False
+    assert controller.phase is ServerPhase.STOPPED
 
 
 def test_a_busy_port_raises_on_the_caller_rather_than_killing_the_thread(tmp_path, monkeypatch):

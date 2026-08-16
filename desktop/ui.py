@@ -274,7 +274,17 @@ class LauncherWindow:
 
     def _tick(self) -> None:
         self.ctl.poll()
-        self.ctl.poll_restart()
+        if not self._closing:
+            # Not while closing: the restart would finish after the stop that
+            # is closing the window and hand us a freshly started server we
+            # have no way left to shut down.
+            try:
+                self.ctl.poll_restart()
+            except OSError:
+                # The same conflict the first start can hit, if something took
+                # the port during the gap. Letting it escape would stop the
+                # tick rescheduling below and freeze the window.
+                self._show_conflict()
         # Once, on the first successful start: double-clicking the exe should
         # still land you on the dashboard the way it always did. Not on every
         # Restart - that would fling a tab at someone who is already looking
@@ -287,14 +297,15 @@ class LauncherWindow:
             self._append(lines)
         self._ticks += 1
         self._render(force=self.ctl.phase is not self._last_phase)
-        if self._closing:
-            self._closing_tick()
+        if self._closing and self._closing_tick():
+            return  # the window is gone; there is nothing left to reschedule on
         self._after_id = self.root.after(TICK_MS, self._tick)
 
-    def _closing_tick(self) -> None:
+    def _closing_tick(self) -> bool:
+        """Returns True once the window has been destroyed."""
         if self.ctl.phase in (ServerPhase.STOPPED, ServerPhase.FAILED):
             self._destroy()
-            return
+            return True
         if self.ctl.stop_overdue() and not self._asking:
             self._asking = True
             try:
@@ -309,12 +320,14 @@ class LauncherWindow:
                 logging.shutdown()  # flush the file handler before we vanish
                 os._exit(1)
             self.ctl.extend_stop_deadline()
+        return False
 
     def _append(self, lines: list[str]) -> None:
         at_bottom = self.log.yview()[1] >= 0.999
+        text = "\n".join(lines) + "\n"
         self.log.configure(state="normal")
-        self.log.insert("end", "\n".join(lines) + "\n")
-        drop = self.ring.add(len(lines))
+        self.log.insert("end", text)
+        drop = self.ring.add_text(text)
         if drop:
             self.log.delete("1.0", f"{drop + 1}.0")
         self.log.configure(state="disabled")
@@ -357,6 +370,10 @@ class LauncherWindow:
             self._destroy()
             return
         self._closing = True
+        # Closing during a Restart: the stop is already in flight, but the
+        # restart behind it has to be called off or the server comes back up
+        # under a window that is on its way out.
+        self.ctl.cancel_restart()
         self.ctl.request_stop()
         self._render(force=True)
 

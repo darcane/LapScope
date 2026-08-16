@@ -87,6 +87,23 @@ def test_ring_handles_a_single_batch_larger_than_the_whole_budget():
     assert r.count == 10
 
 
+def test_ring_counts_widget_lines_not_log_records():
+    """A record logged with a traceback is one string and forty-odd lines. The
+    pane deletes by line index, so counting records would leak the difference
+    every time - and that is precisely when something is going wrong."""
+    r = LogRing(maxlen=10)
+    traceback = "CRITICAL boom\nTraceback (most recent call last):\n  File x\nValueError\n"
+    assert r.add_text(traceback) == 0
+    assert r.count == 4, "four lines, not one record"
+
+
+def test_ring_trims_on_widget_lines():
+    r = LogRing(maxlen=10)
+    r.add_text("a\n" * 8)
+    assert r.add_text("one line\nplus a traceback\nof three\n") == 1
+    assert r.count == 10
+
+
 def test_log_format_matches_the_servers_own():
     """app/main.py calls basicConfig with this format string too. It no-ops
     once the launcher has installed handlers, but Docker still runs it - if

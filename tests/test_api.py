@@ -1519,33 +1519,46 @@ def test_the_host_guard_is_wired_in_and_extensible(monkeypatch):
     assert call("lapscope.example.com") == "the handler ran"
 
 
+class FakeWS:
+    """Enough of a Starlette WebSocket for ws_live: a handshake, a send, and a
+    receive that stays pending until something is queued on `incoming` - which
+    is what the real one does between frames."""
+
+    def __init__(self, origin):
+        from app.telemetry.hub import Hub
+
+        self.headers = {"origin": origin, "host": "localhost:8000"}
+        self.app = SimpleNamespace(state=SimpleNamespace(hub=Hub()))
+        self.accepted, self.close_code = False, None
+        self.incoming: list[dict] = []
+        self.sent: list[dict] = []
+
+    async def accept(self):
+        self.accepted = True
+
+    async def close(self, code=1000):
+        self.close_code = code
+
+    async def send_json(self, msg):
+        self.sent.append(msg)
+
+    async def receive(self):
+        while not self.incoming:
+            await asyncio.sleep(0.001)  # nothing arrives unless a test queues it
+        return self.incoming.pop(0)
+
+
 def test_ws_live_only_talks_to_the_page_it_served():
     """/ws/live streams live position, speed and car. WebSockets are exempt
     from CORS, so without an Origin check any page the user has open can
     subscribe to it while they drive."""
     from app.main import origin_allowed, ws_live
-    from app.telemetry.hub import Hub
 
     assert origin_allowed("http://localhost:8000", "localhost:8000")
     assert origin_allowed(None, "localhost:8000")  # a script, not a browser
     assert not origin_allowed("http://evil.example.com", "localhost:8000")
     assert not origin_allowed("null", "localhost:8000")  # file:// / sandboxed
     assert not origin_allowed("http://localhost:8001", "localhost:8000")
-
-    class FakeWS:
-        def __init__(self, origin):
-            self.headers = {"origin": origin, "host": "localhost:8000"}
-            self.app = SimpleNamespace(state=SimpleNamespace(hub=Hub()))
-            self.accepted, self.close_code = False, None
-
-        async def accept(self):
-            self.accepted = True
-
-        async def close(self, code=1000):
-            self.close_code = code
-
-        async def send_json(self, msg):  # pragma: no cover - nothing is published
-            pass
 
     ws = FakeWS("http://evil.example.com")
     asyncio.run(ws_live(ws))
@@ -1555,3 +1568,20 @@ def test_ws_live_only_talks_to_the_page_it_served():
     with pytest.raises(asyncio.TimeoutError):  # then waits for frames forever
         asyncio.run(asyncio.wait_for(ws_live(ws), 0.05))
     assert ws.accepted and ws.close_code is None
+
+
+def test_ws_live_lets_go_as_soon_as_the_socket_closes():
+    """The handler has nothing to send between frames, and FH6 stops sending
+    the moment you pause - so it cannot wait on the queue alone. A shutting-down
+    server tells the connection to close, and if that goes unnoticed the stop
+    waits out its whole grace period and logs the cancellation as an error."""
+    from app.main import ws_live
+
+    ws = FakeWS("http://localhost:8000")
+    ws.incoming.append({"type": "websocket.disconnect", "code": 1001})
+    hub = ws.app.state.hub
+    # No timeout guard on purpose: if the handler ever stops noticing the
+    # disconnect, this test hangs, which is the symptom being guarded against.
+    asyncio.run(ws_live(ws))
+    assert ws.accepted
+    assert not hub._subscribers, "the queue outlived the socket"

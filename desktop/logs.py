@@ -82,6 +82,18 @@ class LogRing:
         self.count = self.maxlen
         return drop
 
+    def add_text(self, text: str) -> int:
+        """Record an insertion, counted in the lines the widget will show.
+
+        One log record is not one line: anything logged with a traceback
+        arrives as a single formatted string containing dozens of them. The
+        widget's delete is by line index, so counting records would under-count
+        every exception and let the pane grow past its budget forever - which
+        is exactly the situation (something is going wrong, repeatedly) where
+        it matters.
+        """
+        return self.add(text.count("\n"))
+
 
 def install_logging(maxlen: int = 2000) -> tuple[LogSink, object | None, str | None]:
     """Wire up root logging before the server starts. Returns (sink, file
