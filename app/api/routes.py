@@ -934,6 +934,25 @@ _EXPORT_HEADER = ["lap", "t_s", "dist_m"] + [h for h, _ in _EXPORT_CHANNELS]
 # the one column filled in only after the whole lap is known (see _lap_csv_rows)
 _LAP_TIME_COL = _EXPORT_HEADER.index("lap_time_s")
 
+# The all-fields export (issue #90): every raw_* channel appended after the
+# curated ones, in packet order. Same names the /data endpoint and the raw
+# panels use, prefix and all - raw_speed (m/s) and raw_boost sit next to the
+# converted speed_kmh / boost_psi rather than colliding with them.
+#
+# Curated columns stay first and unchanged, so a raw file is a superset: the
+# importer, a spreadsheet template and _LAP_TIME_COL all keep working on the
+# same leading columns whichever variant they are handed.
+_RAW_EXPORT_CHANNELS = [(n, n) for n in CHANNELS if n.startswith("raw_")]
+_RAW_EXPORT_HEADER = _EXPORT_HEADER + [h for h, _ in _RAW_EXPORT_CHANNELS]
+
+
+def _export_columns(raw: bool):
+    """(header, [(column, channel)…]) for the requested export variant."""
+    if raw:
+        return _RAW_EXPORT_HEADER, _EXPORT_CHANNELS + _RAW_EXPORT_CHANNELS
+    return _EXPORT_HEADER, _EXPORT_CHANNELS
+
+
 _FILENAME_UNSAFE = re.compile(r"[^A-Za-z0-9._ -]+")
 
 
@@ -944,7 +963,11 @@ def _safe_filename(name: str) -> str:
     return _FILENAME_UNSAFE.sub("_", name).strip(" .") or "export"
 
 
-def _export_filename(display_name: str, lap: dict | None = None) -> str:
+def _export_filename(display_name: str, lap: dict | None = None,
+                     raw: bool = False) -> str:
+    """The two variants get different names on purpose: a curated and an
+    all-fields export of the same lap are both plausible things to keep, and
+    silently overwriting one with the other is the worst way to find out."""
     parts = ["lapscope", _safe_filename(display_name)]
     if lap is None:
         parts.append("session")
@@ -953,19 +976,26 @@ def _export_filename(display_name: str, lap: dict | None = None) -> str:
         if lap["lap_time"]:
             t = lap["lap_time"]
             parts.append(f"{int(t // 60)}-{t % 60:06.3f}")
+    if raw:
+        parts.append("raw")
     return "_".join(parts) + ".csv"
 
 
-def _lap_csv_rows(lap: dict, rows: list[tuple[float, bytes]]):
+def _lap_csv_rows(lap: dict, rows: list[tuple[float, bytes]], raw: bool = False):
     """One lap's telemetry as CSV rows, full resolution - /data's decimation
     is for charts, an export must keep every kept frame. Same rewind-trimmed
     trace and rounding as /data, so the two never disagree.
+
+    `raw` appends every packet field after the curated columns (issue #90):
+    the app already holds all of it, and until now the raw panels were the
+    only way to read it - one frame at a time.
 
     The whole lap is still built before the first row is yielded, because
     _fix_dead_lap_clock cannot tell a dead lap clock from a live one until it
     has seen every sample. What is held is the finished rows - numbers - and
     not the parsed frames behind them, which is roughly a tenth of the cost
     (issue #65); the scan itself streams."""
+    _, channels = _export_columns(raw)
     start_dist = lap["start_distance"] or 0.0
     built: list[list] = []
     t_rel: list[float] = []
@@ -976,7 +1006,7 @@ def _lap_csv_rows(lap: dict, rows: list[tuple[float, bytes]]):
             t0 = t
         t_rel.append(round(t - t0, 3))
         row: list = [lap["lap_number"] + 1, t_rel[-1], round(d - start_dist, 2)]
-        row += [round(CHANNELS[ch](p), 4) for _, ch in _EXPORT_CHANNELS]
+        row += [round(CHANNELS[ch](p), 4) for _, ch in channels]
         lap_times.append(row[_LAP_TIME_COL])
         built.append(row)
     for row, lap_time in zip(built, _fix_dead_lap_clock(lap_times, t_rel)):
@@ -984,58 +1014,67 @@ def _lap_csv_rows(lap: dict, rows: list[tuple[float, bytes]]):
         yield row
 
 
-def _csv_stream(store, laps: list[dict]):
+def _csv_stream(store, laps: list[dict], raw: bool = False):
     """One CSV document: header row, then every lap's frames in lap order.
     Chunked per lap: a long session never materializes at once, though one
     lap's rows do - see _lap_csv_rows for why that last bit can't stream."""
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
-    writer.writerow(_EXPORT_HEADER)
+    writer.writerow(_export_columns(raw)[0])
     yield buf.getvalue()
     for lap in laps:
         buf.seek(0)
         buf.truncate(0)
-        for row in _lap_csv_rows(lap, store.lap_frames(lap)):
+        for row in _lap_csv_rows(lap, store.lap_frames(lap), raw):
             writer.writerow(row)
         yield buf.getvalue()
 
 
-def _csv_response(store, laps: list[dict], filename: str) -> StreamingResponse:
+def _csv_response(store, laps: list[dict], filename: str,
+                  raw: bool = False) -> StreamingResponse:
     return StreamingResponse(
-        _csv_stream(store, laps), media_type="text/csv",
+        _csv_stream(store, laps, raw), media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
+# `raw: bool = False`, not `Query(False)`: FastAPI infers the query param
+# either way, and the tests drive these handlers as plain functions - a Query
+# default is an object, and a truthy one, so every direct call would export
+# the wide file.
 @router.get("/laps/{lap_id}/export.csv")
-def export_lap_csv(lap_id: int, request: Request):
+def export_lap_csv(lap_id: int, request: Request, raw: bool = False):
     """The lap's full-resolution telemetry as a CSV download (issue #29).
     Deliberately works on excluded laps too: exclusion is a session-level
-    statement (bests/counts), exporting one lap is an explicit ask."""
+    statement (bests/counts), exporting one lap is an explicit ask.
+
+    `raw=1` adds every packet field (issue #90) - roughly five times the
+    bytes, which is why the frontend asks rather than guessing."""
     store = request.app.state.store
     lap = store.get_lap(lap_id)
     if lap is None:
         raise HTTPException(404, "lap not found")
     session = _session_out(store.get_session(lap["session_id"]))
     return _csv_response(store, [lap],
-                         _export_filename(session["display_name"], lap))
+                         _export_filename(session["display_name"], lap, raw), raw)
 
 
 @router.get("/sessions/{session_id}/export.csv")
-def export_session_csv(session_id: int, request: Request):
+def export_session_csv(session_id: int, request: Request, raw: bool = False):
     """The session's timed laps in one CSV, told apart by the lap column.
     Laps the user excluded are skipped - the export honors manual edits the
     same way bests and counts do - and so are untimed laps (the post-finish
     coast): the CSV has no way to mark a lap incomplete, so a re-import
     would mint a lap time for it. Either kind can still be exported on its
-    own through /laps/{id}/export.csv."""
+    own through /laps/{id}/export.csv. `raw=1` as on the per-lap route."""
     store = request.app.state.store
     session = store.get_session(session_id)
     if session is None:
         raise HTTPException(404, "session not found")
     laps = [lap for lap in store.session_laps(session_id)
             if lap["lap_time"] and not lap["excluded"]]
-    return _csv_response(store, laps,
-                         _export_filename(_session_out(session)["display_name"]))
+    return _csv_response(
+        store, laps,
+        _export_filename(_session_out(session)["display_name"], raw=raw), raw)
 
 
 # columns an import can't do without; everything else defaults to 0

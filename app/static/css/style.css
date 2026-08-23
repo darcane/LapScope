@@ -566,7 +566,8 @@ dialog.modal::backdrop {
   padding: 9px 12px;
   margin-bottom: 16px;
 }
-.modal input[type="checkbox"] { flex: none; accent-color: var(--accent); margin: 0; }
+.modal input[type="checkbox"],
+.modal input[type="radio"] { flex: none; accent-color: var(--accent); margin: 0; }
 .modal input[type="text"]:focus {
   outline: none;
   border-color: var(--accent);
@@ -582,6 +583,25 @@ dialog.modal::backdrop {
   padding: 5px 2px;
   cursor: pointer;
 }
+/* CSV export chooser (issue #90): two variants, each with the sentence that
+   makes it the right one — the file-size cost is stated next to the option
+   that carries it, not in a footnote under both. */
+.export-choice { display: flex; flex-direction: column; gap: 8px; margin: 0 0 16px; }
+.export-choice label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.export-choice label:hover { border-color: var(--accent); }
+.export-choice input[type="radio"] { margin-top: 3px; }
+.export-choice-text { display: flex; flex-direction: column; gap: 3px; }
+.export-choice-name { font-weight: 600; }
+.export-choice-hint { color: var(--muted); font-size: 0.8rem; line-height: 1.45; }
+
 .modal-hint { color: var(--muted); font-size: 0.8rem; margin: 8px 0 0; }
 
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }

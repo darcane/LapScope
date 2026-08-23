@@ -465,6 +465,12 @@ server joining mid-lap, event restart.
 - Menus, bars and other chrome get `cursor` and `user-select` set explicitly.
  `cursor: auto` over a block with text in it draws a text caret, so a popover's
  own padding shows an I-beam between its rows unless the popover says otherwise.
+- **A choice with a cost is made where the cost is stated.** The CSV export
+ asks curated-or-everything at download time (issue #90) rather than reading a
+ Settings switch: someone hunting for tire temps looks at the export button, not
+ at a preferences panel, and "5× the file size" only means something next to the
+ option that causes it. The pick is remembered for the page's lifetime, never
+ stored — `ls_settings` is display preferences, not per-action history.
 - Style modal fields by input **type**. A bare `.modal input` rule also hits the
  checkboxes callers put in `extra` (lap flags, merge list) and stretches them to
  `width: 100%`, which reads as a centred box with wrapped labels.

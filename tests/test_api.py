@@ -809,6 +809,70 @@ def test_export_filename_is_windows_and_header_safe():
     untimed = {"lap_number": 2, "lap_time": None}
     assert _export_filename("My Race", untimed) == "lapscope_My Race_lap3.csv"
 
+    # the all-fields variant is a different file, not the same one with more
+    # in it - exporting both of a lap must not silently overwrite (issue #90)
+    assert _export_filename("My Race", lap, raw=True)         == "lapscope_My Race_lap2_1-23.456_raw.csv"
+    assert _export_filename("My Race", raw=True) == "lapscope_My Race_session_raw.csv"
+
+
+# ------------------- the all-fields export (issue #90) -------------------
+# The raw panels could show every packet field, one frame at a time, and the
+# export could show a whole lap of nineteen columns. Neither could do both.
+
+
+def test_export_lap_csv_raw_carries_every_packet_field(tmp_path):
+    """raw=1: the curated header, unchanged, followed by one column per
+    packet value (wheel groups split FL/FR/RL/RR). Same rows, same trace -
+    only wider - and the raw columns really carry the packet, not zeros."""
+    from app.api.routes import _EXPORT_HEADER, export_lap_csv
+    from app.telemetry.packet import FIELDS
+
+    store = _dirty_store(tmp_path)
+    sid = sessions(store)[0]["id"]
+    req = _request_for(store)
+    lap = next(lap for lap in completed_laps(store, sid) if not flags_of(lap))
+
+    plain_header, *plain_body = _csv_rows(export_lap_csv(lap["id"], req))
+    header, *body = _csv_rows(export_lap_csv(lap["id"], req, raw=True))
+
+    assert header[:len(_EXPORT_HEADER)] == _EXPORT_HEADER   # a superset...
+    assert plain_body == [r[:len(_EXPORT_HEADER)] for r in body]  # ...to the value
+
+    expected = []
+    for name, count in FIELDS:
+        expected += ([f"raw_{name}"] if count == 1 else
+                     [f"raw_{name}_{w}" for w in ("fl", "fr", "rl", "rr")])
+    assert header[len(_EXPORT_HEADER):] == expected
+    assert len(header) == 107   # the number the export dialog prints
+
+    col = {c: i for i, c in enumerate(header)}
+    row = body[len(body) // 2]   # mid-lap: moving, on the throttle
+    # raw_* is the packet verbatim, the curated columns are converted
+    assert float(row[col["raw_speed"]]) * 3.6 == pytest.approx(
+        float(row[col["speed_kmh"]]), abs=1e-3)
+    assert float(row[col["raw_accel"]]) / 2.55 == pytest.approx(
+        float(row[col["throttle_pct"]]), abs=1e-3)
+    # the tuner's actual ask: per-wheel temps, in the packet's own Fahrenheit
+    for w in ("fl", "fr", "rl", "rr"):
+        assert float(row[col[f"raw_tire_temp_{w}"]]) > 100.0
+
+
+def test_export_session_csv_raw_is_one_wide_document(tmp_path):
+    """The session variant widens the same way: one header, the same laps,
+    every row the full width (a per-lap header would break re-import)."""
+    from app.api.routes import export_session_csv
+
+    store = _dirty_store(tmp_path)
+    sid = sessions(store)[0]["id"]
+    req = _request_for(store)
+
+    plain = _csv_rows(export_session_csv(sid, req))
+    raw = _csv_rows(export_session_csv(sid, req, raw=True))
+
+    assert len(raw) == len(plain)
+    assert {r[0] for r in raw[1:]} == {r[0] for r in plain[1:]}   # same laps
+    assert {len(r) for r in raw} == {107}
+
 
 # ------------------------- CSV import (the reverse trip) -------------------------
 
@@ -873,6 +937,30 @@ def test_import_csv_round_trips_a_session_export(tmp_path):
     assert card["car_name"] == "Unknown car"
     assert card["car_known"] is True  # no ordinal -> nothing to report/name
     assert card["lap_count"] == len(source)
+    store.close()
+
+
+def test_import_csv_accepts_an_all_fields_export(tmp_path):
+    """The wide export is still a LapScope export: import reads the curated
+    columns it knows and ignores the rest, so a raw file re-opens as the same
+    session a curated one would (the raw values are not replayed - the
+    synthesized frames stay neutral filler, see _synth_frame)."""
+    from app.api.routes import export_session_csv, import_csv, session_laps
+
+    store = _dirty_store(tmp_path)
+    sid = sessions(store)[0]["id"]
+    req = _request_for(store)
+    source = completed_laps(store, sid)
+
+    text = _csv_text(export_session_csv(sid, req, raw=True))
+    store = Store(store.db_path)   # imports write, see the round-trip test
+    out = asyncio.run(import_csv(_import_request(store, text), name="Raw trip"))
+    assert out["ok"] and out["laps"] == len(source)
+
+    imported = session_laps(out["session_id"], _request_for(store))["laps"]
+    for src, imp in zip(source, imported):
+        assert imp["lap_number"] == src["lap_number"]
+        assert abs(imp["lap_time"] - src["lap_time"]) < 0.05
     store.close()
 
 

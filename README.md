@@ -56,8 +56,11 @@ in Rivals.
   marker on the map to dismiss it, edit a lap's flags, or exclude junk laps from the
   bests — all reversible (**Reset edits**), and kept across a **Reprocess**.
 - **Take it with you** — export any lap (⬇ in the lap table) or the whole session
-  (**Export CSV**) as full-rate telemetry CSV for spreadsheets or MoTeC-style tools,
-  and **Save PNG** turns the track map as drawn — colors, 2D/3D, A + B overlay — into
+  (**Export CSV…**) as full-rate telemetry CSV for spreadsheets or MoTeC-style
+  tools. Each download asks which columns: the 19 curated channels, or **every
+  packet field** — all 107, tire temps and per-wheel slip and suspension included,
+  exactly as the game sends them (about 5× the file size). **Save PNG** turns the
+  track map as drawn — colors, 2D/3D, A + B overlay — into
   a shareable image with a title / car / lap-time caption. **Import CSV** (above the
   session list) closes the loop: send a friend your lap's CSV and they can open it
   like a recording — laps, charts, and map rebuilt from the file.

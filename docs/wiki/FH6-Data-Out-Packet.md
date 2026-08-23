@@ -91,3 +91,27 @@ These are the facts that shaped the app — each one broke a naive assumption:
 LapScope stores the raw 324-byte packets losslessly (~70 MB per driving hour),
 so every improvement to the inference can be replayed onto old recordings with
 the **Reprocess** button — nothing has to be re-driven.
+
+## Getting the raw fields out
+
+Every field above is in the recording, so every field can leave it. Two ways:
+
+- **Frame by frame, on screen** — ⚙ Settings → *Raw data* turns on the live
+  telemetry panel and the raw-values-at-cursor table on the Analysis page.
+  Good for "what is this field actually doing".
+- **A whole lap or session, as CSV** — the ⬇ button on a lap row, or
+  **Export CSV…** in the Analysis ⋯ menu. Both ask which columns:
+
+  | | Columns | What you get |
+  |---|---|---|
+  | **Curated channels** | 19 | Speed, inputs, G, slip, boost, position — converted to canonical units (km/h, %, g, psi) and named with them (`speed_kmh`, `throttle_pct`). Opens in a spreadsheet as-is, and is what **Import CSV** reads back. |
+  | **Every packet field** | 107 | The 19 above, plus one `raw_*` column per packet value in packet order — wheel arrays split into `_fl` / `_fr` / `_rl` / `_rr`. Unconverted: `raw_speed` is m/s, `raw_tire_temp_fl` is Fahrenheit, `raw_accel` is 0–255. About 5× the file size (~3.5 MB for a 90-second lap). |
+
+The two land under different filenames (`…_raw.csv` for the wide one), so
+exporting both of the same lap doesn't overwrite anything. Column names match
+the channel names the API uses, so a `raw_*` column and a
+`/api/laps/{id}/data?channels=raw_*` fetch are the same number.
+
+Both variants carry **every recorded frame** — the decimation you see in the
+charts is for drawing only — with rewound stretches trimmed out, exactly as the
+charts and the map show them.
