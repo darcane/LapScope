@@ -800,8 +800,9 @@ function wireSessionMenu(s) {
         s.edit_count && { label: "Reset edits",
           hint: "undo every dismissed contact, flag override and exclusion",
           onSelect: () => resetEdits(s) },
-        { label: "Export CSV", hint: "full-rate telemetry, one column per lap",
-          onSelect: () => downloadUrl(`/api/sessions/${s.id}/export.csv`) },
+        { label: "Export CSV…", hint: "full-rate telemetry, every timed lap in one file",
+          onSelect: () => exportCsv(`/api/sessions/${s.id}/export.csv`,
+                                    `Export ${displayName(s)}`) },
       ] },
       { items: [
         { label: "Delete session", hint: "with all of its telemetry — cannot be undone",
@@ -920,7 +921,8 @@ function renderLapRows() {
   const tbody = $("#lap-rows");
   if (!tbody) return;
   tbody.innerHTML = "";
-  const word = lapWord(state.session && state.session.route_kind);
+  const kind = state.session && state.session.route_kind;
+  const word = lapWord(kind);
   const group = state.groupId !== null;
   for (const l of state.laps) {
     const tr = document.createElement("tr");
@@ -951,7 +953,9 @@ function renderLapRows() {
         ${group ? `<button class="lap-act act-unmerge" title="Take this session back out of the group">⛓</button>` : ""}
       </td>`;
     $(".pick", tr).onclick = () => pickLap(l.id);
-    $(".act-csv", tr).onclick = () => downloadUrl(`/api/laps/${l.id}/export.csv`);
+    $(".act-csv", tr).onclick = () => exportCsv(
+      `/api/laps/${l.id}/export.csv`,
+      `Export ${lapLabel(kind, lapNo(l))}`);
     $(".act-flags", tr).onclick = () => editLapFlags(l);
     $(".act-exclude", tr).onclick = () => toggleLapExcluded(l);
     if (group) {
@@ -2098,6 +2102,80 @@ function downloadUrl(url) {
   a.href = url;
   a.download = "";   // the filename still comes from Content-Disposition
   a.click();
+}
+
+/* How many columns an export carries (issue #90). Both answers are
+   legitimate: 19 columns open in a spreadsheet and are what a lap report
+   needs, 107 are what you want when you came for tire temps and mean to
+   parse the file yourself. The app already holds all of it — the raw panels
+   were just the only way to read it, one frame at a time.
+
+   Neither variant is right often enough to be the silent default, and a
+   Settings switch would put the choice somewhere nobody looking for their
+   tire temps would think to look. So the download asks, at the moment of
+   asking, with the cost (file size) stated next to the option that carries
+   it. */
+const EXPORT_CURATED_COLS = 19;   // = _EXPORT_HEADER in app/api/routes.py
+// the all-fields variant is the curated ones plus every packet value, so it
+// counts itself off RAW_FIELDS rather than hardcoding a number that would go
+// stale the first time the packet gains a field
+const EXPORT_RAW_COLS = EXPORT_CURATED_COLS
+  + RAW_FIELDS.reduce((total, [, count]) => total + count, 0);
+
+const EXPORT_VARIANTS = [
+  ["curated", "Curated channels",
+   `${EXPORT_CURATED_COLS} columns — speed, inputs, G, slip, boost, position. `
+   + "Opens in a spreadsheet as-is, and is what Import CSV reads."],
+  ["raw", "Every packet field",
+   `${EXPORT_RAW_COLS} columns — the curated ones plus every field FH6 sends, `
+   + "raw and unconverted: tire temps, per-wheel slip and suspension, fuel, "
+   + "torque. About 5× the file size."],
+];
+
+/* remembered for the page's lifetime, not stored: exporting eight laps in a
+   row should not be eight identical decisions, but this is a per-download
+   choice, not a preference — Settings stays out of it */
+let lastExportVariant = "curated";
+
+/* Ask which variant, then download it. Cancelling downloads nothing. */
+async function exportCsv(url, title) {
+  const extra = document.createElement("div");
+  extra.className = "export-choice";
+  extra.setAttribute("role", "radiogroup");
+  extra.setAttribute("aria-label", "Columns to export");
+  const radios = [];
+  for (const [value, label, hint] of EXPORT_VARIANTS) {
+    const row = document.createElement("label");
+    const rb = document.createElement("input");
+    rb.type = "radio";
+    rb.name = "export-columns";
+    rb.value = value;
+    rb.checked = value === lastExportVariant;
+    radios.push(rb);
+    const text = document.createElement("span");
+    text.className = "export-choice-text";
+    const name = document.createElement("span");
+    name.className = "export-choice-name";
+    name.textContent = label;
+    const sub = document.createElement("span");
+    sub.className = "export-choice-hint";
+    sub.textContent = hint;
+    text.append(name, sub);
+    row.append(rb, text);
+    extra.appendChild(row);
+  }
+  const ok = await showModal({
+    title,
+    message: "Full-rate telemetry, every recorded frame. Which columns?",
+    extra, okText: "Download",
+    focus: radios.find((r) => r.checked) || radios[0],
+  });
+  if (!ok) return;
+  const picked = radios.find((r) => r.checked);
+  lastExportVariant = picked ? picked.value : "curated";
+  // the two variants also land under different filenames, so a curated
+  // export is never quietly overwritten by an all-fields one
+  downloadUrl(lastExportVariant === "raw" ? `${url}?raw=1` : url);
 }
 
 function downloadBlob(blob, filename) {

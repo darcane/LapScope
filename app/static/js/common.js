@@ -352,7 +352,8 @@ let modalSeq = 0;
 
 function showModal({ title, message = "", extra = null, value = null, placeholder = "",
                      okText = "OK", cancelText = "Cancel", altText = "",
-                     danger = false, showCancel = true, wide = false }) {
+                     danger = false, showCancel = true, wide = false,
+                     focus = null }) {
   return new Promise((resolve) => {
     const box = document.createElement("dialog");
     box.className = "modal" + (danger ? " danger" : "") + (wide ? " modal-wide" : "");
@@ -427,7 +428,9 @@ function showModal({ title, message = "", extra = null, value = null, placeholde
 
     document.body.appendChild(box);
     box.showModal();
-    (inputEl || ok).focus();
+    // a dialog whose point is a choice should open ON the choice, not on the
+    // button that confirms whatever it already says (`focus`, from `extra`)
+    (focus || inputEl || ok).focus();
     if (inputEl) inputEl.select();
   });
 }
