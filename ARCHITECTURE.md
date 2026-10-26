@@ -191,7 +191,7 @@ A missing `Origin` (a script, a CLI tool) is allowed.
 | `css/style.css` | Theme = CSS custom props. `css/fonts.css` + `fonts/` = vendored Rajdhani (OFL); app must work fully offline. A `@media (prefers-reduced-motion: reduce)` block at the end turns off every infinite animation (the loudest is the limiter's ~7 flashes/second) — **add new looping animations to it**. `@media (max-width: 900px)` collapses the analysis layout to one column. |
 | `js/vendor/uplot.iife.min.js` | Only dependency, vendored, analysis page only. |
 
-## Tools (repo root, stdlib only, no container needed)
+## Tools (repo root, stdlib only, no container needed — except capture_media)
 
 - [tools/simulator.py](tools/simulator.py) — synthetic packet sender, runs in
   real time at 60 Hz. Flags: `--host --port --rate --freeroam S --events N
@@ -214,6 +214,16 @@ A missing `Origin` (a script, a CLI tool) is allowed.
   span term (so no reprocess is needed first); collapses same-name rows; and
   **fails rather than emit two differently-named entries that would both match
   one lap**. `--dry-run` reports without writing.
+
+- [tools/capture_media.py](tools/capture_media.py) + [tools/media_shots.json](tools/media_shots.json)
+  — regenerates every LapScope-UI image under `docs/media/` from a real
+  `telemetry.db` (guide: [docs/MEDIA.md](docs/MEDIA.md)). **The one exception to
+  "stdlib only"**: Playwright and Pillow come from `requirements-media.txt`,
+  imported lazily; maintainer-only, never imported by `app/` or `desktop/`, not
+  installed in CI. Copies the DB read-only into a temp dir, runs its own uvicorn
+  on it (`LS_OFFLINE=1`, loopback-only browser), replays stored frames over UDP
+  for the live shots, and `os.replace`s each output only after it succeeded. UI
+  selectors live in one constants block at the top of the file.
 
 ## Tests (`tests/`, pytest — no container, no game)
 
