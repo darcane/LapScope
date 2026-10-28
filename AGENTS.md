@@ -23,6 +23,8 @@ and the hard-won behavioral facts that must not be re-derived or regressed.
    link repo files/images by absolute URL
    (`https://github.com/darcane/LapScope/blob/main/…`,
    `https://raw.githubusercontent.com/darcane/LapScope/main/…`).
+   Maintainers regenerating the README/wiki screenshots: **[docs/MEDIA.md](docs/MEDIA.md)**
+   (`tools/capture_media.py`, driven by a manifest and your real `telemetry.db`).
 5. **[GitHub Issues](https://github.com/darcane/LapScope/issues)** — the open
    backlog: bugs, feature ideas, and in-flight investigations. (The old
    `TODO.md` is retired; everything it tracked lives in the issue tracker now.)

@@ -1,0 +1,202 @@
+{
+  "_comment": "Ids are the maintainer's own sessions - swap in real ids from your telemetry.db (tools/inspect_session.py --list; lap ids are laps.id). A shot holding REPLACE_ME is refused, the rest run. 'element' = CSS selector to frame (with optional pad / max_height). 'laps' must belong to 'session'. 'replay' = start_s/end_s offsets into the session's frames (live shots). 'settings' = partial ls_settings. See docs/MEDIA.md.",
+  "shots": [
+    {
+      "output": "hero.gif",
+      "kind": "clip",
+      "session": 571,
+      "laps": [],
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "settings": {
+        "accent": "cyan"
+      },
+      "replay": {
+        "start_s": 45,
+        "end_s": 143
+      },
+      "capture_fps": 6,
+      "fps": 6,
+      "scale": 1.0,
+      "capture_after_s": 90,
+      "scale_factor": 0.75
+    },
+    {
+      "output": "analysis-compare.png",
+      "kind": "still",
+      "session": 714,
+      "laps": [
+        553,
+        555
+      ],
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "settings": {},
+      "element": "#detail",
+      "max_height": 1500
+    },
+    {
+      "output": "track-map.png",
+      "kind": "still",
+      "session": 571,
+      "laps": [
+        511
+      ],
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "settings": {
+        "defaultMapMode": "2d"
+      },
+      "element": "section.panel:has(#trackmap)"
+    },
+    {
+      "output": "track-map-3d-jumps.png",
+      "kind": "still",
+      "session": 718,
+      "laps": [
+        558
+      ],
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "settings": {
+        "defaultMapMode": "3d",
+        "contactLayer": true
+      },
+      "element": "section.panel:has(#trackmap)"
+    },
+    {
+      "output": "track-map-3d-animated.gif",
+      "kind": "clip",
+      "session": 450,
+      "laps": [
+        445
+      ],
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "settings": {
+        "defaultMapMode": "3d"
+      },
+      "rotation_steps": 36,
+      "capture_fps": 12,
+      "fps": 12,
+      "scale": 1.0,
+      "element": "section.panel:has(#trackmap)"
+    },
+    {
+      "output": "session-list.png",
+      "kind": "still",
+      "session": 565,
+      "laps": [],
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "settings": {},
+      "element": "section.panel:has(#lap-rows)"
+    },
+    {
+      "output": "session-sidebar.png",
+      "kind": "still",
+      "session": 819,
+      "laps": [],
+      "viewport": {
+        "width": 1440,
+        "height": 1100
+      },
+      "settings": {},
+      "element": ".sidebar",
+      "max_height": 860
+    },
+    {
+      "output": "settings.png",
+      "kind": "still",
+      "session": 565,
+      "laps": [],
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "settings": {},
+      "element": "dialog.modal[open]"
+    },
+    {
+      "output": "accent-live-sunset.png",
+      "kind": "still",
+      "session": 571,
+      "laps": [],
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "settings": {
+        "accent": "sunset"
+      },
+      "replay": {
+        "start_s": 45,
+        "end_s": 140
+      },
+      "shoot_after_s": 90
+    },
+    {
+      "output": "paused-chip.png",
+      "kind": "still",
+      "session": 571,
+      "laps": [],
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "settings": {},
+      "replay": {
+        "start_s": 45,
+        "end_s": 140
+      },
+      "stale_wait_s": 3.5,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1440,
+        "height": 380
+      }
+    },
+    {
+      "output": "browse-bar-menu.png",
+      "kind": "still",
+      "session": 565,
+      "laps": [],
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "settings": {}
+    },
+    {
+      "output": "csv-export-choice.png",
+      "kind": "still",
+      "session": 565,
+      "laps": [],
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "settings": {},
+      "element": "dialog.modal[open]"
+    },
+    {
+      "output": "launcher-window.png",
+      "kind": "window",
+      "window_wait_s": 40,
+      "settle_s": 3.0
+    }
+  ]
+}

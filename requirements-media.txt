@@ -1,0 +1,4 @@
+# Maintainer-only: regenerating docs/media with tools/capture_media.py (docs/MEDIA.md).
+# Not needed to run, test or build LapScope. After installing:  playwright install chromium
+playwright>=1.45
+Pillow>=10.0

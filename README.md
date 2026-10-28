@@ -95,6 +95,8 @@ in Rivals.
   including the shift lights on the limiter — stop if your system asks for reduced
   motion.
 
+  ![The dashboard's amber paused chip after the game stops sending](docs/media/paused-chip.png)
+
 **Analysis — lap comparison** (distance-aligned delta, speed, inputs, steering, slip —
 overlay up to 6 laps, even from different sessions, each in its own color):
 
@@ -121,6 +123,15 @@ conditions ribbons, plus the auto-named route:
 
 ![Session list with ribbons](docs/media/session-sidebar.png)
 
+**Browse bar and header menu** — search, filter and sort the list; the ⋯ menu holds the
+session's actions, each with a line saying what it reaches:
+
+![Browse bar and the session header menu](docs/media/browse-bar-menu.png)
+
+**CSV export** asks which columns when you download, with the cost next to the choice:
+
+![CSV export column choice dialog](docs/media/csv-export-choice.png)
+
 **Settings** — units, accent theme, and map preferences, saved in your browser:
 
 ![Settings panel](docs/media/settings.png)
@@ -145,6 +156,8 @@ you what the recorder is doing (*Waiting for telemetry*, *Recording — session 
 *Telemetry port blocked*), a live log, and four buttons — **Open Dashboard**,
 **Stop**, **Restart**, **Open Data Folder**. Closing it stops the server cleanly
 and saves the lap you were on.
+
+![The LapScope launcher window](docs/media/launcher-window.png)
 
 > If the build isn't code-signed yet, Windows SmartScreen may warn on first run —
 > click **More info → Run anyway**. Every release lists SHA256 checksums, and you
