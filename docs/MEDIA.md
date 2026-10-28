@@ -65,7 +65,12 @@ if any was not ok.
 
 **Launcher shot**: it starts `run_desktop.py` and grabs its window, so port **8000
 must be free** (close the exe/docker), the window must be **unobscured** while it
-runs, and it only works on Windows.
+runs, and it only works on Windows. The window prints its UDP port and data
+folder, so the shot uses the real default port 9999 when it is free (it is, with
+docker stopped) and a temporary `C:\LapScope` folder instead of a path under your
+user profile; if `C:\LapScope` already exists it falls back to the scratch folder
+and warns you to check the image for your user name. The launcher's first-start
+dashboard tab is suppressed.
 
 ## When the UI drifts
 

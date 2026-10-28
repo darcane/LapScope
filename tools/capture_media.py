@@ -73,7 +73,8 @@ KINDS = ("still", "clip", "window")
 PACKET_SIZE = 324
 GIF_LIMIT = 10 * 1024 * 1024
 GAP_CAP_S = 0.25                      # a stream gap must not stall the replay
-RESERVED_PORTS = frozenset({8000, 9999, *range(5200, 5301)})
+DEFAULT_UDP_PORT = 9999                # what the launcher shot should show
+RESERVED_PORTS = frozenset({8000, DEFAULT_UDP_PORT, *range(5200, 5301)})
 PORT_RANGE = (30000, 39999)
 INSTALL_HINT = ("pip install -r requirements-media.txt && playwright install chromium")
 DEFAULT_MANIFEST = ROOT / "tools" / "media_shots.json"
@@ -372,6 +373,15 @@ def pick_free_ports(n: int = 2) -> list[int]:
 def port_in_use(port: int, host: str = "127.0.0.1") -> bool:
     with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
         return s.connect_ex((host, port)) == 0
+
+
+def udp_port_free(port: int) -> bool:
+    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_DGRAM)) as s:
+        try:
+            s.bind(("0.0.0.0", port))
+        except OSError:
+            return False
+    return True
 
 
 def _stop(proc: subprocess.Popen | None) -> None:
@@ -694,10 +704,27 @@ def capture_launcher_window(shot: dict, scratch: Path) -> bytes:
 
     with contextlib.suppress(Exception):
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    data_dir = scratch / "launcher-data"
-    data_dir.mkdir()
+    # The window prints its data folder and UDP port, and it is published: show
+    # the real default port, and a folder that is not under the maintainer's
+    # user profile (created only if absent, removed afterwards).
+    data_dir = Path(os.environ.get("SystemDrive", "C:") + "\\") / "LapScope"
+    owned = not data_dir.exists()
+    if owned:
+        try:
+            data_dir.mkdir()
+        except OSError:
+            owned = False
+    if not owned:
+        data_dir = scratch / "launcher-data"
+        data_dir.mkdir()
+        log.warning("launcher shot: %s exists, so the window shows the scratch folder - "
+                    "check it for your user name before committing",
+                    Path(os.environ.get("SystemDrive", "C:") + "\\") / "LapScope")
+    udp_port = DEFAULT_UDP_PORT if udp_port_free(DEFAULT_UDP_PORT) else pick_free_ports(1)[0]
+    # webbrowser honours BROWSER: a no-op stops the first-start dashboard tab
+    noop_browser = f"{sys.executable.replace(os.sep, '/')} -c pass"
     env = {**os.environ, "DATA_DIR": str(data_dir), "LS_OFFLINE": "1",
-           "TELEMETRY_UDP_PORT": str(pick_free_ports(1)[0])}
+           "TELEMETRY_UDP_PORT": str(udp_port), "BROWSER": noop_browser}
     proc = subprocess.Popen([sys.executable, str(ROOT / "run_desktop.py")], cwd=ROOT, env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -740,6 +767,12 @@ def capture_launcher_window(shot: dict, scratch: Path) -> bytes:
         return buf.getvalue()
     finally:
         _stop(proc)
+        if owned:
+            for _ in range(5):   # the log file can stay locked a moment after exit
+                shutil.rmtree(data_dir, ignore_errors=True)
+                if not data_dir.exists():
+                    break
+                time.sleep(0.5)
 
 
 # --- orchestration -----------------------------------------------------------
