@@ -80,8 +80,9 @@ def test_shipped_manifest_parses():
     assert len(set(outputs)) == len(outputs)
     assert "fh6-settings.png" not in outputs
     for s in shots:
+        # the maintainer's own ids, or the placeholder for a shot not yet picked
         for i in cm.shot_ids(s):
-            assert i == cm.SENTINEL, s["output"]
+            assert i == cm.SENTINEL or (isinstance(i, int) and i > 0), s["output"]
         # every windowless shot has a capture recipe
         assert s["kind"] == "window" or Path(s["output"]).stem in cm.RECIPES, s["output"]
     assert "_comment" in json.loads((ROOT / "tools" / "media_shots.json").read_text(encoding="utf-8"))
@@ -208,6 +209,27 @@ def test_pace_uses_stored_deltas():
     assert d[3] == cm.GAP_CAP_S              # gap capped
     assert d[4] == pytest.approx(0.01)
     assert list(cm.pace([])) == []
+
+
+# --- framing -----------------------------------------------------------------
+class _FakePage:
+    def __init__(self, box):
+        self.box = box
+
+    def evaluate(self, _js, _sel):
+        return self.box
+
+
+def test_element_clip_pads_and_caps_height():
+    page = _FakePage({"x": 300.0, "y": 120.0, "width": 800.0, "height": 2400.0})
+    assert cm._element_clip(page, {}) is None
+    assert cm._element_clip(page, {"element": "#detail", "pad": 10, "max_height": 1500}) == \
+        {"x": 290.0, "y": 110.0, "width": 820.0, "height": 1500.0}
+    # padding never pushes the clip off the page's top-left corner
+    edge = _FakePage({"x": 0.0, "y": 4.0, "width": 50.0, "height": 50.0})
+    assert cm._element_clip(edge, {"element": "aside", "pad": 8})["x"] == 0.0
+    with pytest.raises(RuntimeError, match="#gone"):
+        cm._element_clip(_FakePage(None), {"element": "#gone"})
 
 
 # --- budget ------------------------------------------------------------------

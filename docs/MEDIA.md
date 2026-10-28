@@ -17,8 +17,10 @@ Committing the regenerated media needs **Git LFS** (`*.gif` is tracked by LFS, s
 
 ## Fill the manifest
 
-[tools/media_shots.json](../tools/media_shots.json) has one entry per output. Every
-id ships as `"REPLACE_ME"`; a shot that still has it is *refused* (the others run).
+[tools/media_shots.json](../tools/media_shots.json) has one entry per output. The
+committed ids point at sessions in the maintainer's own database; on any other
+database they are refused as missing, so swap in your own. Set an id to
+`"REPLACE_ME"` to park a shot: it is *refused* and the others run.
 
 - `session`: a session id; `laps`: lap ids **of that session** (`analysis-compare`
   takes two, the map shots one). Find both with
@@ -26,12 +28,23 @@ id ships as `"REPLACE_ME"`; a shot that still has it is *refused* (the others ru
   the analysis page's lap table order is the same).
 - `replay`: `start_s` / `end_s`, offsets into the session's frames, for the live
   shots (`hero.gif`, `accent-live-sunset.png`, `paused-chip.png`). Pick a stretch
-  with the car moving. Frames are replayed in stored real time.
+  with the car moving. Frames are replayed in stored real time, so a window that
+  covers one finished lap and part of the next (for a live delta and a drawn live
+  map) costs a couple of minutes. `capture_after_s` (hero) and `shoot_after_s`
+  (sunset) say how far into the replay to start filming. Replay shots run after
+  the analysis shots, because each replay records a session of its own into the
+  scratch copy and would otherwise top the session list.
 - `settings`: a partial `ls_settings` (accent, units, `defaultMapMode`...) injected
   before the page loads.
-- `viewport`, optional `crop` (`x`, `y`, `width`, `height`), and per-shot tunables:
+- `element`: a CSS selector to frame instead of the viewport (one panel, the
+  sidebar, an open dialog), with optional `pad` and `max_height` in px; it is shot
+  from the full page, so a panel below the fold is fine.
+- `viewport`, optional `crop` (`x`, `y`, `width`, `height`; wins over `element`),
+  and per-shot tunables:
   `stale_wait_s` (paused chip), `rotation_steps` (3D GIF), `capture_fps`, `fps`,
-  `scale`, `settle_ms`.
+  `scale`, `scale_factor` (device pixel ratio: 0.75 lays out at the full viewport
+  but renders smaller, which keeps a whole-dashboard GIF under budget),
+  `settle_ms`.
 - `launcher-window.png` needs no ids.
 
 ## Run

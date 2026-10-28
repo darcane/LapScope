@@ -471,8 +471,31 @@ def _clip(shot: dict) -> dict | None:
     return {k: c[k] for k in ("x", "y", "width", "height")} if c else None
 
 
+def _element_clip(page, shot: dict) -> dict | None:
+    """Page-coordinate box of shot['element'] (padded by 'pad', cut at
+    'max_height'), so a shot frames one panel instead of the viewport."""
+    sel = shot.get("element")
+    if not sel:
+        return None
+    box = page.evaluate(
+        "s => { const e = document.querySelector(s); if (!e) return null;"
+        " const r = e.getBoundingClientRect();"
+        " return {x: r.left + scrollX, y: r.top + scrollY, width: r.width, height: r.height}; }", sel)
+    if not box or not box["width"] or not box["height"]:
+        raise RuntimeError(f"element {sel!r} is not on the page")
+    pad = float(shot.get("pad", 0))
+    x, y = max(0.0, box["x"] - pad), max(0.0, box["y"] - pad)
+    height = box["height"] + 2 * pad
+    if shot.get("max_height"):
+        height = min(height, float(shot["max_height"]))
+    return {"x": x, "y": y, "width": box["width"] + 2 * pad, "height": height}
+
+
 def _shoot(page, shot: dict, clip: dict | None = None) -> bytes:
-    return page.screenshot(clip=clip or _clip(shot), type="png")
+    clip = clip or _clip(shot)
+    if clip is None and shot.get("element"):
+        return page.screenshot(clip=_element_clip(page, shot), full_page=True, type="png")
+    return page.screenshot(clip=clip, type="png")
 
 
 def _write_png(data: bytes) -> Callable[[Path], None]:
@@ -551,12 +574,15 @@ def shot_csv_export_choice(browser, server, shot, _db) -> bytes:
 
 
 def _screens_while(page, shot, work: Callable[[], None], fps: float) -> list[tuple[float, bytes]]:
-    """Screenshots at ~fps while work() runs in this thread's helper."""
+    """Screenshots at ~fps while work() runs in this thread's helper, starting
+    'capture_after_s' in (the live map needs a lap of points before it is worth
+    filming)."""
     frames: list[tuple[float, bytes]] = []
     done = threading.Event()
     t = threading.Thread(target=lambda: (work(), done.set()), daemon=True)
     start = time.monotonic()
     t.start()
+    done.wait(float(shot.get("capture_after_s", 0)))
     while not done.is_set():
         frames.append((time.monotonic() - start, _shoot(page, shot)))
         time.sleep(max(0.0, 1.0 / fps - 0.05))
@@ -780,6 +806,9 @@ def run(args: argparse.Namespace) -> int:
             runnable.append(s)
         else:
             results.append(Result(s["output"], "refused", v.reason))
+    # a replay records a session of its own into the scratch copy, and the
+    # analysis list shows the newest first: shoot the analysis page before any
+    runnable.sort(key=lambda s: "replay" in s)
 
     scratch = Path(tempfile.mkdtemp(prefix="lapscope-media-"))
     stack = contextlib.ExitStack()
