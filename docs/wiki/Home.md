@@ -2,13 +2,19 @@
 
 LapScope is a self-hosted telemetry dashboard and lap analyzer for **Forza
 Horizon 6**. The [README](https://github.com/darcane/LapScope#readme) covers
-everything most people need — what it does, installing, the in-game Data Out
-settings, and quick troubleshooting. **This wiki is the deep end:** the material
+what most people need — installing, the in-game Data Out settings, a one-line
+feature list, and quick troubleshooting. **This wiki is the deep end:** the material
 that would bloat the README but matters when something misbehaves or you want to
 know how the inference actually works.
 
 ## Using LapScope
 
+- **[Feature Tour](Feature-Tour)** — every screen with what each part does: the
+  live dashboard, lap comparison, 2D/3D maps, jumps, dirty-lap flags and edits,
+  routes, CSV export/import, settings, the Windows launcher.
+- **[Configuration](Configuration)** — environment variables, offline mode,
+  host names behind a reverse proxy, Docker network exposure, storage and
+  compacting, where the database and logs live.
 - **[Troubleshooting](Troubleshooting)** — the full no-packets diagnosis flow:
   UWP/Microsoft-Store loopback isolation, the LAN-IP fallback, the silent
   Docker IPv6-proxy port bug, loopback exemptions, busy ports, and what
@@ -33,7 +39,7 @@ know how the inference actually works.
 ## In the repo
 
 - [README](https://github.com/darcane/LapScope#readme) — install, in-game
-  setup, features.
+  setup, features at a glance.
 - [CONTRIBUTING.md](https://github.com/darcane/LapScope/blob/main/CONTRIBUTING.md)
   — workflow, branch rules, how to get changes in.
 - [ARCHITECTURE.md](https://github.com/darcane/LapScope/blob/main/ARCHITECTURE.md)

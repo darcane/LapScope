@@ -2,6 +2,8 @@
 
 **Using LapScope**
 
+- [Feature Tour](Feature-Tour)
+- [Configuration](Configuration)
 - [Troubleshooting](Troubleshooting)
 - [Capturing an Unrecognized Event](Capturing-an-Unrecognized-Event)
 

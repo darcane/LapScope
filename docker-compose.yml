@@ -10,7 +10,7 @@ services:
     environment:
       # set LS_KEEP_DISCARDED=1 in the host env to keep sessions with no
       # completed laps (for capturing event types the recorder doesn't
-      # recognize yet - see README "An event type isn't being recorded")
+      # recognize yet - see the wiki's "Capturing an Unrecognized Event")
       - LS_KEEP_DISCARDED=${LS_KEEP_DISCARDED:-0}
     restart: unless-stopped
     logging:

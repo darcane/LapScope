@@ -11,9 +11,13 @@ and the hard-won behavioral facts that must not be re-derived or regressed.
    responsibilities, data flow, DB schema, API surface, WebSocket contract,
    concurrency rules, simulator flags, and the cross-file invariants that must
    stay in sync. Consult it before touching anything structural.
-3. **[README.md](README.md)** — user-facing: setup, in-game settings, quick
-   troubleshooting. Kept deliberately basic — deep material goes on the wiki.
+3. **[README.md](README.md)** — user-facing: setup, in-game settings, a
+   one-line-per-feature list, quick troubleshooting, what it contacts. Kept
+   deliberately short (3–4 images, quick start near the top) — anything longer
+   goes on the wiki.
 4. **Wiki** (source: [docs/wiki/](docs/wiki/)) — user-facing deep dives:
+   Feature-Tour (the long feature descriptions + every screenshot),
+   Configuration (env vars, offline mode, hosts, storage, file locations),
    Troubleshooting, Capturing-an-Unrecognized-Event, FH6-Data-Out-Packet,
    Event-Detection (+ `_Sidebar`/`_Footer`). Mirrored to the GitHub wiki by
    [.github/workflows/wiki.yml](.github/workflows/wiki.yml) on every merge to
@@ -31,7 +35,9 @@ and the hard-won behavioral facts that must not be re-derived or regressed.
 
 Keep all five current: a detection change usually touches this file's model
 section **and** the wiki's Event-Detection page; a new endpoint/table belongs
-in ARCHITECTURE.md; a new user-visible feature in the README; a change to
+in ARCHITECTURE.md; a new user-visible feature gets a section on the wiki's
+Feature-Tour page (and a README line only if it's headline-worthy); a new env
+var a row on the wiki's Configuration page; a change to
 packet understanding, troubleshooting steps, or the capture workflow updates
 the matching `docs/wiki/` page **in the same PR**; an issue gets closed when
 its work lands, and new bugs/ideas discovered along the way get filed as
