@@ -345,6 +345,11 @@ def test_docs_references_resolve():
             assert f"media/{name}" not in text, f"{doc.name} references removed {name}"
     for name in DELETED:
         assert not (ROOT / "docs" / "media" / name).exists()
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    for name in ("launcher-window.png", "paused-chip.png", "browse-bar-menu.png", "csv-export-choice.png"):
-        assert f"docs/media/{name}" in readme
+    # every generated shot is shown somewhere: the README keeps a few, the
+    # wiki's Feature Tour the rest
+    shown = "".join(d.read_text(encoding="utf-8")
+                    for d in [ROOT / "README.md", *(ROOT / "docs" / "wiki").glob("*.md")])
+    for name in SHOT_LIST:
+        assert f"docs/media/{name}" in shown, name
+    for f in (ROOT / "docs" / "media").iterdir():
+        assert f"docs/media/{f.name}" in shown, f"{f.name} is in docs/media but nothing shows it"

@@ -28,10 +28,11 @@ Read these before making non-trivial changes:
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — what lives where: file
   responsibilities, data flow, DB schema, API surface, and the cross-file
   invariants that must stay in sync.
-- **[README.md](README.md)** — user-facing setup, in-game settings, and quick
-  troubleshooting.
-- **The [Wiki](../../wiki)** — user-facing deep dives (troubleshooting, the
-  capture workflow, packet internals, event detection). Authored in
+- **[README.md](README.md)** — user-facing setup, in-game settings, the
+  features at a glance, and quick troubleshooting. Kept short on purpose.
+- **The [Wiki](../../wiki)** — user-facing deep dives (the feature tour,
+  configuration, troubleshooting, the capture workflow, packet internals, event
+  detection). Authored in
   [docs/wiki/](docs/wiki/) and mirrored to the GitHub wiki on merge —
   `docs/wiki/` is the source of truth, so wiki changes go through normal PRs;
   never edit the wiki directly on GitHub.
@@ -52,6 +53,21 @@ docker compose up --build -d          # http://localhost:8000
 python tools/simulator.py --race 3 --duration 200
 ```
 
+The simulator is a single stdlib script that works against the exe or Docker
+alike. A few scenarios worth knowing (the full matrix is at the bottom of
+[AGENTS.md](AGENTS.md)):
+
+```bash
+python tools/simulator.py                                   # ~3.5 laps, 1 event
+python tools/simulator.py --freeroam 20 --events 2 --wet    # full feature test
+python tools/simulator.py --duration 180 --dirty            # contact + rewind flags
+python tools/simulator.py --race 3 --duration 200           # a race with a real finish
+python tools/simulator.py --sprint 75 --jumps               # point-to-point + jumps
+```
+
+It runs in real time, so the live dashboard moves immediately; a session with laps
+appears on the Analysis page ~15 s after the simulator finishes.
+
 > Static files are **baked into the image** — any change under `app/` needs a
 > `docker compose build` + restart to take effect. There is no bind mount for
 > code.
@@ -67,7 +83,9 @@ lands on it except a green, reviewed PR.
    - a detection change usually touches the AGENTS.md model section **and** the
      wiki's Event-Detection page,
    - a new endpoint/table belongs in ARCHITECTURE.md,
-   - a new user-visible feature belongs in the README,
+   - a new user-visible feature gets a section on the wiki's Feature-Tour page
+     (plus a one-line README bullet if it's headline-worthy), and a new env var
+     a row on the wiki's Configuration page,
    - changed packet facts, troubleshooting steps, or capture workflow update
      the matching page under `docs/wiki/` (published to the GitHub wiki on
      merge).

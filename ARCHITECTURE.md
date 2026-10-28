@@ -259,7 +259,7 @@ assert them here.
   `app/__init__.py`, reported on `/api/version` so the frontend skips its own
   GitHub call, and enforced by `_require_online()` on the two refresh endpoints,
   which 403 rather than 502 because nothing failed). All seven are in the
-  README's config table — they are public config keys.
+  config table on the wiki's Configuration page — they are public config keys.
 - Outbound calls, all optional and all fail-soft: the update check (browser →
   `api.github.com`) and the car / track list refreshes (server →
   `raw.githubusercontent.com`), each at most once a day per browser. Two
