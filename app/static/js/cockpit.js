@@ -13,7 +13,10 @@
 
    Each component owns a container and an update(f, dt): static geometry is
    built once (Pixi keeps unchanged Graphics on the GPU, so there is no
-   per-frame cost for it), and only values move per tick. */
+   per-frame cost for it), and only values move per tick. update() returns
+   true while one of its own animations is running (gear punch, delta pulse,
+   limiter flash, impact flash): the frame loop draws only when a packet
+   arrived or something is animating — see `frame()`. */
 
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 const params = new URLSearchParams(location.search);
@@ -171,6 +174,7 @@ function makeTach() {
       gear.text = gearText(f.gear);
       gear.tint = frac > REDLINE ? C.bad : accent;  // tint, not style.fill: no re-layout
       gear.scale.set(1 + 0.18 * punch * punch);
+      const busy = punch > 0;
 
       // before the first packet the waiting line takes the speed slot
       speed.visible = unit.visible = f !== IDLE_FRAME;
@@ -180,6 +184,7 @@ function makeTach() {
       powerUnitTxt.text = `POWER ${powerUnit().toUpperCase()}`;
       boost.text = fmtBoost(Math.max(0, f.boost || 0));
       boostUnitTxt.text = `BOOST ${boostUnit().toUpperCase()}`;
+      return busy;
     },
   };
 }
@@ -216,10 +221,11 @@ function makeShiftLights() {
       if (frac > 0.97 && !reducedMotion.matches) {
         limiterT += dt;
         lit.alpha = Math.floor(limiterT / 70) % 2 ? 0.25 : 1;
-      } else {
-        limiterT = 0;
-        lit.alpha = 1;
+        return true;  // the flash runs on the clock, not on packets
       }
+      limiterT = 0;
+      lit.alpha = 1;
+      return false;
     },
   };
 }
@@ -376,6 +382,7 @@ function makeDelta() {
       const e = raceEased();
       c.alpha = 0.3 + 0.7 * e;
       c.x = 28 * (1 - e);
+      return pulse > 0;
     },
   };
 }
@@ -447,12 +454,14 @@ function makeFriction() {
       // reduced motion: hold the flash, then cut it — no fade
       hitG.visible = age < IMPACT_FLASH_MS;
       hitG.alpha = reducedMotion.matches ? 1 : 1 - age / IMPACT_FLASH_MS;
+      const busy = hitG.visible;  // fading, or (reduced motion) waiting to be cut
       const [dx, dy] = pt(lat, lon);
       dotCtx.clear().circle(dx, dy, 8).fill(over ? C.bad : tot > 1.1 ? C.warn : C.text);
       read[0].text = lat.toFixed(2);
       read[1].text = lon.toFixed(2);
       read[2].text = tot.toFixed(2);
       read[2].tint = over ? C.bad : tot > 1.1 ? C.warn : C.text;
+      return busy;
     },
   };
 }
@@ -773,7 +782,7 @@ function makeDebug() {
       const rr = app.renderer;
       t.position.set(12, stage.clientHeight - 8);  // bottom-left, clear of the LEDs
       t.text = `PIXI ${PIXI.VERSION} · ${rr.name} · ${rr.canvas.width}×${rr.canvas.height} px`
-        + ` · res ${rr.resolution} · ${Math.round(app.ticker.FPS)} fps · update ${perf.updMs.toFixed(2)} ms`
+        + ` · res ${rr.resolution} · ${perf.fps} fps drawn · update ${perf.updMs.toFixed(2)} ms`
         + ` · layout ${currentLayout} · smooth ${SMOOTH_MS} ms`;
     },
   };
@@ -788,7 +797,8 @@ const IDLE_FRAME = {
 };
 
 let waiting;
-function tick(t) {
+/* One scene update; returns true if anything is mid-animation. */
+function tick(dtMs) {
   const f = live.frame;
   const stale = syncConn();
   waiting.root.visible = !f;
@@ -797,16 +807,49 @@ function tick(t) {
   root.alpha = f && stale ? 0.45 : 1;
   const frame = f || IDLE_FRAME;
   const raceTarget = frame.race_mode ? 1 : 0;
-  const step = t.deltaMS / RACE_EASE_MS;
+  const step = dtMs / RACE_EASE_MS;
   raceP = reducedMotion.matches ? raceTarget
     : raceTarget > raceP ? Math.min(raceTarget, raceP + step)
       : Math.max(raceTarget, raceP - step);
+  let busy = raceP !== raceTarget;
   const t0 = performance.now();
-  for (const c of components) if (c.slot.visible) c.update(frame, t.deltaMS);
+  for (const c of components) if (c.slot.visible && c.update(frame, dtMs)) busy = true;
   // exponentially averaged per-frame update cost (JS only: excludes the GPU)
   perf.updMs += (performance.now() - t0 - perf.updMs) * 0.05;
+  return busy;
 }
-const perf = { updMs: 0 };
+const perf = { updMs: 0, fps: 0, draws: 0, since: 0 };
+
+/* Packet-driven drawing. Both live pages used to redraw on every display
+   refresh, so a 120 Hz screen drew each 60 Hz packet twice — the step 6
+   bench measured that as most of the cockpit's cost. A frame is drawn only
+   when a packet arrived since the last one, an animation is running, or
+   something asked for it (resize, settings); otherwise once every IDLE_MS,
+   so the chip, the stale dim and the waiting line still move on a silent
+   stream. The game sends a packet per frame it renders, so a 120 fps player
+   still gets 120 Hz here — the rate follows the game, not a fixed cap. */
+const IDLE_MS = 250;
+let drawnMsg = -1, lastDraw = 0, busy = false, wanted = true;
+function requestDraw() { wanted = true; }
+function frame(now) {
+  requestAnimationFrame(frame);
+  const fresh = live.lastMsg !== drawnMsg;
+  if (!fresh && !busy && !wanted && now - lastDraw < IDLE_MS) return;
+  // dt for the animations and smoothing: real time since the last drawn
+  // frame, capped so a long idle doesn't fast-forward a fresh animation
+  const dt = lastDraw ? Math.min(now - lastDraw, IDLE_MS) : 16;
+  drawnMsg = live.lastMsg;
+  lastDraw = now;
+  wanted = false;
+  busy = tick(dt);
+  app.render();
+  perf.draws++;
+  if (now - perf.since >= 1000) {
+    perf.fps = Math.round(perf.draws * 1000 / (now - perf.since));
+    perf.draws = 0;
+    perf.since = now;
+  }
+}
 
 /* ---------- sizing ---------- */
 
@@ -859,6 +902,7 @@ function layout() {
   const s = fit(L);
   root.scale.set(s);
   root.position.set((w - L.w * s) / 2, (h - L.h * s) / 2);
+  requestDraw();
 }
 
 /* ---------- accessibility ---------- */
@@ -892,6 +936,7 @@ async function boot() {
       resolution: window.devicePixelRatio || 1,
       backgroundAlpha: 0,
       hello: false,  // the console banner links to pixijs.com
+      autoStart: false,  // no Pixi ticker: frame() decides when to draw
       width: Math.max(1, stage.clientWidth),
       height: Math.max(1, stage.clientHeight),
     });
@@ -931,13 +976,15 @@ async function boot() {
 
   layout();
   window.addEventListener("resize", rafThrottle(layout));
-  app.ticker.add(tick);
+  requestAnimationFrame(frame);
   setVisibleInterval(describe, 1000);
   describe();
 
   onSettingsChange(() => {
     accent = accentDef().accent;
+    requestDraw();
   });
+  reducedMotion.addEventListener("change", requestDraw);
   connect();
 }
 

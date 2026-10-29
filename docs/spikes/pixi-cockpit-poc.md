@@ -427,3 +427,34 @@ only when `liveMap.marks` moves or the fit changes. Verified with
 `--duration 180 --dirty --jumps` against both pages at once: identical path,
 1 contact, 9 jumps (all hard, as the simulator lands them), no console errors;
 ruff + 238 tests green (the stale-threshold test now reads `live.js`).
+
+### Adoption 2 — packet-driven drawing (done)
+
+Pixi's own ticker is off (`autoStart: false`); `frame()` runs on rAF and
+draws only when a packet arrived since the last drawn frame, a component's
+`update()` reports a running animation (gear punch, delta pulse, limiter
+flash, impact flash, race-mode slide), or a resize / settings change asked
+for it — otherwise once every 250 ms, so the chip, the stale dim and the
+waiting line still move on a silent stream. The rate follows the game: a
+player at 120 fps sends 120 Hz Data Out and gets 120 Hz here. `?debug` now
+shows frames *drawn* per second.
+
+Headless: idle 4 fps, stream → packet rate, stream stopped → 4 fps with the
+paused dim, limiter on a frozen stream keeps flashing (busy frames), resize
+redraws and switches layout. Same Edge bench as step 6 (`--race 8 --jumps`,
+60 Hz packets, 120 Hz display), two rounds:
+
+| per second | classic | cockpit before | cockpit now |
+|---|---|---|---|
+| frames drawn | 122 | 122 | 60 / 94 |
+| main-thread task time | 134 / 138 ms | 184 / 193 ms | 150 / 151 ms |
+| — of it script | 51 / 54 ms | 166 / 174 ms | 131 / 133 ms |
+| renderer process CPU | 16 / 25 % | 26 / 21 % | 18 / 24 % |
+| GPU process CPU | 31 / 45 % | 47 / 32 % | 26 / 29 % |
+
+Main-thread time fell ~20 % and the cockpit now sits ~10 % above the classic
+page, with less GPU-process CPU. It does not reach the fixed-60 probe's
+131 ms: the `--jumps` run fires an impact flash every few seconds, and a
+running flash is drawn at the display's full rate (the 94 fps round) — the
+probe capped animations to 60 as well. That is the intended trade: motion
+gets the display's smoothness, steady telemetry costs only the packet rate.
