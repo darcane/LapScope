@@ -316,7 +316,7 @@ reduced motion) while the readouts turn red and still show the true size.
 
 ### Step 6 — measurements
 
-Bench: Edge 140-series (Chromium), headed, real GPU (RTX 5070 Ti, Ryzen,
+Bench: Edge 156 (Chromium), headed, real GPU (RTX 5070 Ti, AMD Zen 5 CPU,
 Windows 11), 1600×900 viewport at DPR 1, 120 Hz display. One simulator race
 (`--race 8 --jumps`, 60 Hz packets) and the two pages alternated A B A B,
 25 s windows, one page open at a time. Renderer metrics from CDP
