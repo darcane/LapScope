@@ -1,6 +1,6 @@
 # Spike: PixiJS cockpit (POC)
 
-Branch: `feat/pixi-cockpit-poc`. Status: **step 1 done** (see Progress at the
+Branch: `feat/pixi-cockpit-poc`. Status: **step 2 done** (see Progress at the
 bottom).
 
 ## Question the spike answers
@@ -191,3 +191,30 @@ and motion ideas, drop Pixi), or drop.
 - Noted for later: on a portrait phone the 1600×600 frame leaves most of the
   screen empty — the stacked portrait layout is a real requirement, not a
   nicety.
+
+### Step 2 — feed + tach, gear, speed, shift lights (done)
+
+- Live feed copied from `dashboard.js` (wss on https, backoff, drop frames
+  while hidden, connection chip incl. PAUSED). A stalled stream dims the
+  whole scene to 45 % rather than freezing it at full brightness.
+- Components are `{ root, update(f, dtMs) }` objects ticked from one
+  `app.ticker` callback. Same thresholds as the classic dashboard: tach amber
+  > 78 %, red > 90 %; LEDs 4 green / 3 amber / 3 red from 55 % rpm; limiter
+  flash > 97 % at 70 ms (held lit under reduced motion).
+- Before the first packet the scene shows an idle dial plus one
+  "waiting for telemetry" line (setup steps stay on the Live page).
+- `?smooth=<ms>` (default 16) sets the rpm smoothing time constant;
+  `?debug` shows renderer / resolution / fps in screen space.
+- **Finding — `cacheAsTexture` is not needed (or wanted).** Unchanged
+  `Graphics` already stay on the GPU with no per-frame rebuild, and a cached
+  texture would blur whenever the fit-to-window scale grows. The tach scale is
+  rebuilt only when `engine_max_rpm` changes (a car change).
+- **Finding — colour changes go through `tint`.** `BitmapText` is installed
+  white; setting `style.fill` re-lays out the glyphs, `tint` is free.
+- LED geometry is redrawn only when the lit set changes (a bitmask compare),
+  not every tick.
+- Verified headless against `simulator.py --port 9998 --race 2`: gear, rpm,
+  speed and the 1 Hz aria-label track the stream; chip live → paused and the
+  scene dims after the stream stops. Limiter, LED fill and gear punch checked
+  with injected frames (the simulator never passes ~94 % rpm), both with and
+  without reduced motion. No console errors.
