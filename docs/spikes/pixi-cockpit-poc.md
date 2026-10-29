@@ -1,6 +1,6 @@
 # Spike: PixiJS cockpit (POC)
 
-Branch: `feat/pixi-cockpit-poc`. Status: **step 4 done** (see Progress at the
+Branch: `feat/pixi-cockpit-poc`. Status: **step 5 done** (see Progress at the
 bottom).
 
 ## Question the spike answers
@@ -264,3 +264,42 @@ and motion ideas, drop Pixi), or drop.
   to 1.22, suspension to 0.81, trail filling to 90). No console errors.
 - Desktop now has the whole first section. Portrait phones still letterbox
   it into a thin strip — the stacked layout is part of step 5.
+
+### Step 5 — map, trace, layouts, reduced motion, fallback (done)
+
+- **Section 2:** live track map (left) and 12 s input trace (right) under
+  the cluster. The map follows the classic path rules (race / time attack
+  only unless Settings opts free roam in; new session unless the same race
+  resumed; > 250 m jump resets; ≥ 3 m spacing; thinning past 4000 points).
+  **Contact sparks and jump glyphs are not ported**: their detection mirrors
+  `laps.py` and would become a third copy — it belongs in a shared
+  `live.js`, the first refactor if the cockpit is adopted.
+- **Finding — Pixi re-tessellates on every geometry change.** A 4000-point
+  path rebuilt per new point would be the scene's biggest cost, so the path
+  lives in world coordinates in frozen 256-point chunks (only the open one
+  rebuilds) and the fit-to-box is the container's transform. Stroke width
+  scales with that transform, so chunks are rebuilt only when the fit scale
+  drifts > 15 %. The trace redraws only when a sample arrives, not per
+  display frame. Canvas 2D needed none of this — a real complexity cost on
+  the verdict's side of the ledger.
+- **Layouts:** components draw in one design space and sit in slot
+  containers that a layout offsets (so a slot move never fights a
+  component's own slide animation). Four layouts — `wide` 1600×900,
+  `tall` 800×1950 (portrait re-stack), and compact versions without
+  section 2. Pick: a readable (scale ≥ 0.5) layout with the map first,
+  wide vs tall by screen fill; compact only if none is; else largest text.
+  Verified: 1600×960 / 1280×800@2 / 1600×640 → wide, 820×1180 tablet →
+  tall, 390×844 phone → tall-compact; live resize switches layout, no page
+  scroll anywhere. Hidden slots are skipped in the tick.
+- **Finding — Pixi 8.22 falls back to Canvas2D on its own.** With 3D APIs
+  disabled the whole scene still renders (renderer `canvas`), minus the blur
+  glows (filters are skipped). The failure overlay is reworded for the case
+  where nothing at all can start.
+- Reduced motion re-checked across everything: race transition snaps, no
+  gear punch, no delta pulse, limiter held lit.
+- Before the first packet the tires stay dark shells instead of a
+  misleading green "0.0".
+- `?debug` moved to the bottom-left and now shows the JS update cost per
+  frame (exponential average) and the active layout. Headless: 0.4–0.75 ms
+  per frame with every component live — CPU/GPU numbers in a real browser
+  are step 6.

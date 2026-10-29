@@ -4,16 +4,17 @@
    PixiJS 8.22.0 (MIT), vendored byte-for-byte from the npm tarball as
    js/vendor/pixi.min.js — no CDN, the app must work offline.
 
-   Everything is laid out in a fixed design space (DESIGN) and the whole scene
-   is scaled to fit the stage, so the proportions never break at any window
-   size; the renderer itself always runs at the stage's CSS size × DPR, so the
-   scaled scene stays crisp.
+   Every component is drawn in one fixed design space: the cockpit cluster in
+   1600×600, the map + input trace strip below it (y 600–900). A LAYOUT then
+   places each component's slot (wide: as drawn; tall: re-stacked for
+   portrait screens) and the whole scene is scaled to fit the stage, so the
+   proportions never break; the renderer itself always runs at the stage's
+   CSS size × DPR, so the scaled scene stays crisp.
 
    Each component owns a container and an update(f, dt): static geometry is
    built once (Pixi keeps unchanged Graphics on the GPU, so there is no
    per-frame cost for it), and only values move per tick. */
 
-const DESIGN = { w: 1600, h: 600 };
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 const params = new URLSearchParams(location.search);
 // value smoothing time constant (ms). Telemetry: lag is a bug, so the default
@@ -39,8 +40,56 @@ const components = [];
 
 const STALE_MS = 2500;
 const G = 9.80665;
-const feed = { frame: null, lastMsg: 0, connected: false, connLabel: null, trail: [] };
+const feed = { frame: null, lastMsg: 0, connected: false, connLabel: null, trail: [], strip: [] };
 const TRAIL_LEN = 90;  // friction-circle history, ~1.5 s at 60 Hz (as the classic dashboard)
+const STRIP_LEN = 12 * 60;  // input trace, ~12 s at 60 Hz (as the classic dashboard)
+feed.stripN = 0;  // samples ever pushed: the trace redraws only when this moves
+
+/* Live track map: the classic dashboard's path rules — races / time attacks
+   only (free roam when Settings opts in), fresh on a new session unless the
+   same race resumed after a pause, fresh on a > 250 m single-frame jump (grid
+   snap / restart), a point every ≥ 3 m, thinned past LIVEMAP_CAP. Contact
+   sparks and jump glyphs are NOT ported: their detection (mirrored from
+   laps.py) would become a third copy — that waits for a shared live.js. */
+const LIVEMAP_CAP = 4000;
+const liveMap = { pts: [], last: null, minDist: 3, session: null, gen: 0,
+  minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity };
+
+function resetLiveMap(sessionId) {
+  Object.assign(liveMap, { pts: [], last: null, minDist: 3, session: sessionId,
+    minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity });
+  liveMap.gen++;  // tells the renderer to drop everything it built
+}
+
+function mapActive(f) {
+  return f.race_mode || getSettings().freeroamMap;
+}
+
+function feedLiveMap(f) {
+  if (f.session_id == null || !mapActive(f)) return;
+  if (f.session_id !== liveMap.session) {
+    const resumed = liveMap.last != null
+      && Math.hypot(f.pos_x - liveMap.last[0], f.pos_z - liveMap.last[1]) < 250
+      && f.current_race_time > 5;
+    if (resumed) liveMap.session = f.session_id;
+    else resetLiveMap(f.session_id);
+  }
+  const x = f.pos_x, z = f.pos_z;
+  if (liveMap.last) {
+    const jump = Math.hypot(x - liveMap.last[0], z - liveMap.last[1]);
+    if (jump < liveMap.minDist) return;
+    if (jump > 250) resetLiveMap(f.session_id);
+  }
+  liveMap.last = [x, z];
+  liveMap.pts.push(liveMap.last);
+  liveMap.minX = Math.min(liveMap.minX, x); liveMap.maxX = Math.max(liveMap.maxX, x);
+  liveMap.minZ = Math.min(liveMap.minZ, z); liveMap.maxZ = Math.max(liveMap.maxZ, z);
+  if (liveMap.pts.length > LIVEMAP_CAP) {
+    liveMap.pts = liveMap.pts.filter((_, i) => i % 2 === 0);
+    liveMap.minDist *= 2;
+    liveMap.gen++;  // thinning rewrote the point list
+  }
+}
 
 const RECONNECT_MIN = 1500;
 const RECONNECT_MAX = 15000;
@@ -58,7 +107,11 @@ function connect() {
     if (f.is_race_on) {
       feed.trail.push([f.accel_x / G, f.accel_z / G]);
       if (feed.trail.length > TRAIL_LEN) feed.trail.shift();
+      feed.strip.push([f.accel / 255, f.brake / 255, f.steer / 127]);
+      if (feed.strip.length > STRIP_LEN) feed.strip.shift();
+      feed.stripN++;
     }
+    feedLiveMap(f);
   };
   ws.onopen = () => {
     feed.connected = true;
@@ -236,7 +289,7 @@ function makeTach() {
    `blink`); with reduced motion they hold lit instead. */
 function makeShiftLights() {
   const N = 10, W = 52, H = 16, GAP = 14;
-  const x0 = DESIGN.w / 2 - (N * W + (N - 1) * GAP) / 2, y = 22;
+  const x0 = TACH.cx - (N * W + (N - 1) * GAP) / 2, y = 22;
   const colors = [...Array(4).fill(C.good), ...Array(3).fill(C.warn), ...Array(3).fill(C.bad)];
   const c = new PIXI.Container();
   const off = new PIXI.Graphics();
@@ -554,16 +607,17 @@ function makeTires() {
   return {
     root: c,
     update(f) {
-      const slip = f.tire_combined_slip || [0, 0, 0, 0];
+      // no slip data yet (idle scene): leave the dark shells, don't paint "0.0" green
+      const slip = f.tire_combined_slip || null;
       const temps = f.tire_temp || null;
       const susp = f.norm_susp_travel || [0, 0, 0, 0];
       tireCtx.clear();
       hotCtx.clear();
       suspCtx.clear();
       for (let i = 0; i < 4; i++) {
-        const [x, y] = pos[i], s = slip[i] || 0;
-        (s > 1.0 ? hotCtx : tireCtx).roundRect(x - tw / 2, y - th / 2, tw, th, 9).fill(slipHex(s));
-        slipTxt[i].text = s.toFixed(1);
+        const [x, y] = pos[i], s = slip ? slip[i] || 0 : null;
+        if (s != null) (s > 1.0 ? hotCtx : tireCtx).roundRect(x - tw / 2, y - th / 2, tw, th, 9).fill(slipHex(s));
+        slipTxt[i].text = s == null ? "" : s.toFixed(1);
         const tF = temps ? temps[i] : null;
         tempTxt[i].text = tF == null ? "–" : fmtTireTemp(tF);
         tempTxt[i].tint = tF == null ? C.muted : tF < 160 ? "#7fb2ff" : tF > 230 ? "#ff8a5d" : C.text;
@@ -579,6 +633,143 @@ function makeTires() {
         const y = txt === "UNDERSTEER" ? cy - py : cy + py;
         axleCtx.moveTo(cx - px, y).lineTo(cx + px, y).stroke({ width: 6, color: col, alpha: 0.7, cap: "round" });
       }
+    },
+  };
+}
+
+/* Section 2, left: the live track map in a 720×260 box.
+
+   Pixi re-tessellates a Graphics whenever its geometry changes, so a 4000-
+   point path rebuilt on every new point would be the most expensive thing
+   in the scene. Instead the path lives in WORLD coordinates in chunks of
+   CHUNK points: finished chunks are frozen, only the open one is rebuilt
+   when a point lands, and fitting the track into the box is just the world
+   container's transform. The catch is stroke width, which scales with that
+   transform — so chunks are built at width / scale and rebuilt only when the
+   fit scale drifts > 15 % from what they were built at (the bounds stop
+   growing after the first lap). */
+const MAP_BOX = { x: 40, y: 620, w: 720, h: 260 };
+const MAP_CHUNK = 256;
+function makeMap() {
+  const B = MAP_BOX, pad = 18, padTop = 40;  // padTop: clear of the title row
+  const c = new PIXI.Container();
+  const frame = new PIXI.Graphics()
+    .roundRect(B.x, B.y, B.w, B.h, 14).fill({ color: C.panel, alpha: 0.5 }).stroke({ width: 1.5, color: C.edge });
+  const title = bitmapText("TRACK MAP", 18, C.muted, 0, 0.5);
+  title.position.set(B.x + 16, B.y + 18);
+  const hint = bitmapText("THE TRACK DRAWS HERE ONCE AN EVENT STARTS", 20, C.muted);
+  hint.position.set(B.x + B.w / 2, B.y + B.h / 2);
+  const clip = new PIXI.Graphics().rect(B.x, B.y, B.w, B.h).fill(0xffffff);
+  const world = new PIXI.Container();
+  world.mask = clip;
+  const carCtx = new PIXI.GraphicsContext();
+  c.addChild(frame, title, hint, clip, world, glowing(carCtx, 8));
+
+  let chunks = [], builtGen = -1, builtLen = 0, builtScale = 0;
+  const strokeFor = (sc) => ({ width: 2.5 / sc, color: accent, alpha: 0.6, join: "round", cap: "round" });
+  function drawChunk(g, i0, i1, sc) {
+    const pts = liveMap.pts;
+    g.clear().moveTo(pts[i0][0], pts[i0][1]);
+    for (let i = i0 + 1; i <= i1; i++) g.lineTo(pts[i][0], pts[i][1]);
+    g.stroke(strokeFor(sc));
+  }
+  function rebuildAll(sc) {
+    world.removeChildren().forEach((ch) => ch.destroy());
+    chunks = [];
+    builtLen = 0;
+    builtScale = sc;
+  }
+
+  return {
+    root: c,
+    update(f) {
+      const pts = liveMap.pts, n = pts.length;
+      hint.visible = n < 2;
+      carCtx.clear();
+      if (n < 2) {
+        if (chunks.length) rebuildAll(0);
+        return;
+      }
+      const spanX = Math.max(liveMap.maxX - liveMap.minX, 1), spanZ = Math.max(liveMap.maxZ - liveMap.minZ, 1);
+      const sc = Math.min((B.w - 2 * pad) / spanX, (B.h - pad - padTop) / spanZ);
+      // world (x, z) -> box: x right, z up (same handedness as the classic map)
+      world.scale.set(sc, -sc);
+      world.position.set(B.x + (B.w - spanX * sc) / 2 - liveMap.minX * sc,
+        B.y + padTop + (B.h - pad - padTop + spanZ * sc) / 2 + liveMap.minZ * sc);
+      if (liveMap.gen !== builtGen || Math.abs(sc / builtScale - 1) > 0.15) {
+        rebuildAll(sc);
+        builtGen = liveMap.gen;
+      }
+      if (n !== builtLen) {
+        // chunk k covers points [k*CHUNK, (k+1)*CHUNK] — sharing an end point
+        // with the next, so the line has no gaps
+        for (let k = Math.max(0, chunks.length - 1); k * MAP_CHUNK < n - 1; k++) {
+          if (!chunks[k]) { chunks[k] = new PIXI.Graphics(); world.addChild(chunks[k]); }
+          drawChunk(chunks[k], k * MAP_CHUNK, Math.min(n - 1, (k + 1) * MAP_CHUNK), builtScale);
+        }
+        builtLen = n;
+      }
+      // start point + car, in box coordinates (constant size whatever the fit)
+      const X = (x) => world.position.x + x * sc, Y = (z) => world.position.y - z * sc;
+      carCtx.circle(X(pts[0][0]), Y(pts[0][1]), 5).fill(C.good);
+      if (mapActive(f) && f.session_id != null && f.pos_x != null) {
+        const cx = X(f.pos_x), cy = Y(f.pos_z), hx = Math.sin(f.yaw), hz = Math.cos(f.yaw);
+        carCtx.circle(cx, cy, 6).fill(C.text)
+          .moveTo(cx + hx * 9, cy - hz * 9).lineTo(cx + hx * 18, cy - hz * 18)
+          .stroke({ width: 3, color: C.text, cap: "round" });
+      }
+    },
+  };
+}
+
+/* Section 2, right: the last ~12 s of throttle (green), brake (red) and
+   steering (grey, centred), newest at the right edge. Redrawn only when a
+   sample arrives — at most once per packet, not per display frame. */
+const TRACE_BOX = { x: 800, y: 620, w: 760, h: 260 };
+function makeTrace() {
+  const B = TRACE_BOX, pad = 34, top = B.y + pad, bot = B.y + B.h - 14, H = bot - top;
+  const c = new PIXI.Container();
+  const frame = new PIXI.Graphics()
+    .roundRect(B.x, B.y, B.w, B.h, 14).fill({ color: C.panel, alpha: 0.5 }).stroke({ width: 1.5, color: C.edge });
+  for (const fy of [0.25, 0.5, 0.75]) frame.moveTo(B.x + 12, top + H * fy).lineTo(B.x + B.w - 12, top + H * fy);
+  frame.stroke({ width: 1, color: C.edge });
+  const legend = [["INPUT TRACE", C.muted], ["THROTTLE", C.good], ["BRAKE", C.bad], ["STEERING", "#93a3b8"]];
+  let lx = B.x + 16;
+  const labels = legend.map(([txt, col]) => {
+    const t = bitmapText(txt, 18, col, 0, 0.5);
+    t.position.set(lx, B.y + 18);
+    lx += t.width + 22;
+    return t;
+  });
+  const linesCtx = new PIXI.GraphicsContext();
+  c.addChild(frame, ...labels, new PIXI.Graphics(linesCtx));
+
+  let drawnN = -1;
+  return {
+    root: c,
+    update() {
+      const buf = feed.strip;
+      if (feed.stripN === drawnN) return;
+      drawnN = feed.stripN;
+      linesCtx.clear();
+      if (buf.length < 2) return;
+      const step = (B.w - 24) / STRIP_LEN, x0 = B.x + B.w - 12 - (buf.length - 1) * step;
+      const y = (v) => bot - v * H;
+      const series = (idx, map) => {
+        linesCtx.moveTo(x0, map(buf[0][idx]));
+        for (let i = 1; i < buf.length; i++) linesCtx.lineTo(x0 + i * step, map(buf[i][idx]));
+      };
+      // areas under throttle and brake, then the lines
+      for (const [idx, col] of [[0, C.good], [1, C.bad]]) {
+        series(idx, y);
+        linesCtx.lineTo(x0 + (buf.length - 1) * step, bot).lineTo(x0, bot).fill({ color: col, alpha: 0.09 });
+      }
+      series(2, (v) => y(0.5 + v / 2));
+      linesCtx.stroke({ width: 1.5, color: "#93a3b8" });
+      series(0, y);
+      linesCtx.stroke({ width: 2.5, color: C.good, join: "round" });
+      series(1, y);
+      linesCtx.stroke({ width: 2.5, color: C.bad, join: "round" });
     },
   };
 }
@@ -599,14 +790,15 @@ function makeWaiting() {
    space (app.stage, unscaled), not in the design space: a letterboxed scene
    would otherwise put it on top of the shift lights. */
 function makeDebug() {
-  const t = bitmapText("", 22, C.muted, 0, 0);
-  t.position.set(16, 12);
+  const t = bitmapText("", 22, C.muted, 0, 1);
   return {
     root: t,
     update() {
       const rr = app.renderer;
+      t.position.set(12, stage.clientHeight - 8);  // bottom-left, clear of the LEDs
       t.text = `PIXI ${PIXI.VERSION} · ${rr.name} · ${rr.canvas.width}×${rr.canvas.height} px`
-        + ` · res ${rr.resolution} · ${Math.round(app.ticker.FPS)} fps · smooth ${SMOOTH_MS} ms`;
+        + ` · res ${rr.resolution} · ${Math.round(app.ticker.FPS)} fps · update ${perf.updMs.toFixed(2)} ms`
+        + ` · layout ${currentLayout} · smooth ${SMOOTH_MS} ms`;
     },
   };
 }
@@ -634,10 +826,36 @@ function tick(t) {
   raceP = reducedMotion.matches ? raceTarget
     : raceTarget > raceP ? Math.min(raceTarget, raceP + step)
       : Math.max(raceTarget, raceP - step);
-  for (const c of components) c.update(frame, t.deltaMS);
+  const t0 = performance.now();
+  for (const c of components) if (c.slot.visible) c.update(frame, t.deltaMS);
+  // exponentially averaged per-frame update cost (JS only: excludes the GPU)
+  perf.updMs += (performance.now() - t0 - perf.updMs) * 0.05;
 }
+const perf = { updMs: 0 };
 
 /* ---------- sizing ---------- */
+
+/* Where each slot goes, per layout, as an offset from where its component
+   draws itself (a slot not listed is hidden — and not updated). "tall"
+   re-stacks the cluster for portrait screens: dial, then timing, then delta,
+   then friction circle beside the tire car, then map, then trace. */
+const SECTION1 = ["cluster", "timing", "delta", "friction", "tires"];
+const WIDE = Object.fromEntries([...SECTION1, "map", "trace"].map((k) => [k, [0, 0]]));
+const TALL = {
+  cluster: [-400, 0], timing: [0, 540], delta: [-935, 820],
+  friction: [0, 764], tires: [-720, 764], map: [0, 770], trace: [-780, 1050],
+};
+const pick = (o, keys) => Object.fromEntries(keys.map((k) => [k, o[k]]));
+const LAYOUTS = [  // in order of preference
+  { name: "wide", w: 1600, h: 900, slots: WIDE },
+  { name: "tall", w: 800, h: 1950, slots: TALL },
+  { name: "wide-compact", w: 1600, h: 600, slots: pick(WIDE, SECTION1) },
+  { name: "tall-compact", w: 800, h: 1370, slots: pick(TALL, SECTION1) },
+];
+// below this scale 22 px design text drops under ~11 px: such a layout is
+// only used when nothing else is readable either
+const MIN_SCALE = 0.5;
+let currentLayout = null;
 
 /* Our own handler instead of Pixi's `resizeTo`: that one never re-reads
    devicePixelRatio (browser zoom / another monitor, issue #74) and isn't
@@ -645,9 +863,27 @@ function tick(t) {
 function layout() {
   const w = Math.max(1, stage.clientWidth), h = Math.max(1, stage.clientHeight);
   app.renderer.resize(w, h, window.devicePixelRatio || 1);
-  const s = Math.min(w / DESIGN.w, h / DESIGN.h);
+  const fit = (L) => Math.min(w / L.w, h / L.h);
+  // The map + trace are worth keeping whenever they fit readably, so the
+  // full layouts are tried first and the compact ones only after. Within a
+  // tier, wide vs tall goes to whichever fills more of the screen (a portrait
+  // tablet can just fit "wide" readably, letterboxed in a band); ties keep
+  // LAYOUTS order. Nothing readable at all: the biggest text wins.
+  const fill = (L) => fit(L) ** 2 * L.w * L.h / (w * h);
+  const best = (tier) => tier.reduce((a, b) => (fill(b) > fill(a) + 0.02 ? b : a));
+  const readable = (full) => LAYOUTS.filter((l) => fit(l) >= MIN_SCALE && ("map" in l.slots) === full);
+  const tier = readable(true).length ? readable(true) : readable(false);
+  const L = tier.length ? best(tier) : LAYOUTS.reduce((a, b) => (fit(b) > fit(a) ? b : a));
+  currentLayout = L.name;
+  for (const c of components) {
+    if (!c.slotName) continue;
+    const off = L.slots[c.slotName];
+    c.slot.visible = !!off;
+    if (off) c.slot.position.set(off[0], off[1]);
+  }
+  const s = fit(L);
   root.scale.set(s);
-  root.position.set((w - DESIGN.w * s) / 2, (h - DESIGN.h * s) / 2);
+  root.position.set((w - L.w * s) / 2, (h - L.h * s) / 2);
 }
 
 /* ---------- accessibility ---------- */
@@ -687,7 +923,7 @@ async function boot() {
   } catch (e) {
     document.getElementById("cockpit-fail-why").textContent = String(e && e.message || e);
     document.getElementById("cockpit-fail").classList.remove("hidden");
-    stage.setAttribute("aria-label", "Cockpit unavailable — no WebGL");
+    stage.setAttribute("aria-label", "Cockpit unavailable — no renderer could start");
     return;
   }
   stage.appendChild(app.canvas);
@@ -696,13 +932,24 @@ async function boot() {
   root = new PIXI.Container();
   app.stage.addChild(root);
   waiting = makeWaiting();
-  for (const c of [makeShiftLights(), makeInputs(), makeTach(), makeTiming(), makeDelta(),
-    makeFriction(), makeTires(), waiting]) {
+  const slots = {};
+  const place = (slotName, c) => {
+    if (!slots[slotName]) root.addChild(slots[slotName] = new PIXI.Container());
+    c.slotName = slotName;
+    c.slot = slots[slotName];
+    c.slot.addChild(c.root);
     components.push(c);
-    root.addChild(c.root);
-  }
+  };
+  for (const c of [makeShiftLights(), makeInputs(), makeTach(), waiting]) place("cluster", c);
+  place("timing", makeTiming());
+  place("delta", makeDelta());
+  place("friction", makeFriction());
+  place("tires", makeTires());
+  place("map", makeMap());
+  place("trace", makeTrace());
   if (DEBUG) {
     const d = makeDebug();
+    d.slot = d.root;  // screen space, always visible
     components.push(d);
     app.stage.addChild(d.root);
   }
@@ -713,7 +960,10 @@ async function boot() {
   setVisibleInterval(describe, 1000);
   describe();
 
-  onSettingsChange(() => { accent = accentDef().accent; });
+  onSettingsChange(() => {
+    accent = accentDef().accent;
+    if (!getSettings().freeroamMap) resetLiveMap(liveMap.session);
+  });
   connect();
 }
 
