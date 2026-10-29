@@ -90,7 +90,7 @@ async function installFonts() {
   PIXI.BitmapFont.install({
     name: "ls-display",
     style: { fontFamily: "Rajdhani", fontWeight: "700", fontSize: 64, fill: "#ffffff" },
-    chars: [[" ", "~"], "−·°"],
+    chars: [[" ", "~"], "−–—·°×"],  // every non-ASCII glyph used must be listed
     resolution: 2,
   });
 }
@@ -147,7 +147,16 @@ function makeTach() {
   speed.position.set(cx, cy + r - 22);
   const unit = bitmapText(speedUnit(), 26, C.muted);
   unit.position.set(cx, cy + r + 34);
-  c.addChild(scale, value, gear, rpmTxt, speed, unit);
+  // power and boost flank the speed, outside the dial's open bottom
+  const power = bitmapText("0", 44, C.text);
+  power.position.set(cx - 330, cy + r - 4);
+  const powerUnitTxt = bitmapText("", 22, C.muted);
+  powerUnitTxt.position.set(cx - 330, cy + r + 30);
+  const boost = bitmapText("0.0", 44, C.text);
+  boost.position.set(cx + 330, cy + r - 4);
+  const boostUnitTxt = bitmapText("", 22, C.muted);
+  boostUnitTxt.position.set(cx + 330, cy + r + 30);
+  c.addChild(scale, value, gear, rpmTxt, speed, unit, power, powerUnitTxt, boost, boostUnitTxt);
 
   let builtMax = null, rpmS = null, lastGear = null, punch = 0;
 
@@ -202,8 +211,14 @@ function makeTach() {
       gear.tint = frac > REDLINE ? C.bad : accent;  // tint, not style.fill: no re-layout
       gear.scale.set(1 + 0.18 * punch * punch);
 
+      // before the first packet the waiting line takes the speed slot
+      speed.visible = unit.visible = f !== IDLE_FRAME;
       speed.text = String(Math.round(Math.max(0, speedFromMps(f.speed))));
       unit.text = speedUnit().toUpperCase();
+      power.text = powerFromW(Math.max(0, f.power || 0)).toFixed(0);
+      powerUnitTxt.text = `POWER ${powerUnit().toUpperCase()}`;
+      boost.text = fmtBoost(Math.max(0, f.boost || 0));
+      boostUnitTxt.text = `BOOST ${boostUnit().toUpperCase()}`;
     },
   };
 }
@@ -248,12 +263,172 @@ function makeShiftLights() {
   };
 }
 
-/* Before the first packet: the scene stays up (idle dial) with one line
-   saying why nothing moves. The full setup instructions live on the Live page. */
+/* Throttle and brake as brackets on either side of the dial (brake fills up
+   the left one, throttle up the right), steering as a short arc over the
+   top with a centre notch — a wheel's top marker. */
+const INPUT_R = TACH.r + 44;
+const PEDAL_SPAN = Math.PI * 0.44;                    // ~80° per bracket
+const BRK0 = ARC0, THR0 = Math.PI * 0.25;             // both start at the dial's open bottom
+const STEER_MID = -Math.PI / 2, STEER_HALF = Math.PI / 6;
+
+function makeInputs() {
+  const { cx, cy } = TACH, R = INPUT_R, W = 12;
+  const at = (a, rr) => [cx + Math.cos(a) * rr, cy + Math.sin(a) * rr];
+  const c = new PIXI.Container();
+  const track = new PIXI.Graphics()
+    .arc(cx, cy, R, BRK0, BRK0 + PEDAL_SPAN).stroke({ width: W, color: C.track, cap: "round" })
+    .arc(cx, cy, R, THR0, THR0 - PEDAL_SPAN, true).stroke({ width: W, color: C.track, cap: "round" })
+    .arc(cx, cy, R, STEER_MID - STEER_HALF, STEER_MID + STEER_HALF).stroke({ width: 6, color: C.track, cap: "round" })
+    .moveTo(cx, cy - R - 13).lineTo(cx, cy - R + 13).stroke({ width: 2, color: C.muted });
+  const fillCtx = new PIXI.GraphicsContext();
+  const brkLbl = bitmapText("BRK", 22, C.muted);
+  brkLbl.position.set(...at(BRK0, R + 30));
+  const thrLbl = bitmapText("THR", 22, C.muted);
+  thrLbl.position.set(...at(THR0, R + 30));
+  c.addChild(track, glowing(fillCtx, 8), brkLbl, thrLbl);
+
+  let th = null, br = null, st = null;
+  return {
+    root: c,
+    update(f, dt) {
+      th = smooth(th, Math.max(0, Math.min(1, (f.accel || 0) / 255)), dt);
+      br = smooth(br, Math.max(0, Math.min(1, (f.brake || 0) / 255)), dt);
+      st = smooth(st, Math.max(-1, Math.min(1, (f.steer || 0) / 127)), dt);
+      fillCtx.clear();
+      if (br > 0.005)
+        fillCtx.arc(cx, cy, R, BRK0, BRK0 + PEDAL_SPAN * br).stroke({ width: W, color: C.bad, cap: "round" });
+      if (th > 0.005)
+        fillCtx.arc(cx, cy, R, THR0, THR0 - PEDAL_SPAN * th, true).stroke({ width: W, color: C.good, cap: "round" });
+      const a = STEER_MID + STEER_HALF * st;
+      if (Math.abs(st) > 0.005)
+        fillCtx.arc(cx, cy, R, STEER_MID, a, st < 0).stroke({ width: 6, color: accent, cap: "round" });
+      fillCtx.circle(...at(a, R), 9).fill(C.text);
+    },
+  };
+}
+
+function fmtLap(s) {
+  if (!s || s <= 0) return "–:--.---";
+  const m = Math.floor(s / 60);
+  return `${m}:${(s - m * 60).toFixed(3).padStart(6, "0")}`;
+}
+
+/* Race-mode progress, 0 = free roam … 1 = timed event, eased in tick(). The
+   timing and delta blocks slide in and brighten as it rises: lap timing only
+   means something during an event (free roam's fallback lap clock would just
+   count up), so outside one they step back rather than vanish. */
+let raceP = 0;
+const RACE_EASE_MS = 320;
+const raceEased = () => raceP * raceP * (3 - 2 * raceP);  // smoothstep
+
+/* Top-left: race-mode chip, lap / position, the running lap, last and best. */
+function makeTiming() {
+  const x = 60;
+  const c = new PIXI.Container();
+  const chipBg = new PIXI.Graphics();
+  const chip = bitmapText("FREE ROAM", 22, C.muted, 0, 0.5);
+  chip.position.set(x + 14, 96);
+  const lapPos = bitmapText("LAP –  ·  P –", 40, C.text, 0, 0.5);
+  lapPos.position.set(x, 150);
+  const cur = bitmapText("–:--.---", 88, C.text, 0, 0.5);
+  cur.position.set(x, 224);
+  const lastL = bitmapText("LAST", 20, C.muted, 0, 0.5);
+  lastL.position.set(x, 290);
+  const bestL = bitmapText("SESSION BEST", 20, C.muted, 0, 0.5);
+  bestL.position.set(x + 220, 290);
+  const last = bitmapText("–:--.---", 40, C.text, 0, 0.5);
+  last.position.set(x, 324);
+  const best = bitmapText("–:--.---", 40, C.text, 0, 0.5);
+  best.position.set(x + 220, 324);
+  c.addChild(chipBg, chip, lapPos, cur, lastL, bestL, last, best);
+
+  let chipRace = null;
+  return {
+    root: c,
+    update(f) {
+      const race = !!f.race_mode;
+      if (race !== chipRace) {  // the chip's geometry only changes with the mode
+        chip.text = race ? "RACE MODE" : "FREE ROAM";
+        chip.tint = race ? "#001018" : C.muted;
+        chipBg.clear().roundRect(x, 80, chip.width + 28, 32, 16);
+        if (race) chipBg.fill(accent);
+        else chipBg.stroke({ width: 2, color: C.edge });
+        chipRace = race;
+      }
+      lapPos.text = race
+        ? `LAP ${(f.lap_number || 0) + 1}  ·  P ${f.race_position || "–"}`
+        : "LAP –  ·  P –";
+      cur.text = race ? fmtLap(f.current_lap || f.lap_elapsed) : "–:--.---";
+      last.text = fmtLap(f.last_lap);
+      best.text = fmtLap(f.session_best ?? f.best_lap);
+      const e = raceEased();
+      c.alpha = 0.3 + 0.7 * e;
+      c.x = -28 * (1 - e);
+    },
+  };
+}
+
+/* Top-right: delta to session best, as a number and a centre-zero bar —
+   slower (+) fills right in red, faster (−) fills left in green, full scale
+   at ±2 s. Crossing zero pulses the number once. */
+const DELTA_FULL_S = 2;
+function makeDelta() {
+  const cx = 1335, x0 = 1120, x1 = 1550, y = 226, H = 16;  // clear of the throttle bracket
+  const c = new PIXI.Container();
+  const label = bitmapText("DELTA · SESSION BEST", 20, C.muted);
+  label.position.set(cx, 96);
+  const num = bitmapText("—", 88, C.text);
+  num.position.set(cx, 160);
+  const track = new PIXI.Graphics()
+    .roundRect(x0, y, x1 - x0, H, H / 2).fill(C.track)
+    .moveTo(cx, y - 8).lineTo(cx, y + H + 8).stroke({ width: 2, color: C.muted });
+  const fillCtx = new PIXI.GraphicsContext();
+  const ticks = [["−2", x0], ["−1", (x0 + cx) / 2], ["0", cx], ["+1", (cx + x1) / 2], ["+2", x1]].map(([s, tx]) => {
+    const t = bitmapText(s, 20, C.muted);
+    t.position.set(tx, y + H + 24);
+    return t;
+  });
+  c.addChild(label, num, track, glowing(fillCtx, 8), ...ticks);
+
+  let lastSign = 0, pulse = 0;
+  return {
+    root: c,
+    update(f, dt) {
+      const d = f.delta;
+      fillCtx.clear();
+      if (d == null) {
+        num.text = "—";
+        num.tint = C.text;
+      } else {
+        num.text = (d >= 0 ? "+" : "−") + Math.abs(d).toFixed(3);
+        const col = d >= 0 ? C.bad : C.good;
+        num.tint = col;
+        const half = (x1 - x0) / 2;
+        const len = Math.min(1, Math.abs(d) / DELTA_FULL_S) * half;
+        if (len > 1) fillCtx.roundRect(d >= 0 ? cx : cx - len, y, len, H, H / 2).fill(col);
+        const sign = Math.sign(d);
+        if (sign && lastSign && sign !== lastSign && !reducedMotion.matches) pulse = 1;
+        if (sign) lastSign = sign;
+      }
+      pulse = Math.max(0, pulse - dt / 320);
+      num.scale.set(1 + 0.14 * pulse * pulse);
+      const e = raceEased();
+      c.alpha = 0.3 + 0.7 * e;
+      c.x = 28 * (1 - e);
+    },
+  };
+}
+
+/* Before the first packet: the dial idles and the speed slot says why
+   nothing moves. The full setup instructions live on the Live page. */
 function makeWaiting() {
-  const t = bitmapText("WAITING FOR TELEMETRY · SETUP STEPS ON THE LIVE PAGE", 26, C.muted);
-  t.position.set(DESIGN.w / 2, 78);
-  return { root: t, update() {} };
+  const c = new PIXI.Container();
+  const a = bitmapText("WAITING FOR TELEMETRY", 30, C.text);
+  a.position.set(TACH.cx, TACH.cy + TACH.r - 14);
+  const b = bitmapText("SETUP STEPS ON THE LIVE PAGE", 22, C.muted);
+  b.position.set(TACH.cx, TACH.cy + TACH.r + 22);
+  c.addChild(a, b);
+  return { root: c, update() {} };
 }
 
 /* ?debug: renderer facts + fps, for the spike's measurements. Lives in screen
@@ -290,6 +465,11 @@ function tick(t) {
   // it at full brightness, which reads as live
   root.alpha = f && stale ? 0.45 : 1;
   const frame = f || IDLE_FRAME;
+  const raceTarget = frame.race_mode ? 1 : 0;
+  const step = t.deltaMS / RACE_EASE_MS;
+  raceP = reducedMotion.matches ? raceTarget
+    : raceTarget > raceP ? Math.min(raceTarget, raceP + step)
+      : Math.max(raceTarget, raceP - step);
   for (const c of components) c.update(frame, t.deltaMS);
 }
 
@@ -316,7 +496,13 @@ function describe() {
     ? "Cockpit — waiting for telemetry"
     : `Cockpit — ${Math.round(speedFromMps(Math.max(0, f.speed)))} ${speedUnit()},`
       + ` gear ${f.gear === 0 ? "reverse" : f.gear === 11 ? "neutral" : f.gear},`
-      + ` ${Math.round(f.current_engine_rpm)} of ${Math.round(f.engine_max_rpm)} rpm`);
+      + ` ${Math.round(f.current_engine_rpm)} of ${Math.round(f.engine_max_rpm)} rpm,`
+      + ` throttle ${Math.round(f.accel / 2.55)}%, brake ${Math.round(f.brake / 2.55)}%`
+      + (f.race_mode
+        ? `; race mode, lap ${f.lap_number + 1}, position ${f.race_position || "unknown"},`
+          + ` lap time ${fmtLap(f.current_lap || f.lap_elapsed)}`
+          + (f.delta == null ? "" : `, ${Math.abs(f.delta).toFixed(2)} s ${f.delta >= 0 ? "behind" : "ahead of"} session best`)
+        : "; free roam"));
 }
 
 /* ---------- boot ---------- */
@@ -346,7 +532,7 @@ async function boot() {
   root = new PIXI.Container();
   app.stage.addChild(root);
   waiting = makeWaiting();
-  for (const c of [makeShiftLights(), makeTach(), waiting]) {
+  for (const c of [makeShiftLights(), makeInputs(), makeTach(), makeTiming(), makeDelta(), waiting]) {
     components.push(c);
     root.addChild(c.root);
   }

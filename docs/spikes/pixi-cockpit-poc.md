@@ -1,6 +1,6 @@
 # Spike: PixiJS cockpit (POC)
 
-Branch: `feat/pixi-cockpit-poc`. Status: **step 2 done** (see Progress at the
+Branch: `feat/pixi-cockpit-poc`. Status: **step 3 done** (see Progress at the
 bottom).
 
 ## Question the spike answers
@@ -218,3 +218,29 @@ and motion ideas, drop Pixi), or drop.
   scene dims after the stream stops. Limiter, LED fill and gear punch checked
   with injected frames (the simulator never passes ~94 % rpm), both with and
   without reduced motion. No console errors.
+
+### Step 3 — pedals, steering, timing, delta, race-mode transition (done)
+
+- Scene layout settled for the rest of the POC: timing top-left, delta
+  top-right, friction circle bottom-left and tire car bottom-right (step 4),
+  the tach centred. Throttle/brake are brackets either side of the dial
+  (brake fills up the left, throttle up the right), steering a short arc over
+  it with a centre notch; power and boost flank the speed.
+- Timing block: race-mode chip, lap / position, running lap, last, session
+  best. Delta block: number + centre-zero bar (red right = slower, green
+  left = faster, full scale ±2 s), one pulse when the sign flips.
+- `race_mode` eases a shared 0→1 progress (320 ms, smoothstep): both blocks
+  slide in and brighten in an event and step back (30 % alpha, offset) in
+  free roam — dashed, not hidden. Reduced motion snaps it.
+- aria-label now also carries throttle/brake and, in an event, lap, position,
+  lap time and delta in words.
+- **Gotcha — bitmap fonts only contain the glyphs you list.** The en dash in
+  `–:--.---` rendered as garbage until it was added to `chars`; every
+  non-ASCII character the scene prints must be in that list.
+- **Bug caught in verification:** the race easing dropped back whenever
+  progress already equalled its target (`>` vs `>=`), so the blocks
+  flickered mid-race. A raw `/ws/live` capture showed the stream's
+  `race_mode` never flickers — it was the easing, now clamped to the target.
+- Verified headless: simulator `--freeroam 12 --race 2` (chip, lap clock,
+  slide-in on the event start), injected frames for the delta bar both
+  ways, the zero-crossing pulse and the free-roam fade. No console errors.
