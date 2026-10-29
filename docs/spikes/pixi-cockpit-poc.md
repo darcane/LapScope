@@ -413,3 +413,17 @@ Before the cockpit replaces `index.html`, in this order:
 
 Open questions answered: section 2 stays part of the cockpit (it carries the
 map and trace in every layout that can read them); overlays stay HTML.
+
+### Adoption 1 — shared `live.js` (done)
+
+The feed both live pages read is one file now: `js/live.js` holds the
+WebSocket (backoff, wss, hidden-tab frame drop), the connection chip, the
+friction trail and input strip, and the track map's path plus the contact /
+jump detection mirrored from `laps.py`. `dashboard.js` and `cockpit.js` only
+draw from `live` / `liveMap`; the cockpit's copied feed is gone, so the
+`laps.py` mirror is back to one copy. The cockpit map now draws contact
+sparks and jump glyphs (hard landings glowing with the white ring), redrawn
+only when `liveMap.marks` moves or the fit changes. Verified with
+`--duration 180 --dirty --jumps` against both pages at once: identical path,
+1 contact, 9 jumps (all hard, as the simulator lands them), no console errors;
+ruff + 238 tests green (the stale-threshold test now reads `live.js`).

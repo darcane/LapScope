@@ -346,7 +346,7 @@ All the rules exist because some real behavior broke a naive version:
   hundreds of ms, an impact is an impulse — so a non-landing burst counts only
   when some frame of it either gained `IMPACT_JERK` (30 m/s², ~3 g) over the
   previous frame, or reached `IMPACT_PEAK` (98 m/s², ~10 g). `impulsive()` in
-  laps.py is the one implementation, imported by `_scan_lap`; dashboard.js
+  laps.py is the one implementation, imported by `_scan_lap`; live.js
   mirrors it. Swept over all 70 stored sessions / 1813 bursts (2026-07-26,
   same dump/hand-classify method as the landing classifier): of the 1334
   bursts rising slower than 1 g/frame **not one** reached 10 g, and the
@@ -355,7 +355,7 @@ All the rules exist because some real behavior broke a naive version:
   while cross-country/dirt sessions barely move (55: 7→6, 103: 5→5, 8: 13→9)
   and the low-downforce control (146, Diablo SV) was 0 before and after.
   Only jerk is *causal* (one frame of history), which is why it and not burst
-  duration or speed-delta drives the live recorder and dashboard.js.
+  duration or speed-delta drives the live recorder and live.js.
   `IMPACT_JERK_DT_MAX` (0.05 s) ignores a jerk read across a stream gap or a
   rewind splice — the gap manufactures it. Rejected bursts are dropped
   outright (issue #49).
@@ -365,7 +365,7 @@ All the rules exist because some real behavior broke a naive version:
   airborne (all four `NormalizedSuspensionTravel` < 0.15 **and** all four
   `TireCombinedSlip` < 0.05 for ≥ 0.12 s — in flight wheels hang at full droop
   with zero tire force) or within 0.35 s of touchdown is a landing, not contact
-  (`AIRBORNE_*` / `LANDING_GRACE_S` in laps.py, mirrored in dashboard.js).
+  (`AIRBORNE_*` / `LANDING_GRACE_S` in laps.py, mirrored in live.js).
   Calibrated on real cross-country (session 55: 5 of 12 spikes were landings —
   touchdown compresses the suspension 1–2 frames *before* the spike, and
   suspension drifts up to ~0.11 mid-flight, hence the loose thresholds and the

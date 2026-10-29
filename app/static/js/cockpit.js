@@ -36,108 +36,9 @@ const stage = document.getElementById("cockpit-stage");
 let app, root;
 const components = [];
 
-/* ---------- live feed (a copy of dashboard.js's; shared live.js if adopted) ---------- */
-
-const STALE_MS = 2500;
-const G = 9.80665;
-const feed = { frame: null, lastMsg: 0, connected: false, connLabel: null, trail: [], strip: [] };
-const TRAIL_LEN = 90;  // friction-circle history, ~1.5 s at 60 Hz (as the classic dashboard)
-const STRIP_LEN = 12 * 60;  // input trace, ~12 s at 60 Hz (as the classic dashboard)
-feed.stripN = 0;  // samples ever pushed: the trace redraws only when this moves
-
-/* Live track map: the classic dashboard's path rules — races / time attacks
-   only (free roam when Settings opts in), fresh on a new session unless the
-   same race resumed after a pause, fresh on a > 250 m single-frame jump (grid
-   snap / restart), a point every ≥ 3 m, thinned past LIVEMAP_CAP. Contact
-   sparks and jump glyphs are NOT ported: their detection (mirrored from
-   laps.py) would become a third copy — that waits for a shared live.js. */
-const LIVEMAP_CAP = 4000;
-const liveMap = { pts: [], last: null, minDist: 3, session: null, gen: 0,
-  minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity };
-
-function resetLiveMap(sessionId) {
-  Object.assign(liveMap, { pts: [], last: null, minDist: 3, session: sessionId,
-    minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity });
-  liveMap.gen++;  // tells the renderer to drop everything it built
-}
-
-function mapActive(f) {
-  return f.race_mode || getSettings().freeroamMap;
-}
-
-function feedLiveMap(f) {
-  if (f.session_id == null || !mapActive(f)) return;
-  if (f.session_id !== liveMap.session) {
-    const resumed = liveMap.last != null
-      && Math.hypot(f.pos_x - liveMap.last[0], f.pos_z - liveMap.last[1]) < 250
-      && f.current_race_time > 5;
-    if (resumed) liveMap.session = f.session_id;
-    else resetLiveMap(f.session_id);
-  }
-  const x = f.pos_x, z = f.pos_z;
-  if (liveMap.last) {
-    const jump = Math.hypot(x - liveMap.last[0], z - liveMap.last[1]);
-    if (jump < liveMap.minDist) return;
-    if (jump > 250) resetLiveMap(f.session_id);
-  }
-  liveMap.last = [x, z];
-  liveMap.pts.push(liveMap.last);
-  liveMap.minX = Math.min(liveMap.minX, x); liveMap.maxX = Math.max(liveMap.maxX, x);
-  liveMap.minZ = Math.min(liveMap.minZ, z); liveMap.maxZ = Math.max(liveMap.maxZ, z);
-  if (liveMap.pts.length > LIVEMAP_CAP) {
-    liveMap.pts = liveMap.pts.filter((_, i) => i % 2 === 0);
-    liveMap.minDist *= 2;
-    liveMap.gen++;  // thinning rewrote the point list
-  }
-}
-
-const RECONNECT_MIN = 1500;
-const RECONNECT_MAX = 15000;
-let reconnectDelay = RECONNECT_MIN;
-
-function connect() {
-  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${scheme}//${location.host}/ws/live`);
-  ws.onmessage = (ev) => {
-    // hidden tab: nothing renders, so don't parse frames nobody will see
-    if (document.hidden) return;
-    const f = JSON.parse(ev.data);
-    feed.frame = f;
-    feed.lastMsg = performance.now();
-    if (f.is_race_on) {
-      feed.trail.push([f.accel_x / G, f.accel_z / G]);
-      if (feed.trail.length > TRAIL_LEN) feed.trail.shift();
-      feed.strip.push([f.accel / 255, f.brake / 255, f.steer / 127]);
-      if (feed.strip.length > STRIP_LEN) feed.strip.shift();
-      feed.stripN++;
-    }
-    feedLiveMap(f);
-  };
-  ws.onopen = () => {
-    feed.connected = true;
-    reconnectDelay = RECONNECT_MIN;
-    setConn("live", "ok");
-  };
-  ws.onclose = () => {
-    feed.connected = false;
-    setConn("reconnecting…", "err");
-    setTimeout(connect, reconnectDelay);
-    reconnectDelay = Math.min(RECONNECT_MAX, reconnectDelay * 2);
-  };
-  ws.onerror = () => ws.close();
-}
-
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && feed.frame) feed.lastMsg = performance.now();
-});
-
-function setConn(text, cls) {
-  if (feed.connLabel === text) return;
-  feed.connLabel = text;
-  const el = document.getElementById("conn");
-  el.querySelector("span").textContent = text;
-  el.className = `chip ${cls}`;
-}
+/* The feed (WebSocket, trail + input buffers, track-map path, contact and
+   jump detection) is live.js, shared with the classic dashboard: this file
+   only reads `live` / `liveMap` and draws. */
 
 /* ---------- drawing helpers ---------- */
 
@@ -526,7 +427,7 @@ function makeFriction() {
   return {
     root: c,
     update(f) {
-      const tr = feed.trail;
+      const tr = live.trail;
       trailCtx.clear();
       for (let i = 1; i < tr.length; i++) {
         const [x0, y0] = pt(...tr[i - 1]), [x1, y1] = pt(...tr[i]);
@@ -670,9 +571,42 @@ function makeTires() {
    container's transform. The catch is stroke width, which scales with that
    transform — so chunks are built at width / scale and rebuilt only when the
    fit scale drifts > 15 % from what they were built at (the bounds stop
-   growing after the first lap). */
+   growing after the first lap).
+   Jumps (amber dashed flight, takeoff ring → touchdown arrow; a hard landing
+   glows with a white impact ring) and contact sparks (red, glowing) are the
+   classic map's glyphs, drawn in box coordinates so they keep their size,
+   and redrawn only when live.js adds one or the fit moves. */
 const MAP_BOX = { x: 40, y: 620, w: 720, h: 260 };
 const MAP_CHUNK = 256;
+const JUMP_COL = "#f59e0b", SPARK_COL = "#ef4444";
+
+/* common.js's drawJump, for a GraphicsContext: Pixi has no dashed stroke,
+   so the flight is laid out dash by dash. `ring` takes the hard-landing ring. */
+function jumpGlyph(g, x0, y0, x1, y1, ring) {
+  const len = Math.hypot(x1 - x0, y1 - y0);
+  const ang = len > 0.5 ? Math.atan2(y1 - y0, x1 - x0) : -Math.PI / 2;
+  const r = 4, ah = 9, ux = Math.cos(ang), uy = Math.sin(ang);
+  for (let d = r + 1; d < len - ah * 0.7; d += 11) {
+    const e = Math.min(d + 6, len - ah * 0.7);
+    g.moveTo(x0 + ux * d, y0 + uy * d).lineTo(x0 + ux * e, y0 + uy * e);
+  }
+  // the dashes and the takeoff ring are one path, stroked together
+  g.circle(x0, y0, r).stroke({ width: 2, color: JUMP_COL, cap: "round" });
+  g.poly([x1 + ux * ah * 0.55, y1 + uy * ah * 0.55,
+    x1 + Math.cos(ang + 2.5) * ah * 0.8, y1 + Math.sin(ang + 2.5) * ah * 0.8,
+    x1 + Math.cos(ang - 2.5) * ah * 0.8, y1 + Math.sin(ang - 2.5) * ah * 0.8]).fill(JUMP_COL);
+  if (ring) ring.circle(x1, y1, ah * 0.95).stroke({ width: 1.5, color: "#ffffff" });
+}
+
+function sparkGlyph(g, x, y) {
+  const pts = [];
+  for (let k = 0; k < 8; k++) {
+    const a = (k * Math.PI) / 4, rr = k % 2 ? 3 : 7.5;
+    pts.push(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+  }
+  g.poly(pts).fill(SPARK_COL).stroke({ width: 1.5, color: "#ffffff" });
+}
+
 function makeMap() {
   const B = MAP_BOX, pad = 18, padTop = 40;  // padTop: clear of the title row
   const c = new PIXI.Container();
@@ -686,7 +620,16 @@ function makeMap() {
   const world = new PIXI.Container();
   world.mask = clip;
   const carCtx = new PIXI.GraphicsContext();
-  c.addChild(frame, title, hint, clip, world, glowing(carCtx, 8));
+  const jumpCtx = new PIXI.GraphicsContext();   // soft landings
+  const hardCtx = new PIXI.GraphicsContext();   // hard landings: same glyph, glowing
+  const ringCtx = new PIXI.GraphicsContext();
+  const sparkCtx = new PIXI.GraphicsContext();
+  const marks = new PIXI.Container();
+  marks.mask = new PIXI.Graphics().rect(B.x, B.y, B.w, B.h).fill(0xffffff);
+  marks.addChild(marks.mask, new PIXI.Graphics(jumpCtx), glowing(hardCtx, 6),
+    new PIXI.Graphics(ringCtx), glowing(sparkCtx, 6));
+  c.addChild(frame, title, hint, clip, world, marks, glowing(carCtx, 8));
+  let marksKey = "";
 
   let chunks = [], builtGen = -1, builtLen = 0, builtScale = 0;
   const strokeFor = (sc) => ({ width: 2.5 / sc, color: accent, alpha: 0.6, join: "round", cap: "round" });
@@ -711,6 +654,7 @@ function makeMap() {
       carCtx.clear();
       if (n < 2) {
         if (chunks.length) rebuildAll(0);
+        if (marksKey) { marksKey = ""; for (const g of [jumpCtx, hardCtx, ringCtx, sparkCtx]) g.clear(); }
         return;
       }
       const spanX = Math.max(liveMap.maxX - liveMap.minX, 1), spanZ = Math.max(liveMap.maxZ - liveMap.minZ, 1);
@@ -732,8 +676,17 @@ function makeMap() {
         }
         builtLen = n;
       }
-      // start point + car, in box coordinates (constant size whatever the fit)
+      // start point, marks + car, in box coordinates (constant size whatever the fit)
       const X = (x) => world.position.x + x * sc, Y = (z) => world.position.y - z * sc;
+      const key = `${liveMap.marks}|${sc}|${world.position.x}|${world.position.y}`;
+      if (key !== marksKey) {
+        marksKey = key;
+        for (const g of [jumpCtx, hardCtx, ringCtx, sparkCtx]) g.clear();
+        for (const j of liveMap.jumps) {
+          jumpGlyph(j.hard ? hardCtx : jumpCtx, X(j.x0), Y(j.z0), X(j.x1), Y(j.z1), j.hard ? ringCtx : null);
+        }
+        for (const [hx, hz] of liveMap.hits) sparkGlyph(sparkCtx, X(hx), Y(hz));
+      }
       carCtx.circle(X(pts[0][0]), Y(pts[0][1]), 5).fill(C.good);
       if (mapActive(f) && f.session_id != null && f.pos_x != null) {
         const cx = X(f.pos_x), cy = Y(f.pos_z), hx = Math.sin(f.yaw), hz = Math.cos(f.yaw);
@@ -771,27 +724,27 @@ function makeTrace() {
   return {
     root: c,
     update() {
-      const buf = feed.strip;
-      if (feed.stripN === drawnN) return;
-      drawnN = feed.stripN;
+      const buf = live.strip;
+      if (live.stripN === drawnN) return;
+      drawnN = live.stripN;
       linesCtx.clear();
       if (buf.length < 2) return;
       const step = (B.w - 24) / STRIP_LEN, x0 = B.x + B.w - 12 - (buf.length - 1) * step;
       const y = (v) => bot - v * H;
-      const series = (idx, map) => {
-        linesCtx.moveTo(x0, map(buf[0][idx]));
-        for (let i = 1; i < buf.length; i++) linesCtx.lineTo(x0 + i * step, map(buf[i][idx]));
+      const series = (key, map) => {
+        linesCtx.moveTo(x0, map(buf[0][key] / 100));
+        for (let i = 1; i < buf.length; i++) linesCtx.lineTo(x0 + i * step, map(buf[i][key] / 100));
       };
       // areas under throttle and brake, then the lines
-      for (const [idx, col] of [[0, C.good], [1, C.bad]]) {
-        series(idx, y);
+      for (const [key, col] of [["th", C.good], ["br", C.bad]]) {
+        series(key, y);
         linesCtx.lineTo(x0 + (buf.length - 1) * step, bot).lineTo(x0, bot).fill({ color: col, alpha: 0.09 });
       }
-      series(2, (v) => y(0.5 + v / 2));
+      series("st", (v) => y(0.5 + v / 2));
       linesCtx.stroke({ width: 1.5, color: "#93a3b8" });
-      series(0, y);
+      series("th", y);
       linesCtx.stroke({ width: 2.5, color: C.good, join: "round" });
-      series(1, y);
+      series("br", y);
       linesCtx.stroke({ width: 2.5, color: C.bad, join: "round" });
     },
   };
@@ -836,9 +789,8 @@ const IDLE_FRAME = {
 
 let waiting;
 function tick(t) {
-  const f = feed.frame;
-  const stale = performance.now() - feed.lastMsg > STALE_MS;
-  if (f && feed.connected) setConn(stale ? "paused" : "live", stale ? "warn" : "ok");
+  const f = live.frame;
+  const stale = syncConn();
   waiting.root.visible = !f;
   // a stalled stream (game lost focus) dims the cluster instead of freezing
   // it at full brightness, which reads as live
@@ -914,7 +866,7 @@ function layout() {
 /* The scene is one canvas: say what it shows, at a reading pace rather than
    per frame (a per-frame aria-label is noise for a screen reader). */
 function describe() {
-  const f = feed.frame;
+  const f = live.frame;
   stage.setAttribute("aria-label", !f
     ? "Cockpit — waiting for telemetry"
     : `Cockpit — ${Math.round(speedFromMps(Math.max(0, f.speed)))} ${speedUnit()},`
@@ -985,7 +937,6 @@ async function boot() {
 
   onSettingsChange(() => {
     accent = accentDef().accent;
-    if (!getSettings().freeroamMap) resetLiveMap(liveMap.session);
   });
   connect();
 }
