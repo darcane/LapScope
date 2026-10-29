@@ -303,3 +303,13 @@ and motion ideas, drop Pixi), or drop.
   frame (exponential average) and the active layout. Headless: 0.4–0.75 ms
   per frame with every component live — CPU/GPU numbers in a real browser
   are step 6.
+
+### First real-game run (owner, after step 5)
+
+Looked right in both wide and tall layouts on real FH6 data (120 fps, 0.38 ms
+update). One fix: jump landings and wall hits (10 g+) drew the friction trail
+far outside the gauge, across the timing block and the map — Pixi has no
+canvas edge to clip it the way the classic 2D gauge does. Trail points now pin
+to the 1.6 g rim like the dot already did, and a spike past full scale flashes
+a red arc on the rim in the hit's direction (700 ms fade; held then cut under
+reduced motion) while the readouts turn red and still show the true size.

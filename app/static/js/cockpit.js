@@ -482,8 +482,12 @@ function makeDelta() {
 /* Bottom-left: friction circle — lateral g across, longitudinal g up
    (accel) / down (brake), ±1.6 g full scale, rings at 0.5 / 1 / 1.5 g, the
    last ~1.5 s as a trail fading toward its oldest point. The dot turns amber
-   past 1.1 g. Readouts beside it. */
+   past 1.1 g. Readouts beside it.
+   Jump landings and wall hits spike far past any tire's grip (10 g+). Neither
+   the dot nor the trail leaves the gauge for one: both pin to the rim, and the
+   rim flashes red in the spike's direction while the readouts show its size. */
 const FRICTION_MAX_G = 1.6;
+const IMPACT_FLASH_MS = 700;
 function makeFriction() {
   const cx = 180, cy = 480, R = 100, k = R / FRICTION_MAX_G;  // ACCEL label clears the LAST/BEST row
   const c = new PIXI.Container();
@@ -500,7 +504,15 @@ function makeFriction() {
   });
   const trailCtx = new PIXI.GraphicsContext();
   const dotCtx = new PIXI.GraphicsContext();
-  c.addChild(grid, ...labels, new PIXI.Graphics(trailCtx), glowing(dotCtx, 8));
+  const hitCtx = new PIXI.GraphicsContext();
+  const hitG = glowing(hitCtx, 10);
+  c.addChild(grid, ...labels, new PIXI.Graphics(trailCtx), hitG, glowing(dotCtx, 8));
+  // a g vector → gauge point, pinned to the rim past full scale
+  const pt = (lat, lon) => {
+    const tot = Math.hypot(lat, lon), s = tot > FRICTION_MAX_G ? FRICTION_MAX_G / tot : 1;
+    return [cx + lat * k * s, cy - lon * k * s];
+  };
+  let hitAt = -Infinity;
 
   const read = ["LAT", "LON", "TOTAL"].map((name, i) => {
     const l = bitmapText(name, 18, C.muted, 0, 0.5);
@@ -517,18 +529,29 @@ function makeFriction() {
       const tr = feed.trail;
       trailCtx.clear();
       for (let i = 1; i < tr.length; i++) {
-        trailCtx.moveTo(cx + tr[i - 1][0] * k, cy - tr[i - 1][1] * k)
-          .lineTo(cx + tr[i][0] * k, cy - tr[i][1] * k)
+        const [x0, y0] = pt(...tr[i - 1]), [x1, y1] = pt(...tr[i]);
+        trailCtx.moveTo(x0, y0).lineTo(x1, y1)
           .stroke({ width: 2.5, color: accent, alpha: (i / tr.length) * 0.55, cap: "round" });
       }
       const lat = (f.accel_x || 0) / G, lon = (f.accel_z || 0) / G, tot = Math.hypot(lat, lon);
-      // a spike past the scale pins to the rim instead of leaving the gauge
-      const s = tot > FRICTION_MAX_G ? FRICTION_MAX_G / tot : 1;
-      dotCtx.clear().circle(cx + lat * k * s, cy - lon * k * s, 8).fill(tot > 1.1 ? C.warn : C.text);
+      const over = tot > FRICTION_MAX_G, now = performance.now();
+      if (over) {
+        // the newest spike owns the flash; its arc points where the hit came from
+        hitAt = now;
+        const a = Math.atan2(-lon, lat), r = FRICTION_MAX_G * k;
+        hitCtx.clear().arc(cx, cy, r, a - 0.35, a + 0.35)
+          .stroke({ width: 6, color: C.bad, cap: "round" });
+      }
+      const age = now - hitAt;
+      // reduced motion: hold the flash, then cut it — no fade
+      hitG.visible = age < IMPACT_FLASH_MS;
+      hitG.alpha = reducedMotion.matches ? 1 : 1 - age / IMPACT_FLASH_MS;
+      const [dx, dy] = pt(lat, lon);
+      dotCtx.clear().circle(dx, dy, 8).fill(over ? C.bad : tot > 1.1 ? C.warn : C.text);
       read[0].text = lat.toFixed(2);
       read[1].text = lon.toFixed(2);
       read[2].text = tot.toFixed(2);
-      read[2].tint = tot > 1.1 ? C.warn : C.text;
+      read[2].tint = over ? C.bad : tot > 1.1 ? C.warn : C.text;
     },
   };
 }
