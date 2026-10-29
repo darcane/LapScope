@@ -1,7 +1,7 @@
 # Spike: PixiJS cockpit (POC)
 
-Branch: `feat/pixi-cockpit-poc`. Status: **step 5 done** (see Progress at the
-bottom).
+Branch: `feat/pixi-cockpit-poc`. Status: **done — verdict: adopt Pixi** (see
+Verdict at the bottom).
 
 ## Question the spike answers
 
@@ -313,3 +313,103 @@ canvas edge to clip it the way the classic 2D gauge does. Trail points now pin
 to the 1.6 g rim like the dot already did, and a spike past full scale flashes
 a red arc on the rim in the hit's direction (700 ms fade; held then cut under
 reduced motion) while the readouts turn red and still show the true size.
+
+### Step 6 — measurements
+
+Bench: Edge 140-series (Chromium), headed, real GPU (RTX 5070 Ti, Ryzen,
+Windows 11), 1600×900 viewport at DPR 1, 120 Hz display. One simulator race
+(`--race 8 --jumps`, 60 Hz packets) and the two pages alternated A B A B,
+25 s windows, one page open at a time. Renderer metrics from CDP
+`Performance.getMetrics`; CPU from the Windows process times of every process
+of that Edge instance (script: scratchpad `bench.py`, not committed).
+
+| per second of driving | classic `index.html` | cockpit | cockpit, render capped 60 Hz |
+|---|---|---|---|
+| frames presented | 122 / 122 | 122 / 122 | 60 (Pixi) |
+| frames > 25 ms | 0 / 0 | 0 / 0 | 0 |
+| main-thread task time | 146 / 146 ms | 184 / 193 ms | 131 ms |
+| — of it script | 58 / 58 ms | 166 / 174 ms | 113 ms |
+| — of it layout + style | 39 / 37 ms | 1.7 / 1.7 ms | 2.0 ms |
+| renderer process CPU | 24 / 22 % of a core | 26 / 21 % | 19 % |
+| GPU process CPU | 35 / 33 % | 47 / 32 % | 14 % |
+| JS heap | 2–3 MB | 20–33 MB | 20 MB |
+
+(two values = the two rounds.) Owner's real-game run, same machine: 120 fps,
+0.38 ms JS update per frame, both wide and tall layouts.
+
+- **Smooth:** both pages hold the display's full 120 Hz with no long frames.
+  Pass.
+- **Cheap enough:** the cockpit trades the classic page's DOM work (layout +
+  style, ~38 ms/s from rewriting text nodes every frame) for Pixi's JS
+  tessellation and draw submission (~3× the script time). Uncapped it costs
+  ~25 % more main-thread time and about the same process CPU — noise between
+  rounds is as large as the difference. Both pages redraw on *every* display
+  frame, though, so on a 120 Hz screen each one draws every 60 Hz packet
+  twice. Capping Pixi to 60 Hz (`app.ticker.maxFPS`, one probe, not
+  committed) drops the cockpit **below** the classic page on every row: 10 %
+  less main-thread time, less than half the GPU-process CPU. The right
+  version of that is packet-driven rendering (draw when a frame arrived or an
+  animation is running), not a fixed 60 — the game sends Data Out per
+  *rendered* frame, so a player running FH6 at 120 fps gets 120 Hz packets.
+  Pass, with that as the first optimisation.
+- **Size:** `pixi.min.js` 841 KB (237 KB gzipped) — served from localhost or
+  read from disk by the exe, so it costs ~nothing at load; the heap is
+  ~10× the classic page's, which is irrelevant at 20–33 MB. Code: 993 lines
+  (`cockpit.js`) vs 907 (`dashboard.js` + `gauges.js`) for more on screen
+  (shift lights, pedal arcs, delta bar, layouts, race transition) — but the
+  cockpit lacks the car chip, raw-telemetry panel, write-error banner and
+  contact sparks the classic page has. Expect ~1 200 lines at parity.
+  Acceptable.
+- **Works everywhere it must:**
+  - Edge (Chromium) headed on real GPU: WebGL, no errors. Chrome is the same
+    engine; not installed here, not separately run.
+  - Firefox: **not verified.** Headless Firefox (no Playwright build
+    installed) failed to create its software GL compositor and screenshotted
+    the page before Pixi drew — inconclusive, not a failure. Needs one manual
+    look in a real Firefox before `index.html` is replaced.
+  - No WebGL: Pixi's own Canvas2D fallback renders everything but the glows
+    (step 5).
+  - Offline: no runtime request leaves the machine — Pixi's only URLs are
+    for KTX/Basis texture transcoders the cockpit never loads (step 1).
+  - Desktop exe: `LapScope.spec` ships `Tree("app/static")` whole, so the
+    page and Pixi are in the bundle with no spec change; the exe was not
+    built for this spike (the release workflow's selftest would be the
+    check).
+- **Maintainable:** each component is one function, 40–130 lines, with a
+  `root` container and an `update(f)` — readable without Pixi internals for
+  ordinary changes (a colour, a threshold, a label). Three Pixi-specific
+  idioms must be learned, all now documented above and in the code: redraw
+  through a `GraphicsContext` (`clear()` then draw), change `BitmapText`
+  colour with `tint` and only use glyphs installed in the font, and build
+  glows with `glowing()`. The two places that needed real Pixi knowledge —
+  the chunked map (re-tessellation cost) and pinning the friction trail (no
+  canvas edge to clip) — are exactly where Canvas2D was simpler. Pass,
+  with that cost named.
+- **Looks better:** the owner's call after the real-game run ("all looks
+  good"), with the screenshots in this doc's history.
+
+## Verdict
+
+**Adopt Pixi** for the live page. It holds full refresh with headroom, costs
+about what the classic page costs (less, once rendering follows the packet
+rate), works offline and without WebGL, and the one-surface cockpit with
+eased motion is the thing Canvas2D-per-panel was not giving us. The extra
+complexity is real but local (map chunks, glows), and it buys the same stack
+for the Analysis ghost replay next.
+
+Before the cockpit replaces `index.html`, in this order:
+
+1. **Shared `live.js`** — feed, `liveMap`, trail/strip buffers and the
+   contact/landing detection (`feedCollision`) out of `dashboard.js`, used by
+   both pages. Then port contact sparks and jump glyphs to the cockpit map.
+2. **Packet-driven rendering** — draw only when a frame arrived or an
+   animation (race transition, gear punch, delta pulse, impact flash, limiter)
+   is live; idle at a fixed low rate otherwise.
+3. **Parity overlays** — car chip, write-error banner and the raw-telemetry
+   panel as HTML over the canvas (not in Pixi).
+4. **Firefox** — one manual check on real hardware.
+5. **Swap** — cockpit becomes `index.html`; the classic dashboard stays one
+   release behind a link, then goes with `gauges.js`.
+
+Open questions answered: section 2 stays part of the cockpit (it carries the
+map and trace in every layout that can read them); overlays stay HTML.
