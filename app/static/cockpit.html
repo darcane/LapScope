@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LapScope — Cockpit (POC)</title>
+<link rel="icon" type="image/png" href="img/logo.png">
+<link rel="stylesheet" href="css/fonts.css">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body class="cockpit-page">
+<header>
+  <div class="brand"><i></i>LAP<span>SCOPE</span></div>
+  <nav>
+    <a href="index.html">Live</a>
+    <a class="active" href="cockpit.html">Cockpit</a>
+    <a href="analysis.html">Analysis</a>
+  </nav>
+  <div id="conn" class="chip"><i class="dot"></i><span>connecting…</span></div>
+  <button id="settings-btn" class="chip clickable" type="button" title="Settings" aria-label="Settings">⚙ Settings</button>
+</header>
+
+<main id="cockpit-stage" role="img" aria-label="Cockpit — loading"></main>
+
+<div id="cockpit-fail" class="overlay hidden">
+  <div class="box">
+    <h3>The cockpit needs WebGL</h3>
+    <p>This browser could not start a WebGL or WebGPU renderer, so the cockpit
+       can't draw. The <a href="index.html">classic live dashboard</a> works
+       without it.</p>
+    <div class="stat error" id="cockpit-fail-why"></div>
+  </div>
+</div>
+
+<script src="js/common.js"></script>
+<script src="js/settings.js"></script>
+<script src="js/vendor/pixi.min.js"></script>
+<script src="js/cockpit.js"></script>
+</body>
+</html>

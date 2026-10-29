@@ -1,6 +1,7 @@
 # Spike: PixiJS cockpit (POC)
 
-Branch: `feat/pixi-cockpit-poc`. Status: **planning** — nothing built yet.
+Branch: `feat/pixi-cockpit-poc`. Status: **step 1 done** (see Progress at the
+bottom).
 
 ## Question the spike answers
 
@@ -164,3 +165,29 @@ and motion ideas, drop Pixi), or drop.
 - Does the cockpit need the raw-telemetry panel and write-error banner before
   it could replace `index.html`, or do they stay HTML overlays on top of the
   canvas? (Probably the latter.)
+
+## Progress
+
+### Step 1 — vendor + bare page (done)
+
+- Pinned **pixi.js 8.22.0** (released 2026-10-01, MIT). `dist/pixi.min.js`
+  copied byte-for-byte from the npm tarball after checking its sha512 against
+  the registry's `integrity`. **840 KB** minified (uPlot is 50 KB) — the
+  heaviest asset in the app by far; part of the size verdict.
+- Offline: the build mentions jsDelivr only for the KTX/Basis
+  compressed-texture transcoders, which load solely if such a texture is
+  requested (never, here). `hello: false` drops the console banner. A
+  headless load made zero off-machine requests.
+- `cockpit.html` + `cockpit.js`: fixed 1600×600 design space scaled to fit;
+  own resize handler (`rafThrottle`, re-reads `devicePixelRatio` — Pixi's
+  `resizeTo` does neither); Rajdhani `BitmapFont` built after the webfont
+  loads; glow = shared `GraphicsContext` + `BlurFilter` + additive blend;
+  WebGL-failure overlay linking to `index.html`; reduced motion holds the
+  test sweep still.
+- Verified in headless Chromium at 1600×900@1x, 1280×800@2x, 390×844@3x:
+  backing store = CSS size × DPR, crisp text and strokes, no page scroll,
+  no console errors. FPS there is SwiftShader (software GL) — not a perf
+  number.
+- Noted for later: on a portrait phone the 1600×600 frame leaves most of the
+  screen empty — the stacked portrait layout is a real requirement, not a
+  nicety.

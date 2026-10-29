@@ -471,6 +471,27 @@ main.grid .lap-grid { margin-bottom: auto; }
   font-size: 0.95em;
 }
 .setup-lines { line-height: 2; }
+
+/* ---------- cockpit (PixiJS POC, cockpit.html) ---------- */
+
+/* one WebGL surface fills everything under the header; the page itself never
+   scrolls, the scene scales to fit instead */
+body.cockpit-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+#cockpit-stage {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+#cockpit-stage canvas { display: block; }
 .overlay .stat { color: var(--muted); font-size: 0.85rem; margin-top: 16px; }
 .overlay .stat.error {
   color: var(--bad);
