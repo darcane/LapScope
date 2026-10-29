@@ -458,3 +458,20 @@ page, with less GPU-process CPU. It does not reach the fixed-60 probe's
 running flash is drawn at the display's full rate (the 94 fps round) — the
 probe capped animations to 60 as well. That is the intended trade: motion
 gets the display's smoothness, steady telemetry costs only the packet rate.
+
+### Adoption 3 — parity overlays (done)
+
+The car chip, the write-failure banner and the raw-telemetry panel moved out
+of `dashboard.js` into `js/live-ui.js`, used by both live pages; the cockpit
+supplies the same elements (`#car-chip`, `#raw-panel`) as HTML around the
+canvas, none of it drawn in Pixi. The raw panel docks *under* the stage
+(40 vh max, scrolls on its own) rather than over it, and the banner is
+prepended to the body, so the stage shrinks and the scene re-fits instead of
+being covered — layout now also follows a `ResizeObserver` on the stage,
+since neither changes the window's size (the window listener stays for a DPR
+change at the same CSS size, #74). The Hold button gained `type="button"` and
+`aria-pressed` on both pages. Verified headless against a simulator race:
+chip names the car on both pages, raw panel fills 93 cells and re-fits the
+scene (908 → 508 px), Hold freezes every cell and reports pressed, the banner
+appears from a failing status poll and clears on the next good one, the
+classic page's no-data stats line still updates; no console errors.

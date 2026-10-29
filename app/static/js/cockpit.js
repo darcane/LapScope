@@ -805,6 +805,7 @@ function tick(dtMs) {
   // a stalled stream (game lost focus) dims the cluster instead of freezing
   // it at full brightness, which reads as live
   root.alpha = f && stale ? 0.45 : 1;
+  if (f) updateLiveChrome(f);  // car chip + raw panel: HTML, live-ui.js
   const frame = f || IDLE_FRAME;
   const raceTarget = frame.race_mode ? 1 : 0;
   const step = dtMs / RACE_EASE_MS;
@@ -975,15 +976,24 @@ async function boot() {
   }
 
   layout();
-  window.addEventListener("resize", rafThrottle(layout));
+  // the stage as well as the window: the raw panel and the write-failure
+  // banner take height from it without the window changing size, and a
+  // window resize still catches a DPR change at the same CSS size (#74)
+  const relayout = rafThrottle(layout);
+  new ResizeObserver(relayout).observe(stage);
+  window.addEventListener("resize", relayout);
   requestAnimationFrame(frame);
   setVisibleInterval(describe, 1000);
   describe();
 
   onSettingsChange(() => {
     accent = accentDef().accent;
+    syncRawPanel();
     requestDraw();
   });
+  initRawPanel();
+  syncRawPanel();
+  watchStatus();
   reducedMotion.addEventListener("change", requestDraw);
   connect();
 }
