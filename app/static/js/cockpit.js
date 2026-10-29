@@ -38,7 +38,9 @@ const components = [];
 /* ---------- live feed (a copy of dashboard.js's; shared live.js if adopted) ---------- */
 
 const STALE_MS = 2500;
-const feed = { frame: null, lastMsg: 0, connected: false, connLabel: null };
+const G = 9.80665;
+const feed = { frame: null, lastMsg: 0, connected: false, connLabel: null, trail: [] };
+const TRAIL_LEN = 90;  // friction-circle history, ~1.5 s at 60 Hz (as the classic dashboard)
 
 const RECONNECT_MIN = 1500;
 const RECONNECT_MAX = 15000;
@@ -50,8 +52,13 @@ function connect() {
   ws.onmessage = (ev) => {
     // hidden tab: nothing renders, so don't parse frames nobody will see
     if (document.hidden) return;
-    feed.frame = JSON.parse(ev.data);
+    const f = JSON.parse(ev.data);
+    feed.frame = f;
     feed.lastMsg = performance.now();
+    if (f.is_race_on) {
+      feed.trail.push([f.accel_x / G, f.accel_z / G]);
+      if (feed.trail.length > TRAIL_LEN) feed.trail.shift();
+    }
   };
   ws.onopen = () => {
     feed.connected = true;
@@ -419,6 +426,163 @@ function makeDelta() {
   };
 }
 
+/* Bottom-left: friction circle — lateral g across, longitudinal g up
+   (accel) / down (brake), ±1.6 g full scale, rings at 0.5 / 1 / 1.5 g, the
+   last ~1.5 s as a trail fading toward its oldest point. The dot turns amber
+   past 1.1 g. Readouts beside it. */
+const FRICTION_MAX_G = 1.6;
+function makeFriction() {
+  const cx = 180, cy = 480, R = 100, k = R / FRICTION_MAX_G;  // ACCEL label clears the LAST/BEST row
+  const c = new PIXI.Container();
+  const grid = new PIXI.Graphics()
+    .circle(cx, cy, 1.5 * k).fill({ color: accent, alpha: 0.04 });
+  for (const ring of [0.5, 1.0, 1.5]) grid.circle(cx, cy, ring * k).stroke({ width: 1.5, color: C.edge });
+  grid.moveTo(cx - R, cy).lineTo(cx + R, cy).moveTo(cx, cy - R).lineTo(cx, cy + R)
+    .stroke({ width: 1.5, color: C.edge });
+  const labels = [["ACCEL", cx, cy - R - 14], ["BRAKE", cx, cy + R + 14],
+    ["1.0", cx + k + 14, cy - 12], ["1.5", cx + 1.5 * k + 6, cy - 12]].map(([s, x, y]) => {
+    const t = bitmapText(s, 18, C.muted);
+    t.position.set(x, y);
+    return t;
+  });
+  const trailCtx = new PIXI.GraphicsContext();
+  const dotCtx = new PIXI.GraphicsContext();
+  c.addChild(grid, ...labels, new PIXI.Graphics(trailCtx), glowing(dotCtx, 8));
+
+  const read = ["LAT", "LON", "TOTAL"].map((name, i) => {
+    const l = bitmapText(name, 18, C.muted, 0, 0.5);
+    l.position.set(cx + R + 46, cy - 52 + i * 52);
+    const v = bitmapText("0.00", 36, C.text, 0, 0.5);
+    v.position.set(cx + R + 46, cy - 30 + i * 52);
+    c.addChild(l, v);
+    return v;
+  });
+
+  return {
+    root: c,
+    update(f) {
+      const tr = feed.trail;
+      trailCtx.clear();
+      for (let i = 1; i < tr.length; i++) {
+        trailCtx.moveTo(cx + tr[i - 1][0] * k, cy - tr[i - 1][1] * k)
+          .lineTo(cx + tr[i][0] * k, cy - tr[i][1] * k)
+          .stroke({ width: 2.5, color: accent, alpha: (i / tr.length) * 0.55, cap: "round" });
+      }
+      const lat = (f.accel_x || 0) / G, lon = (f.accel_z || 0) / G, tot = Math.hypot(lat, lon);
+      // a spike past the scale pins to the rim instead of leaving the gauge
+      const s = tot > FRICTION_MAX_G ? FRICTION_MAX_G / tot : 1;
+      dotCtx.clear().circle(cx + lat * k * s, cy - lon * k * s, 8).fill(tot > 1.1 ? C.warn : C.text);
+      read[0].text = lat.toFixed(2);
+      read[1].text = lon.toFixed(2);
+      read[2].text = tot.toFixed(2);
+      read[2].tint = tot > 1.1 ? C.warn : C.text;
+    },
+  };
+}
+
+/* the classic gauges' slipColor: hue 120 (green) at 0 slip → 0 (red) at
+   1.15+, as a number Pixi can tint with */
+function slipHex(s) {
+  const h = Math.max(0, Math.min(120, 120 * (1.15 - s) / 1.15)) / 360, sat = 0.75, l = 0.55;
+  const q = l + sat - l * sat, p = 2 * l - q;
+  const ch = (t) => {
+    t = (t + 1) % 1;
+    const v = t < 1 / 6 ? p + (q - p) * 6 * t : t < 1 / 2 ? q : t < 2 / 3 ? p + (q - p) * (2 / 3 - t) * 6 : p;
+    return Math.round(v * 255);
+  };
+  return (ch(h + 1 / 3) << 16) | (ch(h) << 8) | ch(h - 1 / 3);
+}
+
+/* the classic balanceText: front vs rear slip angle */
+function balance(f) {
+  const a = f.tire_slip_angle;
+  if (!a) return ["NEUTRAL", C.muted];
+  const front = (Math.abs(a[0]) + Math.abs(a[1])) / 2, rear = (Math.abs(a[2]) + Math.abs(a[3])) / 2;
+  if (Math.max(front, rear) < 0.5) return ["NEUTRAL", C.muted];
+  if (front > rear * 1.2) return ["UNDERSTEER", C.warn];
+  if (rear > front * 1.2) return ["OVERSTEER", C.bad];
+  return ["NEUTRAL", C.muted];
+}
+
+/* Bottom-right: the car from above. Each tire is coloured by combined slip
+   (glowing past 1.0) with the value on it, its temperature outboard of it
+   (blue < 160 °F, orange > 230 °F — packet units, whatever the display unit)
+   and its spring travel as a bar on the outer side (amber > 82 %, red > 95 %).
+   The axle that is sliding more lights up with the balance read-out. */
+const TIRE_ORDER = ["FL", "FR", "RL", "RR"];
+function makeTires() {
+  const cx = 1330, cy = 462, bodyW = 104, bodyH = 176, tw = 34, th = 58;
+  const px = bodyW / 2 + 26, py = bodyH / 2 - 30;
+  const pos = [[cx - px, cy - py], [cx + px, cy - py], [cx - px, cy + py], [cx + px, cy + py]];
+  const suspX = (i) => pos[i][0] + (i % 2 === 0 ? -1 : 1) * (tw / 2 + 14) - 4;
+  const c = new PIXI.Container();
+  const body = new PIXI.Graphics()
+    .roundRect(cx - bodyW / 2, cy - bodyH / 2, bodyW, bodyH, 22).stroke({ width: 2, color: "#3a475c" })
+    .roundRect(cx - bodyW * 0.32, cy - bodyH * 0.16, bodyW * 0.64, bodyH * 0.4, 10).stroke({ width: 2, color: "#2a3546" });
+  const axleCtx = new PIXI.GraphicsContext();
+  const shell = new PIXI.Graphics();
+  for (let i = 0; i < 4; i++) {
+    const [x, y] = pos[i];
+    shell.roundRect(x - tw / 2, y - th / 2, tw, th, 9).fill(C.track)
+      .roundRect(suspX(i), y - th / 2, 8, th, 4).fill("#0a0e14").stroke({ width: 1, color: C.edge });
+  }
+  const tireCtx = new PIXI.GraphicsContext();   // slip fills up to 1.0
+  const hotCtx = new PIXI.GraphicsContext();    // past 1.0: same fill, glowing
+  const suspCtx = new PIXI.GraphicsContext();
+  c.addChild(glowing(axleCtx, 10), body, shell, new PIXI.Graphics(tireCtx), glowing(hotCtx, 10),
+    new PIXI.Graphics(suspCtx));
+
+  const slipTxt = [], tempTxt = [];
+  for (let i = 0; i < 4; i++) {
+    const [x, y] = pos[i], front = i < 2, left = i % 2 === 0;
+    const lbl = bitmapText(TIRE_ORDER[i], 18, C.muted);
+    lbl.position.set(x, front ? y - th / 2 - 14 : y + th / 2 + 14);
+    const st = bitmapText("0.0", 20, "#ffffff");
+    st.position.set(x, y);
+    st.tint = "#0b0e13";
+    // temps sit outboard of the suspension bar
+    const tt = bitmapText("–", 22, "#ffffff", left ? 1 : 0, 0.5);
+    tt.position.set(left ? suspX(i) - 10 : suspX(i) + 18, y);
+    c.addChild(lbl, st, tt);
+    slipTxt.push(st);
+    tempTxt.push(tt);
+  }
+  const bal = bitmapText("NEUTRAL", 24, "#ffffff");
+  bal.position.set(cx, cy + bodyH / 2 + 44);
+  c.addChild(bal);
+
+  return {
+    root: c,
+    update(f) {
+      const slip = f.tire_combined_slip || [0, 0, 0, 0];
+      const temps = f.tire_temp || null;
+      const susp = f.norm_susp_travel || [0, 0, 0, 0];
+      tireCtx.clear();
+      hotCtx.clear();
+      suspCtx.clear();
+      for (let i = 0; i < 4; i++) {
+        const [x, y] = pos[i], s = slip[i] || 0;
+        (s > 1.0 ? hotCtx : tireCtx).roundRect(x - tw / 2, y - th / 2, tw, th, 9).fill(slipHex(s));
+        slipTxt[i].text = s.toFixed(1);
+        const tF = temps ? temps[i] : null;
+        tempTxt[i].text = tF == null ? "–" : fmtTireTemp(tF);
+        tempTxt[i].tint = tF == null ? C.muted : tF < 160 ? "#7fb2ff" : tF > 230 ? "#ff8a5d" : C.text;
+        const cmp = Math.max(0, Math.min(1, susp[i] || 0)), fh = Math.max(2, th * cmp);
+        suspCtx.roundRect(suspX(i), y + th / 2 - fh, 8, fh, 4)
+          .fill(cmp > 0.95 ? C.bad : cmp > 0.82 ? C.warn : accent);
+      }
+      const [txt, col] = balance(f);
+      bal.text = txt;
+      bal.tint = col;
+      axleCtx.clear();
+      if (txt !== "NEUTRAL") {
+        const y = txt === "UNDERSTEER" ? cy - py : cy + py;
+        axleCtx.moveTo(cx - px, y).lineTo(cx + px, y).stroke({ width: 6, color: col, alpha: 0.7, cap: "round" });
+      }
+    },
+  };
+}
+
 /* Before the first packet: the dial idles and the speed slot says why
    nothing moves. The full setup instructions live on the Live page. */
 function makeWaiting() {
@@ -532,7 +696,8 @@ async function boot() {
   root = new PIXI.Container();
   app.stage.addChild(root);
   waiting = makeWaiting();
-  for (const c of [makeShiftLights(), makeInputs(), makeTach(), makeTiming(), makeDelta(), waiting]) {
+  for (const c of [makeShiftLights(), makeInputs(), makeTach(), makeTiming(), makeDelta(),
+    makeFriction(), makeTires(), waiting]) {
     components.push(c);
     root.addChild(c.root);
   }

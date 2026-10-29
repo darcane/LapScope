@@ -1,6 +1,6 @@
 # Spike: PixiJS cockpit (POC)
 
-Branch: `feat/pixi-cockpit-poc`. Status: **step 3 done** (see Progress at the
+Branch: `feat/pixi-cockpit-poc`. Status: **step 4 done** (see Progress at the
 bottom).
 
 ## Question the spike answers
@@ -244,3 +244,23 @@ and motion ideas, drop Pixi), or drop.
 - Verified headless: simulator `--freeroam 12 --race 2` (chip, lap clock,
   slide-in on the event start), injected frames for the delta bar both
   ways, the zero-crossing pulse and the free-roam fade. No console errors.
+
+### Step 4 — friction circle + tire car (done)
+
+- Friction circle bottom-left: ±1.6 g, rings at 0.5 / 1 / 1.5 g, 90-sample
+  trail (fed in the socket handler while `is_race_on`, like the classic
+  page) fading toward its oldest point, dot amber past 1.1 g and pinned to
+  the rim on an off-scale spike; LAT / LON / TOTAL readouts beside it.
+- Tire car bottom-right: tires coloured by combined slip with the classic
+  `slipColor` hue rule (converted to a hex number — the scene tints with
+  numbers, not CSS `hsl()`), glowing past 1.0; temperature outboard in the
+  user's unit with the classic blue < 160 °F / orange > 230 °F bands; spring
+  travel bar per corner (amber > 82 %, red > 95 %); balance read-out from the
+  classic slip-angle rule, with the sliding axle lit.
+- Slip fills are split across two contexts — up to 1.0 plain, past 1.0
+  glowing — so the blur pass only ever covers the tires that earn it.
+- Verified headless: injected frames covering every colour band, oversteer
+  and understeer, and a 3 g spike; a live `--sprint 40 --jumps` run (slip
+  to 1.22, suspension to 0.81, trail filling to 90). No console errors.
+- Desktop now has the whole first section. Portrait phones still letterbox
+  it into a thin strip — the stacked layout is part of step 5.
