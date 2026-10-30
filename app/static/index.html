@@ -8,12 +8,14 @@
 <link rel="stylesheet" href="css/fonts.css">
 <link rel="stylesheet" href="css/style.css">
 </head>
-<body>
+<body class="cockpit-page">
 <header>
   <div class="brand"><i></i>LAP<span>SCOPE</span></div>
   <nav>
     <a class="active" href="index.html">Live</a>
     <a href="analysis.html">Analysis</a>
+    <!-- the pre-cockpit dashboard; remove it or make it a real Lite view: #101 -->
+    <a class="nav-minor" href="classic.html" title="The previous live dashboard: simple panels, plain Canvas 2D">Classic</a>
   </nav>
   <div id="car-chip" class="chip" style="display:none"></div>
   <div id="conn" class="chip"><i class="dot"></i><span>connecting…</span></div>
@@ -37,94 +39,32 @@
   </div>
 </div>
 
-<main class="grid">
-  <section class="panel cluster span7">
-    <div id="shift-lights"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-    <div class="cluster-flex">
-      <canvas id="rpm" role="img"
-                aria-label="Engine RPM dial and current gear"></canvas>
-      <div class="speed-block">
-        <div id="speed">0</div>
-        <div id="speed-unit">km/h</div>
-        <div class="mini-row">
-          <span><b id="power">0</b><em id="power-unit">kW</em></span>
-          <span><b id="boost">0.0</b><em id="boost-unit">psi</em></span>
-        </div>
-      </div>
-    </div>
-  </section>
+<main id="cockpit-stage" role="img" aria-label="Cockpit — loading"></main>
 
-  <section class="panel span5">
-    <h2>Lap · delta to session best <span id="race-flag" class="race-flag">—</span></h2>
-    <div id="delta">—</div>
-    <div class="lap-grid">
-      <div><div class="label">Current</div><div class="value" id="lap-cur">–:--.---</div></div>
-      <div><div class="label">Last</div><div class="value" id="lap-last">–:--.---</div></div>
-      <div><div class="label">Session best</div><div class="value" id="lap-best">–:--.---</div></div>
-      <div><div class="label">Lap / Pos</div><div class="value" id="lap-no">– / –</div></div>
-    </div>
-  </section>
+<!-- HTML, not Pixi: hundreds of changing numbers are what the DOM is good at,
+     and the cockpit shrinks to make room instead of being covered -->
+<section class="panel" id="raw-panel" style="display:none">
+  <h2>Raw telemetry — packet values, game-native units
+    <button id="raw-hold" type="button" aria-pressed="false" title="Freeze the displayed values to read them — telemetry keeps recording">⏸ Hold</button>
+  </h2>
+  <div id="raw-body"></div>
+</section>
 
-  <section class="panel span4">
-    <h2>Friction circle</h2>
-    <canvas id="friction" role="img"
-            aria-label="Friction circle — lateral and longitudinal g, with a recent trail. The current values are listed below it."></canvas>
-    <div class="g-readout">
-      <span>Lat <b id="latg">0.00</b> g</span>
-      <span>Lon <b id="long">0.00</b> g</span>
-      <span>Total <b id="totg">0.00</b> g</span>
-    </div>
-  </section>
-
-  <section class="panel span4">
-    <h2>Tire grip · slip / temp / spring</h2>
-    <canvas id="grip" role="img"
-            aria-label="Tire grip diagram — combined slip, temperature and spring travel per wheel"></canvas>
-    <div id="balance" class="balance">—</div>
-  </section>
-
-  <section class="panel span4">
-    <h2>Inputs</h2>
-    <div class="inputs-flex">
-      <div class="vbar">
-        <div class="vbar-track"><div id="bar-th" class="vbar-fill th"></div></div>
-        <b id="thr-val">0</b><span>THR</span>
-      </div>
-      <div class="vbar">
-        <div class="vbar-track"><div id="bar-br" class="vbar-fill br"></div></div>
-        <b id="brk-val">0</b><span>BRK</span>
-      </div>
-      <div class="steer-col">
-        <div class="steer-track"><i class="notch"></i><div id="steer-ind"></div></div>
-        <span>STEERING</span>
-        <div class="gear-mini">Gear <b id="gear-mini">–</b></div>
-      </div>
-    </div>
-  </section>
-
-  <section class="panel span5">
-    <h2>Track map — drawn live during a race</h2>
-    <canvas id="livemap" role="img"
-            aria-label="Track map drawn from the current event's path, with the car's position and heading"></canvas>
-  </section>
-
-  <section class="panel span7">
-    <h2>Input trace — <span class="lg-th">throttle</span> · <span class="lg-br">brake</span> · <span class="lg-st">steering</span></h2>
-    <canvas id="strip" role="img"
-            aria-label="Input trace — the last 12 seconds of throttle, brake and steering"></canvas>
-  </section>
-
-  <section class="panel span12" id="raw-panel" style="display:none">
-    <h2>Raw telemetry — packet values, game-native units
-      <button id="raw-hold" title="Freeze the displayed values to read them — telemetry keeps recording">⏸ Hold</button>
-    </h2>
-    <div id="raw-body"></div>
-  </section>
-</main>
+<div id="cockpit-fail" class="overlay hidden">
+  <div class="box">
+    <h3>The cockpit could not start</h3>
+    <p>This browser could not start any of the cockpit's renderers (WebGL,
+       WebGPU or the Canvas fallback). The
+       <a href="classic.html">classic live dashboard</a> may still work.</p>
+    <div class="stat error" id="cockpit-fail-why"></div>
+  </div>
+</div>
 
 <script src="js/common.js"></script>
 <script src="js/settings.js"></script>
-<script src="js/gauges.js"></script>
-<script src="js/dashboard.js"></script>
+<script src="js/live.js"></script>
+<script src="js/live-ui.js"></script>
+<script src="js/vendor/pixi.min.js"></script>
+<script src="js/cockpit.js"></script>
 </body>
 </html>

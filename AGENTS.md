@@ -54,7 +54,7 @@ straight through `SessionTracker`, no game or container — see
 way to verify the frontend and the real UDP path.
 
 ```
-FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.py ─▶ /ws/live ─▶ dashboard.js
+FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.py ─▶ /ws/live ─▶ live.js ─▶ cockpit.js
                                                   └─▶ laps.py (SessionTracker) ─▶ store.py (SQLite)
                                                         REST /api (routes.py) ─▶ analysis.js
 ```
@@ -346,7 +346,7 @@ All the rules exist because some real behavior broke a naive version:
   hundreds of ms, an impact is an impulse — so a non-landing burst counts only
   when some frame of it either gained `IMPACT_JERK` (30 m/s², ~3 g) over the
   previous frame, or reached `IMPACT_PEAK` (98 m/s², ~10 g). `impulsive()` in
-  laps.py is the one implementation, imported by `_scan_lap`; dashboard.js
+  laps.py is the one implementation, imported by `_scan_lap`; live.js
   mirrors it. Swept over all 70 stored sessions / 1813 bursts (2026-07-26,
   same dump/hand-classify method as the landing classifier): of the 1334
   bursts rising slower than 1 g/frame **not one** reached 10 g, and the
@@ -355,7 +355,7 @@ All the rules exist because some real behavior broke a naive version:
   while cross-country/dirt sessions barely move (55: 7→6, 103: 5→5, 8: 13→9)
   and the low-downforce control (146, Diablo SV) was 0 before and after.
   Only jerk is *causal* (one frame of history), which is why it and not burst
-  duration or speed-delta drives the live recorder and dashboard.js.
+  duration or speed-delta drives the live recorder and live.js.
   `IMPACT_JERK_DT_MAX` (0.05 s) ignores a jerk read across a stream gap or a
   rewind splice — the gap manufactures it. Rejected bursts are dropped
   outright (issue #49).
@@ -365,7 +365,7 @@ All the rules exist because some real behavior broke a naive version:
   airborne (all four `NormalizedSuspensionTravel` < 0.15 **and** all four
   `TireCombinedSlip` < 0.05 for ≥ 0.12 s — in flight wheels hang at full droop
   with zero tire force) or within 0.35 s of touchdown is a landing, not contact
-  (`AIRBORNE_*` / `LANDING_GRACE_S` in laps.py, mirrored in dashboard.js).
+  (`AIRBORNE_*` / `LANDING_GRACE_S` in laps.py, mirrored in live.js).
   Calibrated on real cross-country (session 55: 5 of 12 spikes were landings —
   touchdown compresses the suspension 1–2 frames *before* the spike, and
   suspension drifts up to ~0.11 mid-flight, hence the loose thresholds and the
@@ -491,8 +491,18 @@ server joining mid-lap, event restart.
  `fc_mapmode` keys once on load.
 - Server sends `Cache-Control: no-cache` for non-API paths (browsers cached stale
   JS once); keep that middleware.
-- Canvas gauges are pure functions of passed state (`gauges.js`); DPR-scaled via
-  `initCanvas`.
+- The Live page is one PixiJS scene (`cockpit.js`, vendored `pixi.min.js`):
+  build static geometry once and move only values per frame; a component's
+  `update()` returns true while its own animation runs, and the scene is drawn
+  only on a new packet, a running animation or `requestDraw()` — never add an
+  unconditional per-display-frame redraw. Anything text-heavy (overlays,
+  banners, the raw panel) stays HTML around the stage, in `live-ui.js`, shared
+  with the classic page. The feed and detection mirror live in `live.js`.
+- The classic live page (`classic.html`, `dashboard.js`, `gauges.js`) sits
+  behind the dimmed Classic nav link while
+  [#101](https://github.com/darcane/LapScope/issues/101) decides between
+  deleting it and making it a supported Lite view. Until then, don't build new
+  features on it.
 - The live track map resets on session-id change and on any single-frame
   position jump > 250 m (grid snap / event restart — a car can't move that far
   in 1/60 s; keeping the old points would wreck the bounds). The finished

@@ -141,11 +141,12 @@ def test_a_never_seen_packet_age_does_not_raise():
 # --- invariants shared with the frontend -------------------------------------
 
 def test_stale_threshold_matches_the_dashboard():
-    """dashboard.js flips its chip to "paused" after 2500 ms. If these drift,
-    the window and the page disagree about the same moment."""
+    """live.js (the live pages' shared feed) flips the chip to "paused" after
+    2500 ms. If these drift, the window and the page disagree about the same
+    moment."""
     assert STALE_S == 2.5
-    js = (ROOT / "app" / "static" / "js" / "dashboard.js").read_text(encoding="utf-8")
-    assert "2500" in js, "dashboard.js no longer uses 2500 ms; STALE_S needs the same change"
+    js = (ROOT / "app" / "static" / "js" / "live.js").read_text(encoding="utf-8")
+    assert "STALE_MS = 2500" in js, "live.js no longer uses 2500 ms; STALE_S needs the same change"
 
 
 def test_lap_times_format_the_way_the_pages_do():

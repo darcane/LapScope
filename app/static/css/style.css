@@ -88,6 +88,9 @@ nav a.active {
   background: var(--accent);
 }
 nav a:hover:not(.active) { color: var(--text); background: var(--panel-hi); }
+/* a way back to the classic live page (its future: #101), not a peer of
+   Live/Analysis: smaller and dimmer until it is the page you're on */
+nav a.nav-minor:not(.active) { font-size: 0.72rem; opacity: 0.7; }
 
 .update-banner {
   display: flex;
@@ -471,6 +474,35 @@ main.grid .lap-grid { margin-bottom: auto; }
   font-size: 0.95em;
 }
 .setup-lines { line-height: 2; }
+
+/* ---------- cockpit (the live page, PixiJS: index.html) ---------- */
+
+/* one WebGL surface fills everything under the header; the page itself never
+   scrolls, the scene scales to fit instead */
+body.cockpit-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+#cockpit-stage {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+#cockpit-stage canvas { display: block; }
+/* the raw panel docks under the cockpit and scrolls on its own; the stage
+   (flex: 1) gives up the height and the scene re-fits */
+body.cockpit-page #raw-panel {
+  flex: 0 0 auto;
+  max-height: 40vh;
+  overflow: auto;
+  margin: 0 16px 16px;
+}
 .overlay .stat { color: var(--muted); font-size: 0.85rem; margin-top: 16px; }
 .overlay .stat.error {
   color: var(--bad);

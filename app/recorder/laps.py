@@ -133,8 +133,8 @@ IMPACT_ACCEL = 45.0           # m/s^2 in the ground plane (~4.6 g) = contact
 # of ms, an impact is an impulse: swept over 1813 real bursts, jerk and peak
 # agree almost perfectly (of the 1334 bursts rising slower than 1 g/frame, not
 # one reached 10 g). Jerk needs only the previous frame, so the live recorder
-# and dashboard.js apply it with no buffering - unlike burst duration or speed
-# delta, which need the burst to finish. Mirrored in dashboard.js (lockstep).
+# and live.js apply it with no buffering - unlike burst duration or speed
+# delta, which need the burst to finish. Mirrored in live.js (lockstep).
 IMPACT_JERK = 30.0            # m/s^2 of ground-plane g gained in ONE frame
                               # (~3 g): the empty valley between the aero
                               # population and real hits (flat either side;
@@ -152,7 +152,7 @@ IMPACT_PEAK = 98.0            # m/s^2 (~10 g): no swept aero burst passed
 # coasting car shows load on some wheel. Touchdown compresses the suspension a
 # frame or two BEFORE the accel spike crosses IMPACT_ACCEL, so a spike counts
 # as the landing for a short grace window after the flight ends, not only
-# while airborne. Mirrored in dashboard.js for the live map (keep in lockstep).
+# while airborne. Mirrored in live.js for the live map (keep in lockstep).
 AIRBORNE_SUSP_MAX = 0.15      # all NormalizedSuspensionTravel below this
                               # (0 = full stretch; ~0.1 drift seen pre-landing)
 AIRBORNE_SLIP_MAX = 0.05      # and all TireCombinedSlip below this = no tire
@@ -211,7 +211,7 @@ def impulsive(t: float, g: float, prev: tuple[float, float] | None) -> bool:
     (t, ground-plane g), or None when there isn't one (a session opening
     mid-spike stays conservative: peak floor only). Shared by the recorder
     and _scan_lap (api/routes.py) so the live flag and the map markers can
-    never disagree; dashboard.js mirrors it for the live map."""
+    never disagree; live.js mirrors it for the live map."""
     if g >= IMPACT_PEAK:
         return True
     if prev is None:
