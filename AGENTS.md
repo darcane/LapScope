@@ -54,7 +54,7 @@ straight through `SessionTracker`, no game or container — see
 way to verify the frontend and the real UDP path.
 
 ```
-FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.py ─▶ /ws/live ─▶ dashboard.js
+FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.py ─▶ /ws/live ─▶ live.js ─▶ cockpit.js
                                                   └─▶ laps.py (SessionTracker) ─▶ store.py (SQLite)
                                                         REST /api (routes.py) ─▶ analysis.js
 ```
@@ -491,8 +491,16 @@ server joining mid-lap, event restart.
  `fc_mapmode` keys once on load.
 - Server sends `Cache-Control: no-cache` for non-API paths (browsers cached stale
   JS once); keep that middleware.
-- Canvas gauges are pure functions of passed state (`gauges.js`); DPR-scaled via
-  `initCanvas`.
+- The Live page is one PixiJS scene (`cockpit.js`, vendored `pixi.min.js`):
+  build static geometry once and move only values per frame; a component's
+  `update()` returns true while its own animation runs, and the scene is drawn
+  only on a new packet, a running animation or `requestDraw()` — never add an
+  unconditional per-display-frame redraw. Anything text-heavy (overlays,
+  banners, the raw panel) stays HTML around the stage, in `live-ui.js`, shared
+  with the classic page. The feed and detection mirror live in `live.js`.
+- The classic live page (`classic.html`, `dashboard.js`, `gauges.js`) is on
+  its way out: kept one release behind the dimmed Classic nav link, then
+  deleted. Don't build new features on it.
 - The live track map resets on session-id change and on any single-frame
   position jump > 250 m (grid snap / event restart — a car can't move that far
   in 1/60 s; keeping the old points would wreck the bounds). The finished

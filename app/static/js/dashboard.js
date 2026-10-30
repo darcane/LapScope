@@ -1,5 +1,6 @@
-/* Live dashboard: the shared feed (live.js) -> canvas gauges at display
-   refresh rate. */
+/* Classic live dashboard (classic.html): the shared feed (live.js) -> canvas
+   gauges at display refresh rate. Replaced by the cockpit (index.html,
+   cockpit.js); kept for one release, then removed with gauges.js. */
 
 let rpmG, fricG, gripG, stripG, liveMapG;
 function initCanvases() {
@@ -31,24 +32,7 @@ onSettingsChange(() => {
   syncRawPanel();
 });
 
-/* the no-data overlay's stats line, while it is visible (live-ui.js polls
-   /api/status and raises the write-failure banner itself) */
-watchStatus((st) => {
-  if ($("nodata").classList.contains("hidden")) return;
-  $("nd-port").textContent = st.udp_port;
-  const stat = $("nd-stat");
-  if (st.udp_error) {
-    stat.textContent = st.udp_error;
-    stat.classList.add("error");
-  } else {
-    stat.classList.remove("error");
-    stat.textContent =
-      st.packets_total === 0
-        ? `server: no packets received yet on UDP ${st.udp_port}` +
-          (st.bad_packets ? ` (${st.bad_packets} wrong-size packets!)` : "")
-        : `server: ${st.packets_total} packets received, last ${st.last_packet_age}s ago`;
-  }
-});
+watchStatus();
 
 function balanceText(f) {
   const front = (Math.abs(f.tire_slip_angle[0]) + Math.abs(f.tire_slip_angle[1])) / 2;
@@ -90,13 +74,7 @@ function describeCanvases(f) {
 function render() {
   requestAnimationFrame(render);
   const f = live.frame;
-  // The full-screen "waiting for telemetry" overlay is for the first-run case
-  // only (no frame ever). Once data has arrived, a stall must NOT re-cover the
-  // page: FH6 stops Data Out whenever it loses focus, so clicking away from
-  // the game to read the dashboard on a second screen would otherwise slam an
-  // opaque overlay — with the wrong diagnosis — over everything (issue #69).
-  // A stale-but-connected stream just flips the chip to PAUSED.
-  $("nodata").classList.toggle("hidden", !!f);
+  syncNoData(f);  // first-run setup steps (live-ui.js)
   syncConn();
   if (!f) return;
 

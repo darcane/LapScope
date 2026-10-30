@@ -196,12 +196,21 @@ An amber `paused` chip on the Live page means the socket is connected but no
 telemetry has arrived for a few seconds. That is normal and expected:
 **Forza Horizon 6 stops sending Data Out whenever the game loses focus**, so
 alt-tabbing to read the dashboard on a second screen pauses the stream. Every
-gauge holds its last value and the page stays usable; click back into the game
-and it goes green again within a frame.
+gauge holds its last value, dimmed so it doesn't read as live, and the page
+stays usable; click back into the game and it goes green again within a frame.
 
 A red `reconnecting…` chip is different — that is the WebSocket itself
 dropping, which means the server went away. Retries back off from 1.5 s to
 15 s and continue indefinitely.
+
+## "The cockpit could not start"
+
+The Live page draws with WebGL (or WebGPU, or a Canvas fallback). This message
+means the browser refused all three — usually hardware acceleration switched
+off in the browser's settings, a GPU blocklisted by the browser, or a remote
+desktop / VM session with no GPU. Turn hardware acceleration back on and reload,
+or use the **Classic** link in the header (the previous dashboard, plain
+Canvas 2D) for this release.
 
 ## Still stuck?
 

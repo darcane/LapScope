@@ -7,11 +7,20 @@ every screenshot here is regenerated from real Forza Horizon 6 drives by
 
 ## Live dashboard
 
-Speed / RPM / gear gauges, a friction circle (G-forces), per-tire grip (green =
-grip, red = sliding), an understeer/oversteer indicator, throttle/brake/steering
-traces, a lap timer with a **live delta vs. your session-best lap**, and a **track
-map that draws itself as you drive**. The map survives a mid-race pause (photo
-mode included) and marks contacts and jumps as they happen.
+The Live page is one **cockpit**, laid out like a car's instrument cluster: a
+tach with shift lights and the gear, speed, power and boost, a friction circle
+(G-forces — an impact past full scale pins to the rim and flashes red), per-tire
+grip (green = grip, red = sliding) with an understeer/oversteer indicator,
+throttle/brake/steering bars, and a lap timer with a **live delta vs. your
+session-best lap**. Below it, a **track map that draws itself as you drive** and
+a 12-second input trace. The map survives a mid-race pause (photo mode included)
+and marks contacts and jumps as they happen. The whole scene scales to fit the
+window and re-stacks itself on a portrait screen.
+
+The cockpit draws with WebGL, which every current desktop browser has. If yours
+can't start it, the page says so and links to the **Classic** dashboard (the
+link at the end of the header), the previous separate-panels layout. Classic is
+kept for this release only.
 
 An optional **raw telemetry panel** (off by default, ⚙ Settings) shows every
 packet field live in game-native units, with a ⏸ Hold button to freeze the values
@@ -124,7 +133,7 @@ raw-data toggles, privacy and storage. Preferences are saved in your browser.
 ![Settings panel](https://raw.githubusercontent.com/darcane/LapScope/main/docs/media/settings.png)
 
 Six curated accent presets; every gauge, map and chart follows along. Here, the
-live dashboard in Sunset:
+live cockpit in Sunset:
 
 ![Live dashboard in the Sunset accent](https://raw.githubusercontent.com/darcane/LapScope/main/docs/media/accent-live-sunset.png)
 

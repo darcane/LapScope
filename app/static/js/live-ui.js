@@ -1,7 +1,8 @@
-/* Page chrome both live pages share (index.html, cockpit.html), all plain
-   HTML around whatever draws the gauges: the car chip, the write-failure
-   banner and the raw-telemetry panel. Each page supplies the elements
-   (#car-chip, #raw-panel / #raw-body / #raw-hold); this file fills them.
+/* Page chrome both live pages share (index.html, classic.html), all plain
+   HTML around whatever draws the gauges: the first-run setup overlay, the car
+   chip, the write-failure banner and the raw-telemetry panel. Each page
+   supplies the elements (#nodata / #nd-port / #nd-stat, #car-chip,
+   #raw-panel / #raw-body / #raw-hold); this file fills them.
    Load after live.js. */
 
 /* The recorder can't write (disk full, database locked): packets still
@@ -22,15 +23,47 @@ function showWriteError(st) {
     `${lost} Free up disk space; recording resumes on its own.`;
 }
 
+/* The full-screen "waiting for telemetry" setup steps (#nodata) are for the
+   first-run case only: no frame ever. Once data has arrived, a stall must NOT
+   re-cover the page: FH6 stops Data Out whenever it loses focus, so clicking
+   away from the game to read the dashboard on a second screen would otherwise
+   slam an opaque overlay — with the wrong diagnosis — over everything (issue
+   #69). A stale-but-connected stream just flips the chip to PAUSED. Cheap to
+   call per drawn frame: the DOM is touched only when the answer changes. */
+let noDataShown = null;
+function syncNoData(f) {
+  if (noDataShown === !f) return;
+  noDataShown = !f;
+  document.getElementById("nodata").classList.toggle("hidden", !!f);
+}
+
+/* the overlay's stats line, while it is visible: what the server has seen */
+function updateNoDataStats(st) {
+  if (!noDataShown) return;
+  document.getElementById("nd-port").textContent = st.udp_port;
+  const stat = document.getElementById("nd-stat");
+  if (st.udp_error) {
+    stat.textContent = st.udp_error;
+    stat.classList.add("error");
+  } else {
+    stat.classList.remove("error");
+    stat.textContent =
+      st.packets_total === 0
+        ? `server: no packets received yet on UDP ${st.udp_port}` +
+          (st.bad_packets ? ` (${st.bad_packets} wrong-size packets!)` : "")
+        : `server: ${st.packets_total} packets received, last ${st.last_packet_age}s ago`;
+  }
+}
+
 /* /api/status every 2 s — via setVisibleInterval, so a hidden tab stops
-   polling — for the write-failure banner, which every live page must show;
-   `onStatus` gets the same payload for anything page-specific. */
-function watchStatus(onStatus) {
+   polling — for the write-failure banner and the first-run overlay's stats
+   line, which every live page must show. */
+function watchStatus() {
   const poll = async () => {
     try {
       const st = await (await fetch("/api/status")).json();
       showWriteError(st);
-      if (onStatus) onStatus(st);
+      updateNoDataStats(st);
     } catch { /* server briefly unavailable */ }
   };
   setVisibleInterval(poll, 2000);

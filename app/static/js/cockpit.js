@@ -1,5 +1,6 @@
-/* Cockpit POC: the live dashboard as one PixiJS (WebGL) scene instead of
-   seven Canvas 2D panels. Spike plan + verdict: docs/spikes/pixi-cockpit-poc.md.
+/* The cockpit (index.html): the live dashboard as one PixiJS (WebGL) scene
+   instead of seven Canvas 2D panels. Spike plan + verdict + adoption steps:
+   docs/spikes/pixi-cockpit-poc.md.
 
    PixiJS 8.22.0 (MIT), vendored byte-for-byte from the npm tarball as
    js/vendor/pixi.min.js — no CDN, the app must work offline.
@@ -176,7 +177,7 @@ function makeTach() {
       gear.scale.set(1 + 0.18 * punch * punch);
       const busy = punch > 0;
 
-      // before the first packet the waiting line takes the speed slot
+      // before the first packet: no speed to show (the setup overlay is up)
       speed.visible = unit.visible = f !== IDLE_FRAME;
       speed.text = String(Math.round(Math.max(0, speedFromMps(f.speed))));
       unit.text = speedUnit().toUpperCase();
@@ -761,16 +762,6 @@ function makeTrace() {
 
 /* Before the first packet: the dial idles and the speed slot says why
    nothing moves. The full setup instructions live on the Live page. */
-function makeWaiting() {
-  const c = new PIXI.Container();
-  const a = bitmapText("WAITING FOR TELEMETRY", 30, C.text);
-  a.position.set(TACH.cx, TACH.cy + TACH.r - 14);
-  const b = bitmapText("SETUP STEPS ON THE LIVE PAGE", 22, C.muted);
-  b.position.set(TACH.cx, TACH.cy + TACH.r + 22);
-  c.addChild(a, b);
-  return { root: c, update() {} };
-}
-
 /* ?debug: renderer facts + fps, for the spike's measurements. Lives in screen
    space (app.stage, unscaled), not in the design space: a letterboxed scene
    would otherwise put it on top of the shift lights. */
@@ -796,12 +787,11 @@ const IDLE_FRAME = {
   gear: 11, speed: 0,
 };
 
-let waiting;
 /* One scene update; returns true if anything is mid-animation. */
 function tick(dtMs) {
   const f = live.frame;
   const stale = syncConn();
-  waiting.root.visible = !f;
+  syncNoData(f);  // first-run setup steps: HTML over the scene, live-ui.js
   // a stalled stream (game lost focus) dims the cluster instead of freezing
   // it at full brightness, which reads as live
   root.alpha = f && stale ? 0.45 : 1;
@@ -826,7 +816,7 @@ const perf = { updMs: 0, fps: 0, draws: 0, since: 0 };
    bench measured that as most of the cockpit's cost. A frame is drawn only
    when a packet arrived since the last one, an animation is running, or
    something asked for it (resize, settings); otherwise once every IDLE_MS,
-   so the chip, the stale dim and the waiting line still move on a silent
+   so the chip and the stale dim still move on a silent
    stream. The game sends a packet per frame it renders, so a 120 fps player
    still gets 120 Hz here — the rate follows the game, not a fixed cap. */
 const IDLE_MS = 250;
@@ -952,7 +942,6 @@ async function boot() {
 
   root = new PIXI.Container();
   app.stage.addChild(root);
-  waiting = makeWaiting();
   const slots = {};
   const place = (slotName, c) => {
     if (!slots[slotName]) root.addChild(slots[slotName] = new PIXI.Container());
@@ -961,7 +950,7 @@ async function boot() {
     c.slot.addChild(c.root);
     components.push(c);
   };
-  for (const c of [makeShiftLights(), makeInputs(), makeTach(), waiting]) place("cluster", c);
+  for (const c of [makeShiftLights(), makeInputs(), makeTach()]) place("cluster", c);
   place("timing", makeTiming());
   place("delta", makeDelta());
   place("friction", makeFriction());

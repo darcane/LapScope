@@ -13,7 +13,7 @@ from enum import Enum
 
 # A stream quieter than this means the game stopped sending - paused, in a
 # menu, or alt-tabbed. Mirrors the 2500 ms the dashboard uses to flip its chip
-# to "paused" (app/static/js/dashboard.js:472); the two must not drift or the
+# to "paused" (STALE_MS in app/static/js/live.js); the two must not drift or the
 # window and the browser will disagree about the same moment.
 STALE_S = 2.5
 

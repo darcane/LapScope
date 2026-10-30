@@ -1,7 +1,7 @@
 # Spike: PixiJS cockpit (POC)
 
-Branch: `feat/pixi-cockpit-poc`. Status: **done — verdict: adopt Pixi** (see
-Verdict at the bottom).
+Branch: `feat/pixi-cockpit-poc`. Status: **adopted — the cockpit is the Live page** (see Verdict
+and the Adoption steps at the bottom).
 
 ## Question the spike answers
 
@@ -475,3 +475,21 @@ chip names the car on both pages, raw panel fills 93 cells and re-fits the
 scene (908 → 508 px), Hold freezes every cell and reports pressed, the banner
 appears from a failing status poll and clears on the next good one, the
 classic page's no-data stats line still updates; no console errors.
+
+### Adoption 4 — Firefox (done)
+
+Checked by hand in a real Firefox on the maintainer's machine: the cockpit
+starts on WebGL and runs a drive normally.
+
+### Adoption 5 — swap (done)
+
+`cockpit.html` became `index.html`; the old live page moved to
+`classic.html`, reachable from a dimmed "Classic" link at the end of the nav
+and from the cockpit's could-not-start overlay. It stays one release, then goes
+together with `dashboard.js` and `gauges.js`. One parity gap closed first: the
+cockpit had no first-run setup steps — only a "waiting for telemetry" line
+pointing at "the live page", which it now is — so the classic page's
+full-screen FH6 Data Out overlay moved into `live-ui.js` (`syncNoData`,
+`updateNoDataStats`) and both pages show it. `tools/capture_media.py` waits
+for the stage's canvas instead of `#rpm`, so the README/wiki live shots
+(hero, Sunset accent, paused chip) now capture the cockpit once regenerated.

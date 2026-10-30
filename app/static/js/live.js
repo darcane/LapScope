@@ -1,4 +1,4 @@
-/* Live feed shared by the live pages (index.html, cockpit.html): the
+/* Live feed shared by the live pages (index.html, classic.html): the
    WebSocket, the connection chip, the friction-trail and input-trace buffers,
    and the live track map's path + contact/jump detection. Pages only read
    `live` and `liveMap` and draw them — nothing here touches a canvas.
