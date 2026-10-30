@@ -26,10 +26,31 @@ const LINE_REBUILD_DRIFT = 0.15;
 // a lone lap's gradient: hue quantised so neighbouring segments of one colour
 // share a stroke — 2° is below what the eye separates on a 3 px line
 const GRAD_HUE_STEP = 2;
+// the gradient outside a chart zoom span. The canvas map strokes 0.22 per
+// ~1 px segment with round caps, so ~3 overlap at every pixel and it reads
+// at ~0.6 (measured); one stroke per run has no overlap, hence the number
+const FADED_ALPHA = 0.55;
 
 function makePixiMap(app) {
+  // three layers: lines (raw space, transformed), the screen-space overlay
+  // (start arrow, zoom span ends, jump glyphs, contact sparks — constant
+  // size whatever the zoom, redrawn on every draw(): a few dozen shapes),
+  // and the hover / pin dots, the only layer a chart hover touches. Save PNG
+  // extracts everything but the dots.
   const lines = new PIXI.Container();
-  app.stage.addChild(lines);
+  const endsCtx = new PIXI.GraphicsContext();   // zoom span ends, glowing
+  const startCtx = new PIXI.GraphicsContext();
+  const jumpCtx = new PIXI.GraphicsContext();   // soft landings
+  const hardCtx = new PIXI.GraphicsContext();   // hard landings: same glyph, glowing
+  const ringCtx = new PIXI.GraphicsContext();   // ...and their impact ring
+  const sparkCtx = new PIXI.GraphicsContext();
+  const overlayCtxs = [endsCtx, startCtx, jumpCtx, hardCtx, ringCtx, sparkCtx];
+  const overlay = new PIXI.Container();
+  overlay.addChild(glowing(endsCtx, 5), new PIXI.Graphics(startCtx), new PIXI.Graphics(jumpCtx),
+    glowing(hardCtx, 6), new PIXI.Graphics(ringCtx), glowing(sparkCtx, 5));
+  const markCtx = new PIXI.GraphicsContext();
+  const markers = glowing(markCtx, 6);
+  app.stage.addChild(lines, overlay, markers);
   let builtKey = "", builtScale = 0, sizeKey = "", queued = false;
   const ids = new WeakMap();
   let nextId = 0;
@@ -65,6 +86,44 @@ function makePixiMap(app) {
     builtKey = "";
   }
 
+  function drawOverlay({ loaded, ref, proj }) {
+    for (const c of overlayCtxs) c.clear();
+    if (!loaded.length) return;
+    const { P, at } = proj;
+    if (ref) {
+      const A = ref.data;
+      const zi = zoomIndexRange(A);
+      if (zi) {  // span endpoints: filled = where the window starts, hollow = ends
+        const zc = PICK_COLORS[0];
+        for (const [idx, fill, ring] of [[zi[0], zc, "#ffffff"], [zi[1], "#0b1520", zc]]) {
+          const [x, y] = at(A, idx, false);
+          endsCtx.circle(x, y, 5.5).fill(fill).stroke({ width: 2.5, color: ring });
+        }
+      }
+      const { sx, sy, arrow } = mapStartArrow(A, at);
+      startCtx.circle(sx, sy, 6).fill(START_COLOR);
+      if (arrow) {
+        const { stem, head } = arrow;
+        startCtx.moveTo(stem[0], stem[1]).lineTo(stem[2], stem[3])
+          .stroke({ width: 2.5, color: START_COLOR, cap: "round" });
+        startCtx.poly(head).fill(START_COLOR);
+      }
+    }
+    const { jumps, hits } = mapGlyphs(loaded, ref, P);
+    for (const j of jumps) {
+      jumpGlyph(j.hard ? hardCtx : jumpCtx, j.x0, j.y0, j.x1, j.y1, j.hard ? ringCtx : null,
+        { color: j.color, scale: 0.8 });
+    }
+    for (const h of hits) sparkGlyph(sparkCtx, h.x, h.y, { color: h.fill, r: h.r });
+  }
+
+  function drawMarkers() {
+    markCtx.clear();
+    for (const d of mapMarkerDots())
+      markCtx.circle(d.x, d.y, d.r).fill(d.fill).stroke({ width: d.width, color: d.ring });
+    render();
+  }
+
   // what the lines show, as a string: a change means a rebuild
   function keyOf({ loaded, ref, three, grad }) {
     return [
@@ -72,7 +131,7 @@ function makePixiMap(app) {
       ref ? idOf(ref.data) : "-",
       three ? `3d:${map3d.yaw}` : "2d",
       grad ? state.colorMode : "solid",
-      JSON.stringify(state.zoomRange),
+      JSON.stringify(state.zoomRange), PICK_COLORS[0],  // the halo's colour
     ].join("|");
   }
 
@@ -127,12 +186,16 @@ function makePixiMap(app) {
         // alpha; outside the zoom window everything fades, like the canvas
         const { vals, hue, sat } = grad;
         let runKey = null, runColor = 0, runAlpha = 1;
+        // round caps only at full alpha: faded runs would overlap their caps
+        // at every colour change and bead the line with doubled alpha
         const flush = () => {
-          if (runKey != null) g.stroke({ width: W(3), color: runColor, alpha: runAlpha, cap: "round" });
+          if (runKey != null) {
+            g.stroke({ width: W(3), color: runColor, alpha: runAlpha, cap: runAlpha < 1 ? "butt" : "round" });
+          }
         };
         for (let i = 1; i < n; i++) {
           const h = Math.round(hue(vals[i]) / GRAD_HUE_STEP) * GRAD_HUE_STEP;
-          const alpha = zi && (i <= zi[0] || i > zi[1]) ? 0.22 : 1;
+          const alpha = zi && (i <= zi[0] || i > zi[1]) ? FADED_ALPHA : 1;
           const key = `${h}|${alpha}`;
           if (key !== runKey) {
             flush();
@@ -166,23 +229,40 @@ function makePixiMap(app) {
       resize(scene.cssW, scene.cssH);
       if (!scene.loaded.length) {
         clear();
-        render();
-        return;
+      } else {
+        const { proj } = scene;
+        const sc = proj.scale * mapView.zoom;
+        const key = keyOf(scene);
+        if (key !== builtKey || Math.abs(sc / builtScale - 1) > LINE_REBUILD_DRIFT) {
+          build(scene, sc);
+          builtKey = key;
+        }
+        lines.scale.set(sc);
+        lines.position.set(proj.offX * mapView.zoom + mapView.panX,
+                           proj.offY * mapView.zoom + mapView.panY);
       }
-      const { proj } = scene;
-      const sc = proj.scale * mapView.zoom;
-      const key = keyOf(scene);
-      if (key !== builtKey || Math.abs(sc / builtScale - 1) > LINE_REBUILD_DRIFT) {
-        build(scene, sc);
-        builtKey = key;
-      }
-      lines.scale.set(sc);
-      lines.position.set(proj.offX * mapView.zoom + mapView.panX,
-                         proj.offY * mapView.zoom + mapView.panY);
-      render();
+      drawOverlay(scene);
+      drawMarkers();  // renders
     },
-    // hover dot / pin ring: step 4 (the canvas map's drawMapMarker)
-    drawMarkers() {},
+    drawMarkers,
+    // the map as drawn minus the hover / pin dots, for Save PNG: an extract
+    // of the stage at the device pixel size, on the export's own `background`
+    // (extract hands back premultiplied pixels — composited again over a fill
+    // they wash out every translucent stroke, so they get an opaque one here)
+    snapshot(background) {
+      const dpr = app.renderer.resolution;
+      markers.visible = false;
+      const snap = app.renderer.extract.canvas({
+        target: app.stage,
+        frame: new PIXI.Rectangle(0, 0, app.screen.width, app.screen.height),
+        resolution: dpr,
+        antialias: true,
+        clearColor: background,
+      });
+      markers.visible = true;
+      render();
+      return { snap, dpr };
+    },
   };
 }
 

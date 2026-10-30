@@ -1602,21 +1602,16 @@ function lowerBound(xs, x) {
   return lo;
 }
 
-function drawMapMarker() {
-  if (pixiMap) return pixiMap.drawMarkers();
-  const canvas = $("#trackmap");
+/* The hover / pin dots, in draw order, for both renderers: { x, y, r, color,
+   fill, ring, width } in CSS pixels. An index lives on the reference lap's
+   arrays; every other lap is marked at the same track position (its own
+   lower bound on dist), so the dots' spread IS the racing-line difference at
+   that spot. filled = live hover, hollow ring = the pinned point (both when
+   hovering the pinned spot). */
+function mapMarkerDots() {
   const ref = refPick();
-  if (!canvas || !mapCursor.snap || !mapCursor.proj) return;
-  const ctx = canvas.getContext("2d");
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(mapCursor.snap, 0, 0);
-  ctx.setTransform(mapCursor.dpr, 0, 0, mapCursor.dpr, 0, 0);
-  if (!ref) return;
-  // an index lives on the reference lap's arrays; every other lap is marked
-  // at the same track position (its own lower bound on dist), so the dots'
-  // spread IS the racing-line difference at that spot. filled = live hover,
-  // hollow ring = the pinned point (both when hovering the pinned spot).
+  if (!ref || !mapCursor.proj) return [];
+  const dots = [];
   const markAt = (idx, filled) => {
     const ri = Math.min(idx, ref.data.channels.pos_x.length - 1);
     const dist = ref.data.dist[ri];
@@ -1624,17 +1619,8 @@ function drawMapMarker() {
       const c = p.data.channels;
       const j = Math.min(i, c.pos_x.length - 1);
       const [x, y] = mapCursor.proj(c.pos_x[j], c.pos_y ? c.pos_y[j] : 0, c.pos_z[j], false);
-      ctx.save();
-      ctx.shadowColor = p.color;
-      ctx.shadowBlur = 10;
-      ctx.fillStyle = filled ? p.color : "#0b1520";
-      ctx.strokeStyle = filled ? "#fff" : p.color;
-      ctx.lineWidth = filled ? 2 : 2.5;
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.restore();
+      dots.push({ x, y, r, color: p.color, fill: filled ? p.color : "#0b1520",
+                  ring: filled ? "#fff" : p.color, width: filled ? 2 : 2.5 });
     };
     for (const p of state.picks)
       if (p.data && p !== ref) dot(p, lowerBound(p.data.dist, dist), 4.5);
@@ -1642,6 +1628,31 @@ function drawMapMarker() {
   };
   if (mapCursor.pin != null) markAt(mapCursor.pin, false);
   if (mapCursor.idx != null) markAt(mapCursor.idx, true);
+  return dots;
+}
+
+function drawMapMarker() {
+  if (pixiMap) return pixiMap.drawMarkers();
+  const canvas = $("#trackmap");
+  if (!canvas || !mapCursor.snap || !mapCursor.proj) return;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(mapCursor.snap, 0, 0);
+  ctx.setTransform(mapCursor.dpr, 0, 0, mapCursor.dpr, 0, 0);
+  for (const d of mapMarkerDots()) {
+    ctx.save();
+    ctx.shadowColor = d.color;
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = d.fill;
+    ctx.strokeStyle = d.ring;
+    ctx.lineWidth = d.width;
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
 /* screen-space contact markers of the last drawMap, for right-click hit
@@ -1833,6 +1844,67 @@ function zoomIndexRange(A) {
   return i0 < i1 ? [i0, i1] : null;
 }
 
+/* the start dot + drive direction: a stem and arrowhead pointing along the
+   first stretch of the lap (sampled in screen space, so it follows the 3D
+   projection too). `arrow` is null when the lap barely moves. */
+const START_COLOR = "#34d399";
+function mapStartArrow(A, at) {
+  const [sx, sy] = at(A, 0, false);
+  const nPts = A.channels.pos_x.length;
+  let j = 1;
+  while (j < nPts - 1) {
+    const [px, py] = at(A, j, false);
+    if (Math.hypot(px - sx, py - sy) >= 14) break;
+    j++;
+  }
+  const [hx, hy] = at(A, j, false);
+  if (Math.hypot(hx - sx, hy - sy) <= 2) return { sx, sy, arrow: null };
+  const ang = Math.atan2(hy - sy, hx - sx);
+  const ax = sx + Math.cos(ang) * 24, ay = sy + Math.sin(ang) * 24;
+  return {
+    sx, sy, arrow: {
+      stem: [sx + Math.cos(ang) * 9, sy + Math.sin(ang) * 9, ax, ay],
+      head: [ax + Math.cos(ang) * 9, ay + Math.sin(ang) * 9,
+             ax + Math.cos(ang + 2.4) * 6.5, ay + Math.sin(ang + 2.4) * 6.5,
+             ax + Math.cos(ang - 2.4) * 6.5, ay + Math.sin(ang - 2.4) * 6.5],
+    },
+  };
+}
+
+/* jump flights (takeoff -> touchdown, detected server-side) and collision
+   points (contact spikes), in screen space and draw order, for both
+   renderers - drawn over the ribbon so they read against any coloring. The
+   reference lap's are full-strength, every other pick's dimmer (they'd drown
+   the overlay in sparks otherwise); every hit also lands in hitMarkers, so
+   right-click dismissal works on any picked lap. Landing spikes are part of
+   the jump glyph (hard = glow + impact ring), not their own spark - not
+   contact. Empty with the contact layer switched off in Settings. */
+function mapGlyphs(loaded, ref, P) {
+  const jumps = [], hits = [];
+  if (!getSettings().contactLayer) return { jumps, hits };
+  const addJumps = (d, color) => {
+    for (const j of d.jumps || []) {
+      const [x0, y0] = P(j.x0, j.y0 ?? 0, j.z0, false);
+      const [x1, y1] = P(j.x1, j.y1 ?? 0, j.z1, false);
+      jumps.push({ x0, y0, x1, y1, color, hard: j.hard });
+    }
+  };
+  const addHits = (d, fill, r) => {
+    for (const h of d.collisions || []) {
+      if (h.landing) continue;   // drawn as its jump's touchdown, not a spark
+      if (h.dismissed) continue; // user said "not a contact"
+      const [x, y] = P(h.x, h.y ?? 0, h.z, false);
+      hitMarkers.push({ x, y, lapId: d.lap.id, t: h.t });
+      hits.push({ x, y, fill, r });
+    }
+  };
+  for (const p of loaded) if (p !== ref) addJumps(p.data, "#7f6f4b");
+  if (ref) addJumps(ref.data, "#f59e0b");
+  for (const p of loaded) if (p !== ref) addHits(p.data, "#7f5b5b", 6);
+  if (ref) addHits(ref.data, "#ef4444", 7);
+  return { jumps, hits };
+}
+
 /* a lone lap keeps the telemetry gradient (speed / slip): one value per
    sample, its hue (common.js's ramps) and saturation, and the legend that
    explains it */
@@ -1919,7 +1991,9 @@ function drawMap() {
   }
   const scene = { cssW, cssH, loaded, ref, multi, three, proj, grad };
   if (pixiMap) {
-    hitMarkers.length = 0;  // right-click dismissal: step 4 of the Pixi map
+    // the hover dots project through this; hitMarkers refill in draw()
+    mapCursor.proj = proj ? proj.P : null;
+    hitMarkers.length = 0;
     pixiMap.draw(scene);
   } else {
     drawCanvasMap(canvas, scene);
@@ -2032,88 +2106,50 @@ function drawCanvasMap(canvas, { cssW, cssH, loaded, ref, three, proj, grad }) {
         ctx.restore();
       }
     }
-    const [sx, sy] = at(A, 0, false);
-    ctx.fillStyle = "#34d399";
+    const { sx, sy, arrow } = mapStartArrow(A, at);
+    ctx.fillStyle = START_COLOR;
     ctx.beginPath();
     ctx.arc(sx, sy, 6, 0, Math.PI * 2);
     ctx.fill();
-
-    // drive direction: stem + arrowhead pointing along the first stretch of
-    // the lap (sampled in screen space, so it follows the 3D projection too)
-    const nPts = A.channels.pos_x.length;
-    let j = 1;
-    while (j < nPts - 1) {
-      const [px, py] = at(A, j, false);
-      if (Math.hypot(px - sx, py - sy) >= 14) break;
-      j++;
-    }
-    const [hx, hy] = at(A, j, false);
-    if (Math.hypot(hx - sx, hy - sy) > 2) {
-      const ang = Math.atan2(hy - sy, hx - sx);
-      const ax = sx + Math.cos(ang) * 24, ay = sy + Math.sin(ang) * 24;
-      ctx.strokeStyle = "#34d399";
+    if (arrow) {
+      const { stem, head } = arrow;
+      ctx.strokeStyle = START_COLOR;
       ctx.lineWidth = 2.5;
       ctx.lineCap = "round";
       ctx.beginPath();
-      ctx.moveTo(sx + Math.cos(ang) * 9, sy + Math.sin(ang) * 9);
-      ctx.lineTo(ax, ay);
+      ctx.moveTo(stem[0], stem[1]);
+      ctx.lineTo(stem[2], stem[3]);
       ctx.stroke();
       ctx.beginPath();
-      ctx.moveTo(ax + Math.cos(ang) * 9, ay + Math.sin(ang) * 9);
-      ctx.lineTo(ax + Math.cos(ang + 2.4) * 6.5, ay + Math.sin(ang + 2.4) * 6.5);
-      ctx.lineTo(ax + Math.cos(ang - 2.4) * 6.5, ay + Math.sin(ang - 2.4) * 6.5);
+      ctx.moveTo(head[0], head[1]);
+      ctx.lineTo(head[2], head[3]);
+      ctx.lineTo(head[4], head[5]);
       ctx.closePath();
       ctx.fill();
     }
   }
 
-  // jump flights (takeoff -> touchdown, detected server-side) with the shared
-  // glyph, then collision points (contact spikes) as red bursts - both over
-  // the ribbon so they read against any coloring. The reference lap's are
-  // full-strength, every other pick's dimmer (they'd drown the overlay in
-  // sparks otherwise); all of them land in hitMarkers, so right-click
-  // dismissal works on any picked lap. Landing spikes are part of the jump
-  // glyph (hard = glow + impact ring), not their own spark - not contact.
-  const drawJumps = (d, color) => {
-    if (!d || !d.jumps) return;
-    for (const j of d.jumps) {
-      const [X0, Y0] = P(j.x0, j.y0 ?? 0, j.z0, false);
-      const [X1, Y1] = P(j.x1, j.y1 ?? 0, j.z1, false);
-      drawJump(ctx, X0, Y0, X1, Y1, { color, hard: j.hard });
+  const { jumps, hits } = mapGlyphs(loaded, ref, P);
+  for (const j of jumps) drawJump(ctx, j.x0, j.y0, j.x1, j.y1, { color: j.color, hard: j.hard });
+  for (const { x, y, fill, r } of hits) {
+    ctx.save();
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1.5;
+    ctx.fillStyle = fill;
+    ctx.shadowColor = fill;
+    ctx.shadowBlur = 8;
+    // 4-point spark
+    ctx.beginPath();
+    for (let k = 0; k < 8; k++) {
+      const a = (k * Math.PI) / 4;
+      const rr = k % 2 ? r * 0.4 : r;
+      const px = x + Math.cos(a) * rr, py = y + Math.sin(a) * rr;
+      k === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
     }
-  };
-  const drawHits = (d, fill, r) => {
-    if (!d || !d.collisions) return;
-    for (const h of d.collisions) {
-      if (h.landing) continue;   // drawn as its jump's touchdown, not a spark
-      if (h.dismissed) continue; // user said "not a contact"
-      const [X, Y] = P(h.x, h.y ?? 0, h.z, false);
-      hitMarkers.push({ x: X, y: Y, lapId: d.lap.id, t: h.t });
-      ctx.save();
-      ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 1.5;
-      ctx.fillStyle = fill;
-      ctx.shadowColor = fill;
-      ctx.shadowBlur = 8;
-      // 4-point spark
-      ctx.beginPath();
-      for (let k = 0; k < 8; k++) {
-        const a = (k * Math.PI) / 4;
-        const rr = k % 2 ? r * 0.4 : r;
-        const px = X + Math.cos(a) * rr, py = Y + Math.sin(a) * rr;
-        k === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
-      }
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-      ctx.restore();
-    }
-  };
-  if (getSettings().contactLayer) {
-    for (const p of loaded) if (p !== ref) drawJumps(p.data, "#7f6f4b");
-    if (ref) drawJumps(ref.data, "#f59e0b");
-    for (const p of loaded) if (p !== ref) drawHits(p.data, "#7f5b5b", 6);
-    if (ref) drawHits(ref.data, "#ef4444", 7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
   }
 
   // cache the finished frame + projection for the chart-cursor marker
@@ -2235,9 +2271,10 @@ function downloadBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/* the map canvas is already the shareable artifact - snapshot the cached
-   clean frame (mapCursor.snap: no hover dot, dismissed contacts already
-   absent) and composite a caption bar under it. The canvas itself is
+/* the map canvas is already the shareable artifact - snapshot the clean
+   frame (no hover dot, dismissed contacts already absent: the canvas map's
+   cached mapCursor.snap, or the Pixi map's extract of everything but its
+   marker layer) and composite a caption bar under it. The canvas itself is
    transparent over the page background, so the PNG needs its own fill. */
 function exportMapPng() {
   const ref = refPick();
@@ -2245,18 +2282,19 @@ function exportMapPng() {
     uiAlert("Nothing to export", "Tag a lap to draw its racing line first.");
     return;
   }
-  if (pixiMap) {  // spike step 4 (docs/spikes/analysis-replay.md)
-    uiAlert("Not in the Pixi map yet", "Save PNG comes with the next spike step — open the page without ?pixi to export.");
-    return;
-  }
   const s = ref.session;      // the caption belongs to the reference lap's
   const lapMeta = ref.lap;    // own session, not the one being browsed
-  if (!mapCursor.snap) drawMap();
-  const snap = mapCursor.snap;
-  const dpr = mapCursor.dpr || 1;
   const css = getComputedStyle(document.documentElement);
   const color = (name, fallback) => (css.getPropertyValue(name) || fallback).trim();
-
+  // the map without its hover / pin dots, at the device pixel size
+  let snap, dpr;
+  if (pixiMap) {
+    ({ snap, dpr } = pixiMap.snapshot(color("--bg", "#06080c")));
+  } else {
+    if (!mapCursor.snap) drawMap();
+    snap = mapCursor.snap;
+    dpr = mapCursor.dpr || 1;
+  }
   const pad = 12, lineH = 21, capH = pad + 2 * lineH + pad / 2;
   const out = document.createElement("canvas");
   out.width = snap.width;

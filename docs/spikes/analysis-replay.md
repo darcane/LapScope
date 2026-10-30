@@ -1,8 +1,8 @@
 # Spike: Analysis track map on PixiJS, with ghost lap replay
 
 Branch: `feat/analysis-replay`. Issue:
-[#99](https://github.com/darcane/LapScope/issues/99). Status: **in progress** — steps 2–3
-done (shared kit, static Pixi scene behind `?pixi`).
+[#99](https://github.com/darcane/LapScope/issues/99). Status: **in progress** — steps 2–4
+done (shared kit, Pixi map behind `?pixi` at parity with the canvas map).
 
 Follows the cockpit spike ([`pixi-cockpit-poc.md`](pixi-cockpit-poc.md)),
 whose verdict named this as the next user of the same stack.
@@ -291,3 +291,37 @@ scratch copy of a real `telemetry.db` (a long route with ≥6 laps driven).
   CSS-size or DPR change.
 - Until step 4, `?pixi` has no hover/pin markers, no right-click dismissal
   (hit markers are cleared) and Save PNG says so instead of exporting.
+
+### Step 4 — parity (done)
+
+- Geometry the two renderers must agree on is computed once, in
+  analysis.js, and painted by each: `mapStartArrow` (start dot + drive
+  arrow), `mapGlyphs` (jump flights and contact sparks in draw order, ref
+  full-strength / others dimmed, honouring the contact-layer setting, and
+  filling `hitMarkers`), `mapMarkerDots` (hover dot on every pick + pin
+  ring). The canvas map now paints from them too and stays pixel-identical.
+- Pixi layers: lines (raw space) → overlay (screen space, redrawn each
+  `draw()`: a few dozen shapes) → hover/pin dots (the only thing a chart
+  hover touches). Glows via `glowing()` for the span ends, hard landings,
+  sparks and dots — the canvas map's `shadowBlur` cases.
+- Kit glyphs take options — `jumpGlyph(..., { color, scale })`,
+  `sparkGlyph(..., { color, r })` — with the cockpit's values as defaults
+  (cockpit screenshots unchanged); the Analysis map uses `scale: 0.8`,
+  `drawJump`'s size.
+- Save PNG: `renderer.extract.canvas` of the stage with the dots hidden,
+  same file name and caption bar as the canvas export.
+- **Finding — extract returns premultiplied pixels.** Composited over the
+  export's fill they washed out every translucent stroke (the zoom halo, the
+  faded gradient, 3D shadows). Extracting onto the export's own opaque
+  background (`clearColor`) makes the PNG match the screen.
+- **Finding — the canvas gradient's fade is brighter than its number.** It
+  strokes 0.22 alpha per ~1 px segment with round caps; ~3 overlap at every
+  pixel, so it reads at ~0.6 (measured from screenshots). Pixi strokes one
+  path per colour run, so it uses 0.55 to look the same — and butt caps on
+  faded runs, since overlapping round caps at each colour change beaded the
+  line.
+- Verified side by side (canvas vs `?pixi`, same session): hover + pin,
+  chart zoom span (halo, ends, faded rest), Save PNG, 3D with all laps +
+  hover, wheel zoom + pan, contact layer off — all matching; hit markers
+  identical (screen positions, lap, time) and a right-click on a Pixi
+  spark opens the dismiss dialog. No console errors.

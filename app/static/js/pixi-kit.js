@@ -78,29 +78,30 @@ const JUMP_COL = "#f59e0b", SPARK_COL = "#ef4444";
 
 /* common.js's drawJump, for a GraphicsContext: Pixi has no dashed stroke,
    so the flight is laid out dash by dash. `ring` takes the hard-landing ring.
+   The cockpit draws it at scale 1; the Analysis map at 0.8, drawJump's size.
    Change one, change both (ARCHITECTURE.md invariants). */
-function jumpGlyph(g, x0, y0, x1, y1, ring) {
+function jumpGlyph(g, x0, y0, x1, y1, ring, { color = JUMP_COL, scale = 1 } = {}) {
   const len = Math.hypot(x1 - x0, y1 - y0);
   const ang = len > 0.5 ? Math.atan2(y1 - y0, x1 - x0) : -Math.PI / 2;
-  const r = 4, ah = 9, ux = Math.cos(ang), uy = Math.sin(ang);
-  for (let d = r + 1; d < len - ah * 0.7; d += 11) {
-    const e = Math.min(d + 6, len - ah * 0.7);
+  const r = 4 * scale, ah = 9 * scale, ux = Math.cos(ang), uy = Math.sin(ang);
+  for (let d = r + 1; d < len - ah * 0.7; d += 11 * scale) {
+    const e = Math.min(d + 6 * scale, len - ah * 0.7);
     g.moveTo(x0 + ux * d, y0 + uy * d).lineTo(x0 + ux * e, y0 + uy * e);
   }
   // the dashes and the takeoff ring are one path, stroked together
-  g.circle(x0, y0, r).stroke({ width: 2, color: JUMP_COL, cap: "round" });
+  g.circle(x0, y0, r).stroke({ width: 2 * scale, color, cap: "round" });
   g.poly([x1 + ux * ah * 0.55, y1 + uy * ah * 0.55,
     x1 + Math.cos(ang + 2.5) * ah * 0.8, y1 + Math.sin(ang + 2.5) * ah * 0.8,
-    x1 + Math.cos(ang - 2.5) * ah * 0.8, y1 + Math.sin(ang - 2.5) * ah * 0.8]).fill(JUMP_COL);
-  if (ring) ring.circle(x1, y1, ah * 0.95).stroke({ width: 1.5, color: "#ffffff" });
+    x1 + Math.cos(ang - 2.5) * ah * 0.8, y1 + Math.sin(ang - 2.5) * ah * 0.8]).fill(color);
+  if (ring) ring.circle(x1, y1, ah * 0.95).stroke({ width: 1.5 * scale, color: "#ffffff" });
 }
 
-/* the 4-point contact spark */
-function sparkGlyph(g, x, y) {
+/* the 4-point contact spark, `r` from centre to tip */
+function sparkGlyph(g, x, y, { color = SPARK_COL, r = 7.5 } = {}) {
   const pts = [];
   for (let k = 0; k < 8; k++) {
-    const a = (k * Math.PI) / 4, rr = k % 2 ? 3 : 7.5;
+    const a = (k * Math.PI) / 4, rr = k % 2 ? r * 0.4 : r;
     pts.push(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
   }
-  g.poly(pts).fill(SPARK_COL).stroke({ width: 1.5, color: "#ffffff" });
+  g.poly(pts).fill(color).stroke({ width: 1.5, color: "#ffffff" });
 }
