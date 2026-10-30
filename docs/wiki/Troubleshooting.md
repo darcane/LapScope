@@ -210,7 +210,7 @@ means the browser refused all three — usually hardware acceleration switched
 off in the browser's settings, a GPU blocklisted by the browser, or a remote
 desktop / VM session with no GPU. Turn hardware acceleration back on and reload,
 or use the **Classic** link in the header (the previous dashboard, plain
-Canvas 2D) for this release.
+Canvas 2D).
 
 ## Still stuck?
 

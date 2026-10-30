@@ -485,11 +485,20 @@ starts on WebGL and runs a drive normally.
 
 `cockpit.html` became `index.html`; the old live page moved to
 `classic.html`, reachable from a dimmed "Classic" link at the end of the nav
-and from the cockpit's could-not-start overlay. It stays one release, then goes
-together with `dashboard.js` and `gauges.js`. One parity gap closed first: the
+and from the cockpit's could-not-start overlay. Whether it then goes (with
+`dashboard.js` and `gauges.js`) or stays as a supported Lite view is
+[#101](https://github.com/darcane/LapScope/issues/101). One parity gap closed first: the
 cockpit had no first-run setup steps — only a "waiting for telemetry" line
 pointing at "the live page", which it now is — so the classic page's
 full-screen FH6 Data Out overlay moved into `live-ui.js` (`syncNoData`,
 `updateNoDataStats`) and both pages show it. `tools/capture_media.py` waits
 for the stage's canvas instead of `#rpm`, so the README/wiki live shots
 (hero, Sunset accent, paused chip) now capture the cockpit once regenerated.
+
+### Next
+
+- Analysis page on the same stack (ghost lap replay, shared `pixi-kit.js`):
+  [#99](https://github.com/darcane/LapScope/issues/99).
+- Recapture README/wiki media once that lands:
+  [#100](https://github.com/darcane/LapScope/issues/100).
+- The classic page's future: [#101](https://github.com/darcane/LapScope/issues/101).

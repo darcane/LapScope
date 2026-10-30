@@ -1,6 +1,6 @@
 /* Classic live dashboard (classic.html): the shared feed (live.js) -> canvas
    gauges at display refresh rate. Replaced by the cockpit (index.html,
-   cockpit.js); kept for one release, then removed with gauges.js. */
+   cockpit.js). Removed with gauges.js or kept as a Lite view: issue #101. */
 
 let rpmG, fricG, gripG, stripG, liveMapG;
 function initCanvases() {

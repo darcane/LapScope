@@ -498,9 +498,11 @@ server joining mid-lap, event restart.
   unconditional per-display-frame redraw. Anything text-heavy (overlays,
   banners, the raw panel) stays HTML around the stage, in `live-ui.js`, shared
   with the classic page. The feed and detection mirror live in `live.js`.
-- The classic live page (`classic.html`, `dashboard.js`, `gauges.js`) is on
-  its way out: kept one release behind the dimmed Classic nav link, then
-  deleted. Don't build new features on it.
+- The classic live page (`classic.html`, `dashboard.js`, `gauges.js`) sits
+  behind the dimmed Classic nav link while
+  [#101](https://github.com/darcane/LapScope/issues/101) decides between
+  deleting it and making it a supported Lite view. Until then, don't build new
+  features on it.
 - The live track map resets on session-id change and on any single-frame
   position jump > 250 m (grid snap / event restart — a car can't move that far
   in 1/60 s; keeping the old points would wreck the bounds). The finished

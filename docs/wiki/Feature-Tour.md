@@ -19,8 +19,8 @@ window and re-stacks itself on a portrait screen.
 
 The cockpit draws with WebGL, which every current desktop browser has. If yours
 can't start it, the page says so and links to the **Classic** dashboard (the
-link at the end of the header), the previous separate-panels layout. Classic is
-kept for this release only.
+link at the end of the header), the previous separate-panels layout, which is
+also there if you simply prefer it.
 
 An optional **raw telemetry panel** (off by default, ⚙ Settings) shows every
 packet field live in game-native units, with a ⏸ Hold button to freeze the values
