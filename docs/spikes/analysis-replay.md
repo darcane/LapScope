@@ -1,8 +1,8 @@
 # Spike: Analysis track map on PixiJS, with ghost lap replay
 
 Branch: `feat/analysis-replay`. Issue:
-[#99](https://github.com/darcane/LapScope/issues/99). Status: **in progress** — steps 2–4
-done (shared kit, Pixi map behind `?pixi` at parity with the canvas map).
+[#99](https://github.com/darcane/LapScope/issues/99). Status: **in progress** — steps 2–5
+done (shared kit, Pixi map behind `?pixi` at parity, ghost replay).
 
 Follows the cockpit spike ([`pixi-cockpit-poc.md`](pixi-cockpit-poc.md)),
 whose verdict named this as the next user of the same stack.
@@ -325,3 +325,42 @@ scratch copy of a real `telemetry.db` (a long route with ≥6 laps driven).
   hover, wheel zoom + pan, contact layer off — all matching; hit markers
   identical (screen positions, lap, time) and a right-click on a Pixi
   spark opens the dismiss dialog. No console errors.
+
+### Step 5 — replay (done)
+
+- `js/analysis-replay.js`: play/pause (`aria-pressed`), a range scrubber
+  (0.1 s steps; arrows, Page Up/Down and Home/End for free), a speed select
+  (0.25×–4×), By time / By distance (`aria-pressed`), the clock and a
+  per-pick Δ readout in tray colours. Space toggles playback on the focused
+  map (the Pixi canvas is `tabindex=0`). The row only shows on the Pixi map
+  with a reference lap; the canvas fallback has no replay.
+- Ghosts: a filled disc in the pick's colour with its letter (bitmap font,
+  so the analysis page now installs it too), glowing, reference on top.
+  They replace the hover dot while the replay is engaged (in time alignment
+  the two would point at different laps' positions); the pin ring stays.
+- **Finding — `t` is the wrong clock.** Lap A of the test session has a
+  6 s rewind: `t` runs to 48.05 s against an official 41.57 s, so a
+  `t`-timed replay drives the rewound stretch twice and every gap after it
+  is 6 s off. The raw `lap_time` channel is no better as an axis: it drops
+  back at a rewind and reads ~0 on the crossing frame (the Δ chart shows
+  that as a spike in its last sample). `lapClock(d)` keeps the samples the
+  game kept — a rewind discards the ones it took back — and continues the
+  clock across the crossing reset by elapsed time. Its end equals the
+  official lap time (41.566 vs 41.567); final gaps equal the lap-time
+  differences (B +1.17, C +0.05, D +0.87).
+- **Finding — the replay's cursor writes swallow a chart hover.** While
+  playing, `setCursor` on every chart each frame overwrites the mouse
+  position uPlot is about to apply, so the hover never reached
+  `setMapCursor`. A `pointermove` listener on each chart's overlay pauses
+  playback first; from then on uPlot's own hover scrubs the replay.
+- Open questions settled: finished laps **park at their line, dimmed**
+  (reads as the finish order); **no trails**; the readout lists **every
+  pick** vs A; cross-route compares keep the existing warning (distance
+  alignment is as meaningless there as the Δ chart).
+- Verified headless (5 picks incl. one open lap): 1× advances 2.0 s in 2 s
+  at ~59 renders/s, 4× advances 4.0 s/s; the chart cursor and the raw-table
+  index follow A every frame; by distance stacks the ghosts on A; a chart
+  hover pauses and scrubs (index matches); paused = 0 renders; Space
+  toggles; a zoom span sets the scrubber bounds and playback loops inside
+  it; the full lap stops at the slowest finish; a new reference resets the
+  replay; the canvas map shows no replay row. No console errors.

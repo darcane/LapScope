@@ -661,6 +661,7 @@ function mountDetail() {
   }
   updateMapHint();
   mountMapCanvas();
+  bindReplayControls();
 }
 
 /* the #trackmap slot's listeners: the Pixi map's canvas survives pane
@@ -672,6 +673,7 @@ function mountMapCanvas() {
   map.dataset.bound = "1";
   bindMapDrag(map);
   bindMapContext(map);
+  bindReplayKeys(map);
 }
 
 /* Laps + the sessions they came from (one for a session view, several for a
@@ -1179,12 +1181,14 @@ function renderPicks() {
     state.zoomRange = null;
     mapCursor.idx = null;
     mapCursor.pin = null;  // the pin is an index into the old reference's arrays
+    resetReplay();         // its clock is in the old reference's seconds
   }
   renderLapRows();
   renderTray();
   drawMap();
   drawCharts();
   renderRawSection();
+  syncReplayControls();  // after the charts: an engaged replay moves their cursor
   maybeWarnCrossRoute();
 }
 
@@ -1578,6 +1582,7 @@ function resetMapView() {
 const mapCursor = { idx: null, pin: null, proj: null, snap: null, dpr: 1 };
 
 function setMapCursor(idx) {
+  if (replayOnChartCursor(idx)) return;  // an engaged replay owns the cursor
   if (idx === mapCursor.idx) return;
   mapCursor.idx = idx;
   drawMapMarker();
@@ -1608,7 +1613,7 @@ function lowerBound(xs, x) {
    lower bound on dist), so the dots' spread IS the racing-line difference at
    that spot. filled = live hover, hollow ring = the pinned point (both when
    hovering the pinned spot). */
-function mapMarkerDots() {
+function mapMarkerDots({ hover = true } = {}) {
   const ref = refPick();
   if (!ref || !mapCursor.proj) return [];
   const dots = [];
@@ -1627,7 +1632,7 @@ function mapMarkerDots() {
     dot(ref, ri, 6);  // reference last, on top
   };
   if (mapCursor.pin != null) markAt(mapCursor.pin, false);
-  if (mapCursor.idx != null) markAt(mapCursor.idx, true);
+  if (hover && mapCursor.idx != null) markAt(mapCursor.idx, true);
   return dots;
 }
 
@@ -2368,6 +2373,7 @@ function syncZoom(u) {
   if (JSON.stringify(range) !== JSON.stringify(state.zoomRange)) {
     state.zoomRange = range;
     drawMap();
+    syncReplayControls();  // the zoom span is the playable window
   }
 }
 
@@ -2405,6 +2411,7 @@ function makeChart(el, title, xVals, seriesDefs, height = 150) {
         // and the second click of a double is skipped (dblclick = reset both)
         let downX = null;
         u.over.addEventListener("mousedown", (e) => { downX = e.clientX; });
+        u.over.addEventListener("pointermove", replayChartHover);
         u.over.addEventListener("click", (e) => {
           if (e.detail > 1) return;
           if (downX != null && Math.abs(e.clientX - downX) > 3) return;

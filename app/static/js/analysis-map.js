@@ -49,7 +49,13 @@ function makePixiMap(app) {
   overlay.addChild(glowing(endsCtx, 5), new PIXI.Graphics(startCtx), new PIXI.Graphics(jumpCtx),
     glowing(hardCtx, 6), new PIXI.Graphics(ringCtx), glowing(sparkCtx, 5));
   const markCtx = new PIXI.GraphicsContext();
-  const markers = glowing(markCtx, 6);
+  const ghostCtx = new PIXI.GraphicsContext();     // replay markers, still running
+  const doneCtx = new PIXI.GraphicsContext();      // ...and laps already finished
+  const letters = new PIXI.Container();            // A–F on the ghosts, pooled
+  const markers = new PIXI.Container();
+  const done = new PIXI.Graphics(doneCtx);
+  done.alpha = 0.45;
+  markers.addChild(glowing(markCtx, 6), done, glowing(ghostCtx, 6), letters);
   app.stage.addChild(lines, overlay, markers);
   let builtKey = "", builtScale = 0, sizeKey = "", queued = false;
   const ids = new WeakMap();
@@ -117,11 +123,28 @@ function makePixiMap(app) {
     for (const h of hits) sparkGlyph(sparkCtx, h.x, h.y, { color: h.fill, r: h.r });
   }
 
-  function drawMarkers() {
+  /* hover / pin dots, and the replay ghosts while it is engaged (they take
+     the hover dot's place: in time alignment the two would disagree). `now`
+     renders synchronously — the replay loop already is a frame. */
+  function drawMarkers(now = false) {
     markCtx.clear();
-    for (const d of mapMarkerDots())
+    ghostCtx.clear();
+    doneCtx.clear();
+    for (const d of mapMarkerDots({ hover: !replay.engaged }))
       markCtx.circle(d.x, d.y, d.r).fill(d.fill).stroke({ width: d.width, color: d.ring });
-    render();
+    const ghosts = replayGhosts();
+    while (letters.children.length < ghosts.length)
+      letters.addChild(bitmapText("", 12, "#0b1520"));
+    letters.children.forEach((t, i) => {
+      const g = ghosts[i];
+      t.visible = !!g;
+      if (!g) return;
+      (g.done ? doneCtx : ghostCtx).circle(g.x, g.y, 8).fill(g.color).stroke({ width: 2, color: "#ffffff" });
+      t.text = g.letter;
+      t.alpha = g.done ? 0.45 : 1;
+      t.position.set(g.x, g.y + 0.5);
+    });
+    if (now) renderNow(); else render();
   }
 
   // what the lines show, as a string: a change means a rebuild
@@ -289,6 +312,8 @@ async function bootPixiMap() {
   }
   app.canvas.id = "trackmap";
   app.canvas.setAttribute("role", "img");
+  app.canvas.tabIndex = 0;  // Space toggles the replay (analysis-replay.js)
+  await installFonts();     // the ghosts' letters
   pixiMap = makePixiMap(app);
   // the map column can change width without the window resizing (the side
   // panel wraps under it below 1100 px); the window listener in analysis.js
@@ -300,6 +325,7 @@ async function bootPixiMap() {
   }));
   mountMapCanvas();
   drawMap();
+  syncReplayControls();  // the replay needs this renderer: its row shows now
 }
 
 /* The detail pane is re-cloned from its template on every session switch,

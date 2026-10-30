@@ -114,6 +114,19 @@
         <div>
           <canvas id="trackmap" role="img"
                   aria-label="Track map of the tagged laps"></canvas>
+          <div class="replay" id="replay" hidden>
+            <button type="button" id="rp-play" aria-pressed="false">▶</button>
+            <input type="range" id="rp-scrub" min="0" max="1" step="0.1" value="0"
+                   aria-label="Replay position (seconds into lap A)">
+            <span class="rp-clock" id="rp-clock">0:00.0</span>
+            <select id="rp-speed" aria-label="Replay speed" title="Replay speed"></select>
+            <span class="seg" id="rp-align">
+              <button type="button" data-align="time" aria-pressed="true"
+                      title="Every lap where it was after the same time — the gap shows as distance between the markers">By time</button><button type="button" data-align="dist" aria-pressed="false"
+                      title="Every lap where lap A is on the track (the Δ chart's alignment) — the gap shows as time">By distance</button>
+            </span>
+            <span class="rp-gap" id="rp-gap"></span>
+          </div>
           <div class="legend">
             <span class="seg" id="map-mode">
               <button data-mode="2d">2D</button><button data-mode="3d">3D</button>
@@ -158,6 +171,7 @@
 <script src="js/vendor/pixi.min.js"></script>
 <script src="js/pixi-kit.js"></script>
 <script src="js/analysis-map.js"></script>
+<script src="js/analysis-replay.js"></script>
 <script src="js/analysis.js"></script>
 </body>
 </html>
