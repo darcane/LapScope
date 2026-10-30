@@ -1730,7 +1730,12 @@ function bindMapDrag(canvas) {
     }
     redrawMap();
   });
-  const stop = () => { map3d.drag = null; };
+  const stop = () => {
+    // the Pixi map thins its lines while a rotate lasts: redraw at full detail
+    const rotated = map3d.drag && map3d.drag.rotate;
+    map3d.drag = null;
+    if (rotated && pixiMap) redrawMap();
+  };
   canvas.addEventListener("pointerup", stop);
   canvas.addEventListener("pointercancel", stop);
   // wheel: zoom about the cursor, so what you point at stays put

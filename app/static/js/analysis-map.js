@@ -30,6 +30,13 @@ const GRAD_HUE_STEP = 2;
 // ~1 px segment with round caps, so ~3 overlap at every pixel and it reads
 // at ~0.6 (measured); one stroke per run has no overlap, hence the number
 const FADED_ALPHA = 0.55;
+// a 3D rotate drag rebuilds every line per pointer step (the projection is
+// not a transform), measured at ~5.5 ms for 8.5k points on a real GPU — too
+// much at display rate. While the drag lasts, lines keep every Nth sample so
+// at most this many points are laid out; full detail returns on release.
+const DRAG_POINT_BUDGET = 2500;
+
+const rotating = () => !!(map3d.drag && map3d.drag.rotate);
 
 function makePixiMap(app) {
   // three layers: lines (raw space, transformed), the screen-space overlay
@@ -152,7 +159,7 @@ function makePixiMap(app) {
     return [
       loaded.map((p) => `${idOf(p.data)}:${p.color}`).join(","),
       ref ? idOf(ref.data) : "-",
-      three ? `3d:${map3d.yaw}` : "2d",
+      three ? `3d:${map3d.yaw}:${rotating() ? "drag" : ""}` : "2d",
       grad ? state.colorMode : "solid",
       JSON.stringify(state.zoomRange), PICK_COLORS[0],  // the halo's colour
     ].join("|");
@@ -163,14 +170,24 @@ function makePixiMap(app) {
     clear();
     const g = new PIXI.Graphics();
     const { raw } = proj;
+    const total = loaded.reduce((n, p) => n + p.data.channels.pos_x.length, 0);
+    const step = rotating() ? Math.max(1, Math.ceil(total / DRAG_POINT_BUDGET)) : 1;
+    // the sample indices drawn between i0 and i1, both ends always included
+    const samples = (i0, i1) => {
+      const out = [];
+      for (let i = i0; i < i1; i += step) out.push(i);
+      out.push(i1);
+      return out;
+    };
     const pt = (d, i, ground) => {
       const c = d.channels;
       return raw(c.pos_x[i], c.pos_y ? c.pos_y[i] : 0, c.pos_z[i], ground);
     };
     const path = (d, ground, i0 = 0, i1 = d.channels.pos_x.length - 1) => {
-      let [x, y] = pt(d, i0, ground);
+      const idx = samples(i0, i1);
+      let [x, y] = pt(d, idx[0], ground);
       g.moveTo(x, y);
-      for (let i = i0 + 1; i <= i1; i++) { [x, y] = pt(d, i, ground); g.lineTo(x, y); }
+      for (let k = 1; k < idx.length; k++) { [x, y] = pt(d, idx[k], ground); g.lineTo(x, y); }
     };
     const W = (px) => px / sc;  // CSS px -> raw units at the build scale
 
@@ -216,7 +233,9 @@ function makePixiMap(app) {
             g.stroke({ width: W(3), color: runColor, alpha: runAlpha, cap: runAlpha < 1 ? "butt" : "round" });
           }
         };
-        for (let i = 1; i < n; i++) {
+        const idx = samples(0, n - 1);
+        for (let k = 1; k < idx.length; k++) {
+          const i = idx[k];
           const h = Math.round(hue(vals[i]) / GRAD_HUE_STEP) * GRAD_HUE_STEP;
           const alpha = zi && (i <= zi[0] || i > zi[1]) ? FADED_ALPHA : 1;
           const key = `${h}|${alpha}`;
@@ -225,7 +244,7 @@ function makePixiMap(app) {
             runKey = key;
             runColor = hslHex(h, sat, 0.55);
             runAlpha = alpha;
-            const [x, y] = pt(A, i - 1, false);
+            const [x, y] = pt(A, idx[k - 1], false);
             g.moveTo(x, y);
           }
           const [x, y] = pt(A, i, false);
@@ -310,6 +329,13 @@ async function bootPixiMap() {
     console.warn("Pixi track map unavailable, using the canvas map:", e);
     return;
   }
+  // autoStart: false stops the app's ticker, not Pixi's shared system ticker,
+  // which kept a rAF loop running at display rate on an idle page for two
+  // listeners this map never needs: the federated pointer events (the map
+  // listens with DOM events) and the GC scheduler (lines are destroyed
+  // explicitly on every rebuild). Measured on the step-6 bench.
+  PIXI.Ticker.system.autoStart = false;
+  PIXI.Ticker.system.stop();
   app.canvas.id = "trackmap";
   app.canvas.setAttribute("role", "img");
   app.canvas.tabIndex = 0;  // Space toggles the replay (analysis-replay.js)

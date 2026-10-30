@@ -1,8 +1,8 @@
 # Spike: Analysis track map on PixiJS, with ghost lap replay
 
 Branch: `feat/analysis-replay`. Issue:
-[#99](https://github.com/darcane/LapScope/issues/99). Status: **in progress** — steps 2–5
-done (shared kit, Pixi map behind `?pixi` at parity, ghost replay).
+[#99](https://github.com/darcane/LapScope/issues/99). Status: **measured — verdict: adopt** (steps 2–6 done; step 7, the swap,
+is next).
 
 Follows the cockpit spike ([`pixi-cockpit-poc.md`](pixi-cockpit-poc.md)),
 whose verdict named this as the next user of the same stack.
@@ -364,3 +364,74 @@ scratch copy of a real `telemetry.db` (a long route with ≥6 laps driven).
   toggles; a zoom span sets the scrubber bounds and playback loops inside
   it; the full lap stops at the slowest finish; a new reference resets the
   replay; the canvas map shows no replay row. No console errors.
+
+### Step 6 — measurements
+
+Bench: Edge (Chromium) headed on the maintainer's machine (real GPU, 120 Hz
+display), 1600×900 at DPR 1, driven by Playwright over CDP; renderer metrics
+from `Performance.getMetrics`, CPU from the Windows process times of that
+Edge instance's renderer and GPU processes. Stress case: **Seaside Park
+Sprint**, the longest route in the real database with ≥ 6 timed runs, six
+runs across six sessions copied read-only into a scratch database —
+1 327–1 488 points per run, **8 473 in all** (the ~12 000 the plan assumed
+needs runs past ~4 000 frames, which this database has no six of). Canvas
+map and `?pixi` alternated, two rounds, 8 s per window; scripts
+(`bench_edge.py`, `idle_profile.py`) stay in the scratchpad, not committed.
+
+| per second | canvas map | Pixi map |
+|---|---|---|
+| **idle** — main-thread task time | 0.6 / 0.6 ms | 0.6 / 0.6 ms |
+| **chart hover sweep** (~32 moves/s) — task time | 74 / 72 ms | 87 / 86 ms |
+| — of it script / layout + style | 8 / 18 ms | 21 / 16 ms |
+| **3D rotate drag** (~32 steps/s) — task time | 96 / 95 ms | 121 / 125 ms |
+| **replay playing**, 6 ghosts, chart cursors following | — | 158 / 152 ms |
+| — renders | — | 120 / 118 (the display rate) |
+| frames > 25 ms, any window | 0 | 0 |
+
+(two values = the two rounds; process CPU is in `bench-final.json` but too
+noisy between rounds — the GPU process swung 5 → 13 % idle on the *same*
+page — to carry an argument.)
+
+- **Idle draws nothing — after a fix.** The first run had the idle Pixi
+  page at ~15 ms/s with zero renders. A CDP sampling profile showed Pixi's
+  shared `Ticker.system` running a rAF loop at display rate for two
+  listeners: the federated pointer events (unused: the map listens with DOM
+  events) and the GC scheduler (unused: lines are destroyed explicitly).
+  `autoStart: false` only stops the *app's* ticker. Stopping the system
+  ticker brings idle to the canvas page's 0.6 ms/s, and the profile shows no
+  Pixi frame at all. (The cockpit has the same loop, but it runs its own rAF
+  loop anyway, so it changes nothing there.)
+- **3D rotate — headless had it backwards.** SwiftShader timed a full Pixi
+  rebuild *below* the canvas redraw (step 3); on the real GPU the first run
+  measured 177 ms/s vs the canvas map's 109 — ~5.5 ms per step, which at a
+  real drag's display rate would be most of a frame budget. The decimation
+  step 3 left out is in: while a rotate drag lasts, lines keep every Nth
+  sample so at most `DRAG_POINT_BUDGET` (2 500) points are laid out, and
+  release redraws at full detail (checked: the released frame equals a fresh
+  full draw pixel for pixel; the thinned drag frame differs in 143 pixels
+  out of ~690 000). Now ~3.8 ms per step against the canvas map's ~3.0.
+- **Hover** costs ~17 % more main-thread time than the canvas map's cached
+  blit: the Pixi path re-renders the scene (lines unchanged, so no
+  tessellation), the canvas path copies one bitmap. Both run with no long
+  frames; it is the only interaction where the canvas map is cheaper and
+  stays so.
+- **Playback holds the display rate**: 118–120 renders/s on a 120 Hz screen
+  with six ghosts, the chart cursors and raw table following every frame,
+  ~1.3 ms of main thread per frame, no frame over 25 ms.
+
+## Verdict
+
+**Adopt the Pixi map, with the replay, as the default** (step 7). It
+reaches parity with the canvas map — every item in #99's list, checked side
+by side — costs nothing while idle, holds the display rate during playback
+of the stress case, and costs +18 % (chart hover) and +29 % (3D rotate) main-thread time
+over the canvas map on the two interactions it shares with it, with no long
+frames in either. The canvas map stays as the fallback
+(`?canvas`, or a renderer that fails to start), never a blank box.
+
+What it cost, for the record: four Pixi-specific findings the canvas map
+never needed — tessellation lands in `render()` not `stroke()`, extract
+returns premultiplied pixels, the shared system ticker survives
+`autoStart: false`, and a 3D rotate must thin its lines — plus one
+replay-specific one, the lap clock (`lapClock`), that any renderer would
+have hit. All five are documented in the code where they bite.
