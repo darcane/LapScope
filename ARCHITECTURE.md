@@ -194,6 +194,7 @@ A missing `Origin` (a script, a CLI tool) is allowed.
 | `css/style.css` | Theme = CSS custom props. `css/fonts.css` + `fonts/` = vendored Rajdhani (OFL); app must work fully offline. A `@media (prefers-reduced-motion: reduce)` block at the end turns off every infinite animation (the loudest is the limiter's ~7 flashes/second) — **add new looping animations to it**. `@media (max-width: 900px)` collapses the analysis layout to one column. |
 | `js/vendor/uplot.iife.min.js` | Vendored, analysis page only. |
 | `js/vendor/pixi.min.js` | PixiJS 8.22.0 (MIT), vendored byte-for-byte from the npm tarball (IIFE build), live page only. Upgrades go to an exact version and get re-checked on the cockpit (`?debug`). |
+| `js/pixi-kit.js` | Helpers shared by every Pixi scene (the cockpit; the Analysis map next, #99), loaded after `pixi.min.js`: colour tokens `C` (a copy of style.css's), `installFonts()` + `bitmapText()` (the Rajdhani bitmap font — every non-ASCII glyph printed must be in its `chars`), `glowing()`, `smooth()`, `hslHex()` / `slipHex()`, and the map glyphs `jumpGlyph()` / `sparkGlyph()`. Moved here, not copied: a scene that needs one of these imports it from the kit. |
 
 ## Tools (repo root, stdlib only, no container needed — except capture_media)
 
@@ -423,7 +424,11 @@ assert them here.
   (`refreshCanvasTheme` in gauges.js, `accent = accentDef().accent` in
   cockpit.js, `accentPickPalette` in analysis.js) — keep new accent-colored
   drawing code on one of those paths. The cockpit's other scene colours are
-  a copy of style.css's tokens (`C` in cockpit.js): change a token, change both.
+  a copy of style.css's tokens (`C` in pixi-kit.js): change a token, change both.
+- Slip / speed colour ramps: `slipHue` / `speedHue` (common.js) are the one
+  rule; the canvas maps wrap them in `hsl()` (`slipColor` / `speedColor` in
+  analysis.js), Pixi scenes in `hslHex` (`slipHex` in pixi-kit.js). The
+  classic page's `slipColor` (gauges.js) is a frozen copy (#101).
 - Conditions set: `CONDITIONS` (api/routes.py) = `CONDITION_META` (common.js)
   = `#cond-select` options (analysis.html).
 - Car classes / colors: `CAR_CLASSES` (api/routes.py) = `CLASS_LETTERS` +
@@ -446,8 +451,8 @@ assert them here.
   tracks them live in `feedCollision`, and both maps render them through the
   shared `drawJump` glyph (common.js): dashed flight line, takeoff circle,
   touchdown arrowhead, glow + impact ring on hard landings.
-  The cockpit's Pixi map has its own port of that glyph (`jumpGlyph` in
-  cockpit.js, no dashed strokes in Pixi): change one, change both.
+  Pixi scenes have their own port of that glyph (`jumpGlyph` in
+  pixi-kit.js, no dashed strokes in Pixi): change one, change both.
 - `RT_FREEZE_SECONDS` (laps.py) = the same constant in inspect_session.py.
 - Packet layout: `_STRUCT` and `FIELDS` in packet.py must stay in lockstep
   (asserted by the module self-test).

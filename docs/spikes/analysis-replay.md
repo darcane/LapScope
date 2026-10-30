@@ -1,8 +1,8 @@
 # Spike: Analysis track map on PixiJS, with ghost lap replay
 
 Branch: `feat/analysis-replay`. Issue:
-[#99](https://github.com/darcane/LapScope/issues/99). Status: **planned** —
-nothing built yet.
+[#99](https://github.com/darcane/LapScope/issues/99). Status: **in progress** — step 2
+(shared kit) done.
 
 Follows the cockpit spike ([`pixi-cockpit-poc.md`](pixi-cockpit-poc.md)),
 whose verdict named this as the next user of the same stack.
@@ -228,4 +228,23 @@ scratch copy of a real `telemetry.db` (a long route with ≥6 laps driven).
 
 ## Progress
 
-_Nothing yet._
+### Step 2 — shared kit (done)
+
+- `js/pixi-kit.js` holds `C`, `installFonts()` + `bitmapText()`,
+  `glowing()`, `smooth()`, `hslHex()` / `slipHex()`, `jumpGlyph()` /
+  `sparkGlyph()` (+ `JUMP_COL` / `SPARK_COL`), moved out of `cockpit.js`;
+  `index.html` loads it after Pixi. `smooth()` now takes its time constant
+  as an argument — `SMOOTH_MS` is the cockpit's `?smooth=` param and stays
+  there.
+- One slip/speed rule: `slipHue()` / `speedHue()` in `common.js` (so the
+  canvas map keeps working without Pixi); `analysis.js`'s `slipColor` /
+  `speedColor` wrap them in `hsl()`, the kit's `slipHex` in `hslHex()`.
+  `slipHex` checked against the old implementation over slip −0.5…3 in
+  0.001 steps: identical. `gauges.js` keeps its own copy (classic page, #101).
+- Verified headless (Playwright Chromium) against a scratch server: the
+  same 1 200 captured simulator frames (`--race 3 --jumps`) fed through a
+  stubbed WebSocket into the cockpit on `main` and on this branch —
+  1600×900@1 and 390×844@3 screenshots pixel-identical (no pixel differs by
+  more than 8/255); the Analysis map in speed and slip colouring likewise
+  identical. No console errors.
+

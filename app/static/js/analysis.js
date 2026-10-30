@@ -1544,14 +1544,9 @@ async function deleteSession(session) {
 
 /* ---------------- track map ---------------- */
 
-function slipColor(s) {
-  const hue = Math.max(0, Math.min(120, 120 * (1.15 - s) / 1.15));
-  return `hsl(${hue}, 75%, 55%)`;
-}
-function speedColor(v, lo, hi) {
-  const t = hi > lo ? (v - lo) / (hi - lo) : 0;
-  return `hsl(${220 - 220 * t}, 80%, 55%)`;
-}
+// the hue ramps are common.js's, shared with the Pixi scenes
+const slipColor = (s) => `hsl(${slipHue(s)}, 75%, 55%)`;
+const speedColor = (v, lo, hi) => `hsl(${speedHue(v, lo, hi)}, 80%, 55%)`;
 
 /* 3D view state: yaw is user-draggable; the tilt is a fixed axonometric angle */
 const map3d = { yaw: -0.9, drag: null };

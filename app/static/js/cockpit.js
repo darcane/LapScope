@@ -27,12 +27,6 @@ const params = new URLSearchParams(location.search);
 const SMOOTH_MS = Math.max(0, Number(params.get("smooth") ?? 16)) || 0;
 const DEBUG = params.has("debug");
 
-// mirrors style.css's tokens: the scene can't read var(--…)
-const C = {
-  text: "#e8eef6", muted: "#8494a7", edge: "#1d2634", track: "#151d29",
-  panel: "#0b0f15", redzone: "#4b1f26", ledOff: "#161e2a",
-  good: "#2fe6a8", warn: "#ffbe3d", bad: "#ff5d5d",
-};
 // the Settings accent, re-read on every settings change
 let accent = accentDef().accent;
 
@@ -46,43 +40,8 @@ const components = [];
 
 /* ---------- drawing helpers ---------- */
 
-/* Rajdhani is a webfont: the bitmap font must be built after it has loaded,
-   or the glyphs get baked from the fallback face. Bitmap text, not Text:
-   Text re-rasterises (and re-uploads a texture) on every change, which for a
-   60 Hz readout is every frame. */
-async function installFonts() {
-  await document.fonts.load("700 64px Rajdhani");
-  PIXI.BitmapFont.install({
-    name: "ls-display",
-    style: { fontFamily: "Rajdhani", fontWeight: "700", fontSize: 64, fill: "#ffffff" },
-    chars: [[" ", "~"], "−–—·°×"],  // every non-ASCII glyph used must be listed
-    resolution: 2,
-  });
-}
-
-function bitmapText(text, size, fill, anchorX = 0.5, anchorY = 0.5) {
-  const t = new PIXI.BitmapText({ text, style: { fontFamily: "ls-display", fontSize: size, fill } });
-  t.anchor.set(anchorX, anchorY);
-  return t;
-}
-
-/* A shape that glows: the shape plus a blurred, additively blended copy
-   sharing the same geometry (GraphicsContext) — one blur pass, and nothing
-   to keep in sync. Returns the container; draw into `ctx`. */
-function glowing(ctx, strength = 10) {
-  const c = new PIXI.Container();
-  const glow = new PIXI.Graphics(ctx);
-  glow.filters = [new PIXI.BlurFilter({ strength, quality: 4 })];
-  glow.blendMode = "add";
-  c.addChild(glow, new PIXI.Graphics(ctx));
-  return c;
-}
-
-/* frame-rate independent exponential smoothing toward `target` */
-function smooth(cur, target, dtMs) {
-  if (!SMOOTH_MS || cur == null || !isFinite(cur)) return target;
-  return cur + (target - cur) * (1 - Math.exp(-dtMs / SMOOTH_MS));
-}
+/* Pixi helpers (colour tokens `C`, bitmap font, glows, smoothing, map
+   glyphs, slipHex) live in pixi-kit.js, shared with the Analysis map. */
 
 function gearText(g) { return g === 0 ? "R" : g === 11 ? "N" : String(g); }
 
@@ -154,7 +113,7 @@ function makeTach() {
     update(f, dt) {
       const max = f.engine_max_rpm > 0 ? f.engine_max_rpm : 8000;
       if (max !== builtMax) buildScale(max);
-      rpmS = smooth(rpmS, Math.max(0, f.current_engine_rpm), dt);
+      rpmS = smooth(rpmS, Math.max(0, f.current_engine_rpm), dt, SMOOTH_MS);
       const frac = Math.max(0, Math.min(1, rpmS / max));
       const col = frac > REDLINE ? C.bad : frac > AMBER ? C.warn : accent;
       valueCtx.clear();
@@ -259,9 +218,9 @@ function makeInputs() {
   return {
     root: c,
     update(f, dt) {
-      th = smooth(th, Math.max(0, Math.min(1, (f.accel || 0) / 255)), dt);
-      br = smooth(br, Math.max(0, Math.min(1, (f.brake || 0) / 255)), dt);
-      st = smooth(st, Math.max(-1, Math.min(1, (f.steer || 0) / 127)), dt);
+      th = smooth(th, Math.max(0, Math.min(1, (f.accel || 0) / 255)), dt, SMOOTH_MS);
+      br = smooth(br, Math.max(0, Math.min(1, (f.brake || 0) / 255)), dt, SMOOTH_MS);
+      st = smooth(st, Math.max(-1, Math.min(1, (f.steer || 0) / 127)), dt, SMOOTH_MS);
       fillCtx.clear();
       if (br > 0.005)
         fillCtx.arc(cx, cy, R, BRK0, BRK0 + PEDAL_SPAN * br).stroke({ width: W, color: C.bad, cap: "round" });
@@ -467,19 +426,6 @@ function makeFriction() {
   };
 }
 
-/* the classic gauges' slipColor: hue 120 (green) at 0 slip → 0 (red) at
-   1.15+, as a number Pixi can tint with */
-function slipHex(s) {
-  const h = Math.max(0, Math.min(120, 120 * (1.15 - s) / 1.15)) / 360, sat = 0.75, l = 0.55;
-  const q = l + sat - l * sat, p = 2 * l - q;
-  const ch = (t) => {
-    t = (t + 1) % 1;
-    const v = t < 1 / 6 ? p + (q - p) * 6 * t : t < 1 / 2 ? q : t < 2 / 3 ? p + (q - p) * (2 / 3 - t) * 6 : p;
-    return Math.round(v * 255);
-  };
-  return (ch(h + 1 / 3) << 16) | (ch(h) << 8) | ch(h - 1 / 3);
-}
-
 /* the classic balanceText: front vs rear slip angle */
 function balance(f) {
   const a = f.tire_slip_angle;
@@ -588,35 +534,6 @@ function makeTires() {
    and redrawn only when live.js adds one or the fit moves. */
 const MAP_BOX = { x: 40, y: 620, w: 720, h: 260 };
 const MAP_CHUNK = 256;
-const JUMP_COL = "#f59e0b", SPARK_COL = "#ef4444";
-
-/* common.js's drawJump, for a GraphicsContext: Pixi has no dashed stroke,
-   so the flight is laid out dash by dash. `ring` takes the hard-landing ring. */
-function jumpGlyph(g, x0, y0, x1, y1, ring) {
-  const len = Math.hypot(x1 - x0, y1 - y0);
-  const ang = len > 0.5 ? Math.atan2(y1 - y0, x1 - x0) : -Math.PI / 2;
-  const r = 4, ah = 9, ux = Math.cos(ang), uy = Math.sin(ang);
-  for (let d = r + 1; d < len - ah * 0.7; d += 11) {
-    const e = Math.min(d + 6, len - ah * 0.7);
-    g.moveTo(x0 + ux * d, y0 + uy * d).lineTo(x0 + ux * e, y0 + uy * e);
-  }
-  // the dashes and the takeoff ring are one path, stroked together
-  g.circle(x0, y0, r).stroke({ width: 2, color: JUMP_COL, cap: "round" });
-  g.poly([x1 + ux * ah * 0.55, y1 + uy * ah * 0.55,
-    x1 + Math.cos(ang + 2.5) * ah * 0.8, y1 + Math.sin(ang + 2.5) * ah * 0.8,
-    x1 + Math.cos(ang - 2.5) * ah * 0.8, y1 + Math.sin(ang - 2.5) * ah * 0.8]).fill(JUMP_COL);
-  if (ring) ring.circle(x1, y1, ah * 0.95).stroke({ width: 1.5, color: "#ffffff" });
-}
-
-function sparkGlyph(g, x, y) {
-  const pts = [];
-  for (let k = 0; k < 8; k++) {
-    const a = (k * Math.PI) / 4, rr = k % 2 ? 3 : 7.5;
-    pts.push(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
-  }
-  g.poly(pts).fill(SPARK_COL).stroke({ width: 1.5, color: "#ffffff" });
-}
-
 function makeMap() {
   const B = MAP_BOX, pad = 18, padTop = 40;  // padTop: clear of the title row
   const c = new PIXI.Container();

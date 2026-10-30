@@ -498,6 +498,9 @@ server joining mid-lap, event restart.
   unconditional per-display-frame redraw. Anything text-heavy (overlays,
   banners, the raw panel) stays HTML around the stage, in `live-ui.js`, shared
   with the classic page. The feed and detection mirror live in `live.js`.
+  Pixi helpers any scene can use (tokens, bitmap font, glows, smoothing,
+  map glyphs, `slipHex`) live in `pixi-kit.js` — reach for them there, never
+  copy them out of `cockpit.js` into a new page.
 - The classic live page (`classic.html`, `dashboard.js`, `gauges.js`) sits
   behind the dimmed Classic nav link while
   [#101](https://github.com/darcane/LapScope/issues/101) decides between
