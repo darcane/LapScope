@@ -1,8 +1,8 @@
 # Spike: Analysis track map on PixiJS, with ghost lap replay
 
 Branch: `feat/analysis-replay`. Issue:
-[#99](https://github.com/darcane/LapScope/issues/99). Status: **in progress** — step 2
-(shared kit) done.
+[#99](https://github.com/darcane/LapScope/issues/99). Status: **in progress** — steps 2–3
+done (shared kit, static Pixi scene behind `?pixi`).
 
 Follows the cockpit spike ([`pixi-cockpit-poc.md`](pixi-cockpit-poc.md)),
 whose verdict named this as the next user of the same stack.
@@ -248,3 +248,46 @@ scratch copy of a real `telemetry.db` (a long route with ≥6 laps driven).
   more than 8/255); the Analysis map in speed and slip colouring likewise
   identical. No console errors.
 
+### Step 3 — static scene behind `?pixi` (done)
+
+- `drawMap()` split: what the map says outside its pixels (aria-label,
+  cursor, colour select, legend, side stats) stays in `drawMap`; the
+  projection is `mapProjection()` (`raw` pre-fit coordinates, then fit +
+  zoom + pan), the gradient `mapGradient()` (values + hue + saturation from
+  common.js's ramps — `slipColor` / `speedColor` are gone), the side stats
+  `renderMapSide()`; the old pixels are `drawCanvasMap()`. The canvas path is
+  **pixel-identical** to before in 2D/3D × speed/slip × 1 and 3 picks.
+- `js/analysis-map.js`: lines in `raw` space in one `Graphics`, fit/zoom/pan
+  as the container transform, rebuilt on a content change or > 15 % scale
+  drift. A lone lap's gradient is one stroke per run of segments sharing a
+  colour, hue quantised to 2°. Side by side with the canvas map the lines,
+  3D shadows, elevation posts and gradients match; the start dot/arrow, zoom
+  halo endpoints, glyphs and markers are step 4.
+- **No chunking.** `MAP_CHUNK` exists in the cockpit because its path
+  *grows* — only the open chunk is re-tessellated. Analysis data never
+  appends, so any rebuild is all-or-nothing and chunks would buy nothing.
+- **Finding — Pixi tessellates at render, not at `stroke()`.** Building the
+  `Graphics` costs ~0.5 ms whatever the size; the real cost lands in the
+  next `app.render()`. Any timing has to include the render.
+- **3D rotate, measured** (headless Chromium, SwiftShader — CPU-side cost
+  only, real-GPU numbers are step 6): one rotate step = `drawMap()` +
+  rebuild + render, median of 60 —
+
+  | | canvas map | Pixi map |
+  |---|---|---|
+  | 1 lap, gradient (1 248 pts) | 3.4 ms | 2.5 ms |
+  | 5 laps, overlay (5 753 pts) | 5.1 ms | 2.3 ms |
+
+  A full-detail rebuild is cheaper than the canvas redraw it replaces, so
+  **no decimation while dragging** for now; step 6 re-checks at ~12 000
+  points on a real GPU.
+- Behaviour: an idle page renders nothing (0 renders in 2 s); a small wheel
+  zoom moves the transform with no rebuild, zooming 1× → 7.4× rebuilt 8 times;
+  switching sessions swaps the one Pixi canvas into the re-cloned pane (one
+  `#trackmap`, listeners bound once, aria-label current); a forced
+  `app.init()` failure leaves the canvas map drawing, with one console
+  warning. Sizing: `ResizeObserver` on the map column (width changes only)
+  plus the existing window `resize`; `renderer.resize` only on a real
+  CSS-size or DPR change.
+- Until step 4, `?pixi` has no hover/pin markers, no right-click dismissal
+  (hit markers are cleared) and Save PNG says so instead of exporting.

@@ -660,8 +660,18 @@ function mountDetail() {
     };
   }
   updateMapHint();
-  bindMapDrag($("#trackmap"));
-  bindMapContext($("#trackmap"));
+  mountMapCanvas();
+}
+
+/* the #trackmap slot's listeners: the Pixi map's canvas survives pane
+   re-clones (analysis-map.js), so it must not collect a second set */
+function mountMapCanvas() {
+  mountPixiCanvas();
+  const map = $("#trackmap");
+  if (!map || map.dataset.bound) return;
+  map.dataset.bound = "1";
+  bindMapDrag(map);
+  bindMapContext(map);
 }
 
 /* Laps + the sessions they came from (one for a session view, several for a
@@ -1544,9 +1554,6 @@ async function deleteSession(session) {
 
 /* ---------------- track map ---------------- */
 
-// the hue ramps are common.js's, shared with the Pixi scenes
-const slipColor = (s) => `hsl(${slipHue(s)}, 75%, 55%)`;
-const speedColor = (v, lo, hi) => `hsl(${speedHue(v, lo, hi)}, 80%, 55%)`;
 
 /* 3D view state: yaw is user-draggable; the tilt is a fixed axonometric angle */
 const map3d = { yaw: -0.9, drag: null };
@@ -1596,6 +1603,7 @@ function lowerBound(xs, x) {
 }
 
 function drawMapMarker() {
+  if (pixiMap) return pixiMap.drawMarkers();
   const canvas = $("#trackmap");
   const ref = refPick();
   if (!canvas || !mapCursor.snap || !mapCursor.proj) return;
@@ -1724,53 +1732,22 @@ function bindMapDrag(canvas) {
   canvas.addEventListener("dblclick", () => { resetMapView(); redrawMap(); });
 }
 
-function drawMap() {
-  const canvas = $("#trackmap");
-  if (!canvas) return;
-  const cssW = Math.max(1, canvas.parentElement.clientWidth - 4);
-  // a fixed 420 leaves a nearly-square map on a phone-width column; below
-  // ~760 px it follows the width instead (issue #74)
-  const cssH = Math.round(Math.min(420, Math.max(240, cssW * 0.55)));
-  const dpr = window.devicePixelRatio || 1;
-  const w = Math.round(cssW * dpr), h = Math.round(cssH * dpr);
-  // only on a real size change: a drag redraws at pointer rate, and each
-  // reassignment reallocates the backing store — ~8 MB at 1200 px x dpr 2
-  // (issue #71). The transform survives now, so reset it by hand.
-  if (canvas.width !== w || canvas.height !== h) {
-    canvas.width = w; canvas.height = h;
-    canvas.style.width = cssW + "px";
-    canvas.style.height = cssH + "px";
-  }
-  const ctx = canvas.getContext("2d");
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, cssW, cssH);
+/* the map's CSS size, from its column: a fixed 420 leaves a nearly-square map
+   on a phone-width column, so below ~760 px it follows the width instead
+   (issue #74) */
+function mapCssSize(el) {
+  const cssW = Math.max(1, el.parentElement.clientWidth - 4);
+  return [cssW, Math.round(Math.min(420, Math.max(240, cssW * 0.55)))];
+}
 
-  mapCursor.proj = null; // stale until this draw completes
-  hitMarkers.length = 0; // refilled by drawHits below
-
-  const loaded = state.picks.filter((p) => p.data);
-  // the drawing is the only place this is said (issue #70)
-  canvas.setAttribute("aria-label", loaded.length
-    ? `Track map of ${loaded.length} tagged `
-      + `${lapWord(state.session && state.session.route_kind, loaded.length)}`
-      + `, ${state.mapMode === "3d" ? "3D" : "2D"} view`
-    : "Track map — no laps tagged yet");
-  const ref = refPick();
-  const multi = state.picks.length >= 2;  // overlay mode: solid distinct colors
-  const three = state.mapMode === "3d";
-  canvas.style.cursor = three || mapView.zoom > 1 ? "grab" : "default";
-  // the speed/slip gradient only exists for a lone lap; in an overlay the
-  // colors identify laps (issue #30), so the select disappears entirely — a
-  // merely-disabled control still looked clickable and confused people
-  const colorWrap = $("#color-wrap");
-  if (colorWrap) colorWrap.style.display = multi ? "none" : "";
-  if (!ref) { // the side stats and color legend describe the reference lap -
-    $("#map-side").innerHTML = "";      // don't let them show a lap that was untagged
-    $("#legend-scale").innerHTML = "";
-  }
-  if (!loaded.length) return;
-
+/* The world -> screen projection both renderers share (the canvas map and
+   the Pixi map, analysis-map.js). Two stages, so a renderer can put the
+   second one in a transform:
+     raw(x, y, z, ground) -> pre-fit coordinates (2D: the map plane; 3D: the
+       rotated, tilted, elevation-lifted plane — depends on map3d.yaw)
+     fit + the user viewport -> CSS pixels: (raw * scale + off) * zoom + pan
+   P = both stages; at(d, i, ground) = P for sample i of a lap's data. */
+function mapProjection(loaded, cssW, cssH, three) {
   // world extent (elevation exaggeration is derived from it)
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity,
       minZ = Infinity, maxZ = -Infinity;
@@ -1842,6 +1819,133 @@ function drawMap() {
     const c = d.channels;
     return P(c.pos_x[i], c.pos_y ? c.pos_y[i] : 0, c.pos_z[i], ground);
   };
+  return { raw, P, at, scale, offX, offY, yRange };
+}
+
+/* chart drag-zoom window -> the matching index range on the reference trace
+   (dist is the charts' shared x-array, ascending by construction) */
+function zoomIndexRange(A) {
+  if (!state.zoomRange || !A.dist || !A.dist.length) return null;
+  const [lo, hi] = state.zoomRange;
+  let i0 = 0, i1 = A.dist.length - 1;
+  while (i0 < i1 && A.dist[i0] < lo) i0++;
+  while (i1 > i0 && A.dist[i1] > hi) i1--;
+  return i0 < i1 ? [i0, i1] : null;
+}
+
+/* a lone lap keeps the telemetry gradient (speed / slip): one value per
+   sample, its hue (common.js's ramps) and saturation, and the legend that
+   explains it */
+function mapGradient(A) {
+  if (state.colorMode === "speed") {
+    const vals = A.channels.speed_kmh;
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    $("#legend-scale").innerHTML =
+      `<span class="swatch" style="background:hsl(220,80%,55%)"></span> ${speedFromKmh(lo).toFixed(0)} ` +
+      `→ <span class="swatch" style="background:hsl(0,80%,55%)"></span> ${speedFromKmh(hi).toFixed(0)} ${speedUnit()}`;
+    return { vals, hue: (v) => speedHue(v, lo, hi), sat: 0.8 };
+  }
+  $("#legend-scale").innerHTML =
+    `<span class="swatch" style="background:hsl(120,75%,55%)"></span> grip ` +
+    `→ <span class="swatch" style="background:hsl(0,75%,55%)"></span> sliding`;
+  return {
+    vals: A.channels.slip_front.map((f, i) => Math.max(f, A.channels.slip_rear[i])),
+    hue: slipHue, sat: 0.75,
+  };
+}
+
+/* the side stats: one cell per picked lap plus the reference lap's facts */
+function renderMapSide(A, yRange) {
+  // driven length from integrated speed - FH6's DistanceTraveled is a
+  // track-position parameter on real circuits, not meters
+  let drivenM = 0;
+  for (let i = 1; i < A.t.length; i++)
+    drivenM += (A.channels.speed_kmh[i] + A.channels.speed_kmh[i - 1]) / 7.2 * (A.t[i] - A.t[i - 1]);
+
+  const side = $("#map-side");
+  // landings (jump touchdowns) and user-dismissed spikes don't count
+  const contacts = (A.collisions || []).filter((h) => !h.landing && !h.dismissed).length;
+  const jumps = A.jumps || [];
+  const hard = jumps.filter((j) => j.hard).length;
+  // one cell per picked lap (letter + color match tray, map and charts);
+  // letters and numbers only - session names stay in the tray, which
+  // renders them via textContent (user-named sessions must not hit innerHTML)
+  const lapCells = state.picks.map((p) => `
+      <div><div class="label"><span class="swatch" style="background:${p.color}"></span> ${pickLetter(p)} · ${lapLabel(p.session.route_kind, lapNo(p.lap))}</div>
+      <div class="value">${fmtLap(p.lap.lap_time)}</div></div>`).join("");
+  side.innerHTML = `<div class="lap-grid" style="text-align:left">
+      ${lapCells}
+      <div><div class="label">Samples</div><div class="value">${A.n_frames}</div></div>
+      <div><div class="label">Driven</div><div class="value">${distFromM(drivenM).toFixed(2)} ${distUnit()}</div></div>
+      <div><div class="label">Elevation range</div><div class="value">${yRange > 0.3 ? yRange.toFixed(0) + " m" : "flat"}</div></div>
+      <div><div class="label">Contacts</div><div class="value">${contacts ? `<span style="color:#ef4444">${contacts}</span>` : "0"}</div></div>
+      ${jumps.length ? `<div><div class="label">Jumps</div><div class="value">${jumps.length}${hard ? `<span style="color:#f59e0b;font-size:0.9rem" title="${hard} hard landing${hard > 1 ? "s" : ""} — not contact"> (${hard} 🛬)</span>` : ""}</div></div>` : ""}
+    </div>`;
+}
+
+/* Everything the map says outside its pixels (aria-label, cursor, colour
+   select, legend, side stats) is set here for both renderers; the pixels are
+   drawCanvasMap below or, with ?pixi, the Pixi map (analysis-map.js). */
+function drawMap() {
+  const canvas = $("#trackmap");
+  if (!canvas) return;
+  const [cssW, cssH] = mapCssSize(canvas);
+  const loaded = state.picks.filter((p) => p.data);
+  // the drawing is the only place this is said (issue #70)
+  canvas.setAttribute("aria-label", loaded.length
+    ? `Track map of ${loaded.length} tagged `
+      + `${lapWord(state.session && state.session.route_kind, loaded.length)}`
+      + `, ${state.mapMode === "3d" ? "3D" : "2D"} view`
+    : "Track map — no laps tagged yet");
+  const ref = refPick();
+  const multi = state.picks.length >= 2;  // overlay mode: solid distinct colors
+  const three = state.mapMode === "3d";
+  canvas.style.cursor = three || mapView.zoom > 1 ? "grab" : "default";
+  // the speed/slip gradient only exists for a lone lap; in an overlay the
+  // colors identify laps (issue #30), so the select disappears entirely — a
+  // merely-disabled control still looked clickable and confused people
+  const colorWrap = $("#color-wrap");
+  if (colorWrap) colorWrap.style.display = multi ? "none" : "";
+  if (!ref) { // the side stats and color legend describe the reference lap -
+    $("#map-side").innerHTML = "";      // don't let them show a lap that was untagged
+    $("#legend-scale").innerHTML = "";
+  }
+  const proj = loaded.length ? mapProjection(loaded, cssW, cssH, three) : null;
+  let grad = null;
+  if (ref) {
+    if (multi) $("#legend-scale").innerHTML = "";
+    else grad = mapGradient(ref.data);
+    renderMapSide(ref.data, proj.yRange);
+  }
+  const scene = { cssW, cssH, loaded, ref, multi, three, proj, grad };
+  if (pixiMap) {
+    hitMarkers.length = 0;  // right-click dismissal: step 4 of the Pixi map
+    pixiMap.draw(scene);
+  } else {
+    drawCanvasMap(canvas, scene);
+  }
+}
+
+function drawCanvasMap(canvas, { cssW, cssH, loaded, ref, three, proj, grad }) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.round(cssW * dpr), h = Math.round(cssH * dpr);
+  // only on a real size change: a drag redraws at pointer rate, and each
+  // reassignment reallocates the backing store — ~8 MB at 1200 px x dpr 2
+  // (issue #71). The transform survives now, so reset it by hand.
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w; canvas.height = h;
+    canvas.style.width = cssW + "px";
+    canvas.style.height = cssH + "px";
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  mapCursor.proj = null; // stale until this draw completes
+  hitMarkers.length = 0; // refilled by drawHits below
+  if (!loaded.length) return;
+  const { P, at } = proj;
 
   const polyline = (d, ground, stroke, width) => {
     ctx.strokeStyle = stroke;
@@ -1875,16 +1979,7 @@ function drawMap() {
 
   if (ref) {
     const A = ref.data;
-    // chart drag-zoom window -> the matching index range on the reference
-    // trace (dist is the charts' shared x-array, ascending by construction)
-    let zi = null;
-    if (state.zoomRange && A.dist && A.dist.length) {
-      const [lo, hi] = state.zoomRange;
-      let i0 = 0, i1 = A.dist.length - 1;
-      while (i0 < i1 && A.dist[i0] < lo) i0++;
-      while (i1 > i0 && A.dist[i1] > hi) i1--;
-      if (i0 < i1) zi = [i0, i1];
-    }
+    const zi = zoomIndexRange(A);
     if (zi) {  // halo under the zoomed stretch so it pops against any colors
       ctx.save();
       ctx.strokeStyle = hexRgba(PICK_COLORS[0], 0.30);
@@ -1899,23 +1994,8 @@ function drawMap() {
       ctx.stroke();
       ctx.restore();
     }
-    if (!multi) {
-      // a lone lap keeps the telemetry gradient (speed / slip)
-      let vals, lo = 0, hi = 1, colorFn;
-      if (state.colorMode === "speed") {
-        vals = A.channels.speed_kmh;
-        lo = Math.min(...vals); hi = Math.max(...vals);
-        colorFn = (v) => speedColor(v, lo, hi);
-        $("#legend-scale").innerHTML =
-          `<span class="swatch" style="background:hsl(220,80%,55%)"></span> ${speedFromKmh(lo).toFixed(0)} ` +
-          `→ <span class="swatch" style="background:hsl(0,80%,55%)"></span> ${speedFromKmh(hi).toFixed(0)} ${speedUnit()}`;
-      } else {
-        vals = A.channels.slip_front.map((f, i) => Math.max(f, A.channels.slip_rear[i]));
-        colorFn = slipColor;
-        $("#legend-scale").innerHTML =
-          `<span class="swatch" style="background:hsl(120,75%,55%)"></span> grip ` +
-          `→ <span class="swatch" style="background:hsl(0,75%,55%)"></span> sliding`;
-      }
+    if (grad) {
+      const { vals, hue, sat } = grad;
       ctx.lineWidth = 3;
       ctx.lineCap = "round";
       let prev = at(A, 0, false);
@@ -1923,7 +2003,7 @@ function drawMap() {
         const cur = at(A, i, false);
         // everything outside the zoom window fades so the span reads instantly
         ctx.globalAlpha = zi && (i <= zi[0] || i > zi[1]) ? 0.22 : 1;
-        ctx.strokeStyle = colorFn(vals[i]);
+        ctx.strokeStyle = `hsl(${hue(vals[i])}, ${sat * 100}%, 55%)`;
         ctx.beginPath();
         ctx.moveTo(prev[0], prev[1]);
         ctx.lineTo(cur[0], cur[1]);
@@ -1933,7 +2013,6 @@ function drawMap() {
       ctx.globalAlpha = 1;
     } else {
       // overlay: the reference wears its solid tray color, on top and wider
-      $("#legend-scale").innerHTML = "";
       polyline(A, false, ref.color, 3);
     }
     if (zi) {  // span endpoints: filled = where the window starts, hollow = ends
@@ -1986,32 +2065,6 @@ function drawMap() {
       ctx.closePath();
       ctx.fill();
     }
-
-    // driven length from integrated speed - FH6's DistanceTraveled is a
-    // track-position parameter on real circuits, not meters
-    let drivenM = 0;
-    for (let i = 1; i < A.t.length; i++)
-      drivenM += (A.channels.speed_kmh[i] + A.channels.speed_kmh[i - 1]) / 7.2 * (A.t[i] - A.t[i - 1]);
-
-    const side = $("#map-side");
-    // landings (jump touchdowns) and user-dismissed spikes don't count
-    const contacts = (A.collisions || []).filter((h) => !h.landing && !h.dismissed).length;
-    const jumps = A.jumps || [];
-    const hard = jumps.filter((j) => j.hard).length;
-    // one cell per picked lap (letter + color match tray, map and charts);
-    // letters and numbers only - session names stay in the tray, which
-    // renders them via textContent (user-named sessions must not hit innerHTML)
-    const lapCells = state.picks.map((p) => `
-      <div><div class="label"><span class="swatch" style="background:${p.color}"></span> ${pickLetter(p)} · ${lapLabel(p.session.route_kind, lapNo(p.lap))}</div>
-      <div class="value">${fmtLap(p.lap.lap_time)}</div></div>`).join("");
-    side.innerHTML = `<div class="lap-grid" style="text-align:left">
-      ${lapCells}
-      <div><div class="label">Samples</div><div class="value">${A.n_frames}</div></div>
-      <div><div class="label">Driven</div><div class="value">${distFromM(drivenM).toFixed(2)} ${distUnit()}</div></div>
-      <div><div class="label">Elevation range</div><div class="value">${yRange > 0.3 ? yRange.toFixed(0) + " m" : "flat"}</div></div>
-      <div><div class="label">Contacts</div><div class="value">${contacts ? `<span style="color:#ef4444">${contacts}</span>` : "0"}</div></div>
-      ${jumps.length ? `<div><div class="label">Jumps</div><div class="value">${jumps.length}${hard ? `<span style="color:#f59e0b;font-size:0.9rem" title="${hard} hard landing${hard > 1 ? "s" : ""} — not contact"> (${hard} 🛬)</span>` : ""}</div></div>` : ""}
-    </div>`;
   }
 
   // jump flights (takeoff -> touchdown, detected server-side) with the shared
@@ -2190,6 +2243,10 @@ function exportMapPng() {
   const ref = refPick();
   if (!ref) {
     uiAlert("Nothing to export", "Tag a lap to draw its racing line first.");
+    return;
+  }
+  if (pixiMap) {  // spike step 4 (docs/spikes/analysis-replay.md)
+    uiAlert("Not in the Pixi map yet", "Save PNG comes with the next spike step — open the page without ?pixi to export.");
     return;
   }
   const s = ref.session;      // the caption belongs to the reference lap's
@@ -2580,5 +2637,6 @@ onSettingsChange(() => {
 });
 bindImport();
 bindBrowse();
+bootPixiMap();
 loadSessions();
 setVisibleInterval(loadSessions, 15000); // pick up newly finished sessions
