@@ -1967,7 +1967,7 @@ function renderMapSide(A, yRange) {
 
 /* Everything the map says outside its pixels (aria-label, cursor, colour
    select, legend, side stats) is set here for both renderers; the pixels are
-   drawCanvasMap below or, with ?pixi, the Pixi map (analysis-map.js). */
+   the Pixi map (analysis-map.js) or, with ?canvas or no renderer, drawCanvasMap. */
 function drawMap() {
   const canvas = $("#trackmap");
   if (!canvas) return;
@@ -2687,6 +2687,8 @@ onSettingsChange(() => {
 });
 bindImport();
 bindBrowse();
-bootPixiMap();
+// resolves once the map's renderer is settled: Pixi, or the canvas fallback
+// (tools/capture_media.py waits on it before shooting the map)
+const pixiMapBoot = bootPixiMap();
 loadSessions();
 setVisibleInterval(loadSessions, 15000); // pick up newly finished sessions

@@ -1,8 +1,8 @@
 # Spike: Analysis track map on PixiJS, with ghost lap replay
 
 Branch: `feat/analysis-replay`. Issue:
-[#99](https://github.com/darcane/LapScope/issues/99). Status: **measured — verdict: adopt** (steps 2–6 done; step 7, the swap,
-is next).
+[#99](https://github.com/darcane/LapScope/issues/99). Status: **adopted — the Pixi map with the ghost replay is the Analysis
+map** (steps 1–7 done; see Verdict and Step 7).
 
 Follows the cockpit spike ([`pixi-cockpit-poc.md`](pixi-cockpit-poc.md)),
 whose verdict named this as the next user of the same stack.
@@ -435,3 +435,29 @@ returns premultiplied pixels, the shared system ticker survives
 `autoStart: false`, and a 3D rotate must thin its lines — plus one
 replay-specific one, the lap clock (`lapClock`), that any renderer would
 have hit. All five are documented in the code where they bite.
+
+### Step 7 — swap (done)
+
+- The Pixi map is the default; `?canvas` (or a renderer that fails to
+  start) keeps the Canvas 2D map, which has everything but the replay. The
+  `?pixi` flag is gone.
+- `bootPixiMap()`'s promise is kept as `pixiMapBoot`; `tools/capture_media.py`
+  awaits it before shooting the map, and its rotating-3D recipe renders
+  synchronously (`pixiMap.renderNow()`) after each `drawMap()`, since the
+  Pixi map draws on the next frame.
+- Docs: ARCHITECTURE.md rows (`analysis-map.js`, `analysis-replay.js`,
+  `pixi-kit.js`, the vendored Pixi), an AGENTS.md frontend convention, the
+  wiki's Feature-Tour "Ghost replay" section and a Troubleshooting entry for
+  a missing replay row, and a README feature line. No glyph changed, so the
+  Event-Detection page is untouched.
+- Re-verified on the default URL: Pixi starts, the replay row shows and
+  every replay check passes; `?canvas` gets the canvas map with no replay
+  row; canvas vs Pixi parity (markers, glyph positions, hit markers, PNG)
+  unchanged.
+
+### Next
+
+- Recapture the README/wiki media with the new map and a replay GIF:
+  [#100](https://github.com/darcane/LapScope/issues/100).
+- The Δ chart's last-sample spike found on the way:
+  [#104](https://github.com/darcane/LapScope/issues/104).

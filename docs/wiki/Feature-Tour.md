@@ -49,7 +49,29 @@ exact spot.
 ## Track map, 2D and 3D
 
 Your **racing line colored by speed or tire slip**. The 3D view uses the packet's
-elevation and is drag-to-rotate; ✦ markers are detected contacts.
+elevation and is drag-to-rotate; ✦ markers are detected contacts. Scroll to zoom,
+drag to pan, double-click to reset. Hovering a chart marks that spot on every
+tagged lap; a drag-zoom on a chart highlights that stretch of track.
+
+### Ghost replay
+
+Press ▶ under the map and the tagged laps **race each other on the map**: one
+marker per lap, in its tray color and letter, with a live gap to lap A for each.
+
+- **By time** puts every lap where it was after the same lap time — a real
+  race, the gap is the distance between the markers.
+- **By distance** puts every lap where A is on the track (the Δ chart's
+  alignment) — the markers stack, the gap is in the readout.
+
+Scrub with the slider (arrow keys work), pick a speed from 0.25× to 4×, or press
+Space on the map. The charts follow the replay; hovering a chart pauses it and
+jumps there, and a chart drag-zoom turns that stretch into a loop. Laps are timed
+on the game's own lap clock, so a rewound stretch is not replayed twice. A lap
+that finishes early waits at the line, dimmed.
+
+The map draws with WebGL. If your browser can't (hardware acceleration off, a
+VM, remote desktop), it falls back to the plain map without the replay; you can
+also force that with `analysis.html?canvas`.
 
 ![Track map in 2D, colored by speed](https://raw.githubusercontent.com/darcane/LapScope/main/docs/media/track-map.png)
 

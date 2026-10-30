@@ -501,6 +501,19 @@ server joining mid-lap, event restart.
   Pixi helpers any scene can use (tokens, bitmap font, glows, smoothing,
   map glyphs, `slipHex`) live in `pixi-kit.js` — reach for them there, never
   copy them out of `cockpit.js` into a new page.
+- The Analysis track map is a Pixi scene too (`analysis-map.js`), with the
+  Canvas 2D map (`drawCanvasMap`) kept as the fallback (`?canvas`, or no
+  renderer). Anything both must agree on — projection, start arrow, glyph
+  and hit positions, hover dots — is computed once in analysis.js
+  (`mapProjection`, `mapStartArrow`, `mapGlyphs`, `mapMarkerDots`) and only
+  painted by each; a new map feature goes there first, then into both
+  painters. There is no packet stream, so nothing draws unless asked: data,
+  view or settings changes call `drawMap()`, a chart hover only redraws the
+  dot layer, and the only rAF loop is the ghost replay's, alive while it
+  plays. Pixi's shared `Ticker.system` stays stopped (it spun a rAF loop on
+  an idle page). Times on the map come from `lapClock()`
+  (analysis-replay.js), never raw `t` — `t` counts the seconds a rewind took
+  back.
 - The classic live page (`classic.html`, `dashboard.js`, `gauges.js`) sits
   behind the dimmed Classic nav link while
   [#101](https://github.com/darcane/LapScope/issues/101) decides between

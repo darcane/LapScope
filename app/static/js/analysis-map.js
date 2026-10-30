@@ -1,7 +1,8 @@
 /* The Analysis track map on PixiJS (issue #99; plan, measurements and
-   verdict in docs/spikes/analysis-replay.md). Behind ?pixi until it reaches
-   parity with the canvas map (drawCanvasMap in analysis.js), which stays the
-   fallback: if no renderer starts, `pixiMap` stays null and nothing changes.
+   verdict in docs/spikes/analysis-replay.md). The default map; the canvas
+   map (drawCanvasMap in analysis.js) is the fallback — with ?canvas, or when
+   no renderer starts, `pixiMap` stays null and the canvas map draws as it
+   always has (without the ghost replay, which needs this renderer).
 
    analysis.js owns the state, the data and the projection (mapProjection);
    drawMap() sets everything said outside the pixels, then hands this file a
@@ -10,7 +11,7 @@
 
    Lines live in the projection's raw (pre-fit) space, so the fit, the wheel
    zoom and the pan are the `lines` container's transform: hovering, zooming
-   and panning move a matrix instead of re-tessellating ~12 000 points. They
+   and panning move a matrix instead of re-tessellating thousands of points. They
    are rebuilt when what they show changes (picks, colours, 2D/3D, the 3D
    yaw, the chart zoom span) or when the effective scale drifts > 15 % from
    the one they were built at — stroke width scales with the transform, so
@@ -19,7 +20,7 @@
    Nothing draws on its own: draw() schedules one render on the next frame,
    and an idle page renders nothing at all. */
 
-const PIXI_MAP = new URLSearchParams(location.search).has("pixi");
+const PIXI_MAP = !new URLSearchParams(location.search).has("canvas");
 let pixiMap = null;
 
 const LINE_REBUILD_DRIFT = 0.15;

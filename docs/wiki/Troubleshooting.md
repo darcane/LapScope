@@ -212,6 +212,13 @@ desktop / VM session with no GPU. Turn hardware acceleration back on and reload,
 or use the **Classic** link in the header (the previous dashboard, plain
 Canvas 2D).
 
+## The Analysis map has no ▶ replay row
+
+The ghost replay needs the WebGL map. When the browser can't start it (same
+causes as above), Analysis falls back to the plain Canvas map, which has
+everything except the replay. Re-enable hardware acceleration and reload. If the
+address ends in `?canvas`, remove that: it asks for the plain map on purpose.
+
 ## Still stuck?
 
 [Open a bug report](https://github.com/darcane/LapScope/issues/new?template=bug_report.yml)

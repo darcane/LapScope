@@ -531,6 +531,7 @@ def open_analysis(browser, base: str, shot: dict):
         if shot.get("laps"):
             page.wait_for_selector(SEL_CHARTS_READY, timeout=30000)
     page.wait_for_load_state("networkidle")
+    page.evaluate("() => pixiMapBoot")  # the map's renderer: Pixi, or its fallback
     page.wait_for_timeout(int(shot.get("settle_ms", 600)))
     return ctx, page
 
@@ -664,7 +665,9 @@ def shot_map_animated(browser, server, shot, _db) -> bytes:
         steps = int(shot.get("rotation_steps", 36))
         frames = []
         for i in range(steps):
-            page.evaluate("d => { map3d.yaw += d; drawMap(); }", 6.283185307 / steps)
+            # the Pixi map renders on the next frame: render now, then shoot
+            page.evaluate("d => { map3d.yaw += d; drawMap(); if (pixiMap) pixiMap.renderNow(); }",
+                          6.283185307 / steps)
             frames.append((i / float(shot.get("capture_fps", 12)), _shoot(page, shot)))
         return encode_within_budget(frames, shot)
     finally:
