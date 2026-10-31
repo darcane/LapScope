@@ -1554,6 +1554,44 @@ table.laps .pick.on { font-weight: 600; }
 .map-row > * { min-width: 0; }
 #trackmap { width: 100%; touch-action: none; }
 #trackmap:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* the follow camera's lock, floating in the map's corner (analysis-replay.js):
+   dim while the camera is free, the accent with a slow breathing glow while
+   it follows a car */
+.map-stage { position: relative; }
+.map-follow {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  user-select: none;
+}
+.map-follow[hidden], .map-follow select[hidden] { display: none; }
+.map-follow select { font-size: 0.8rem; padding: 4px 6px; background: rgba(6, 8, 12, 0.82); }
+#mf-lock {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 8px;
+  color: var(--muted);
+  background: rgba(6, 8, 12, 0.72);
+  border: 1px solid var(--panel-edge);
+  cursor: pointer;
+}
+#mf-lock:hover { color: var(--text); }
+#mf-lock[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 10px rgba(0, 212, 255, 0.45);
+  animation: follow-glow 2.4s ease-in-out infinite;
+}
+@keyframes follow-glow {
+  0%, 100% { box-shadow: 0 0 5px rgba(0, 212, 255, 0.3); }
+  50% { box-shadow: 0 0 14px rgba(0, 212, 255, 0.65); }
+}
 /* the ghost lap replay's controls, right under the map (analysis-replay.js) */
 .replay {
   display: flex;
@@ -1721,7 +1759,8 @@ select {
   .facet-pop,
   .detail.busy::before,
   dialog.modal,
-  dialog.modal::backdrop {
+  dialog.modal::backdrop,
+  #mf-lock[aria-pressed="true"] {
     animation: none;
   }
   /* the ring's whole point is the sweep; a static one is just a smudge */

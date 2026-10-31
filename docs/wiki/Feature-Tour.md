@@ -69,6 +69,16 @@ jumps there, and a chart drag-zoom turns that stretch into a loop. Laps are time
 on the game's own lap clock, so a rewound stretch is not replayed twice. A lap
 that finishes early waits at the line, dimmed.
 
+**Follow camera.** Zoomed in, the cars soon drive off the edge. The crosshair
+button in the map's top-right corner (or **F** on the map) locks the camera on
+a car: it zooms in if the map is at full size and keeps that car centred while
+it plays, scrubs or loops. You can still rotate the 3D view, which now turns
+around the car, and zoom with the wheel. Pick what to follow next to the
+button: lap A, the **Leader** (the lap furthest round the track — *By time*
+only; a new leader must hold the lead for half a second before the camera
+moves), or any other tagged lap. Dragging to pan, double-clicking, or clicking
+the button again gives you the free camera back.
+
 The map draws with WebGL. If your browser can't (hardware acceleration off, a
 VM, remote desktop), it falls back to the plain map without the replay; you can
 also force that with `analysis.html?canvas`.
