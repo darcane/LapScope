@@ -660,8 +660,20 @@ function mountDetail() {
     };
   }
   updateMapHint();
-  bindMapDrag($("#trackmap"));
-  bindMapContext($("#trackmap"));
+  mountMapCanvas();
+  bindReplayControls();
+}
+
+/* the #trackmap slot's listeners: the Pixi map's canvas survives pane
+   re-clones (analysis-map.js), so it must not collect a second set */
+function mountMapCanvas() {
+  mountPixiCanvas();
+  const map = $("#trackmap");
+  if (!map || map.dataset.bound) return;
+  map.dataset.bound = "1";
+  bindMapDrag(map);
+  bindMapContext(map);
+  bindReplayKeys(map);
 }
 
 /* Laps + the sessions they came from (one for a session view, several for a
@@ -1169,12 +1181,14 @@ function renderPicks() {
     state.zoomRange = null;
     mapCursor.idx = null;
     mapCursor.pin = null;  // the pin is an index into the old reference's arrays
+    resetReplay();         // its clock is in the old reference's seconds
   }
   renderLapRows();
   renderTray();
   drawMap();
   drawCharts();
   renderRawSection();
+  syncReplayControls();  // after the charts: an engaged replay moves their cursor
   maybeWarnCrossRoute();
 }
 
@@ -1544,14 +1558,6 @@ async function deleteSession(session) {
 
 /* ---------------- track map ---------------- */
 
-function slipColor(s) {
-  const hue = Math.max(0, Math.min(120, 120 * (1.15 - s) / 1.15));
-  return `hsl(${hue}, 75%, 55%)`;
-}
-function speedColor(v, lo, hi) {
-  const t = hi > lo ? (v - lo) / (hi - lo) : 0;
-  return `hsl(${220 - 220 * t}, 80%, 55%)`;
-}
 
 /* 3D view state: yaw is user-draggable; the tilt is a fixed axonometric angle */
 const map3d = { yaw: -0.9, drag: null };
@@ -1576,6 +1582,7 @@ function resetMapView() {
 const mapCursor = { idx: null, pin: null, proj: null, snap: null, dpr: 1 };
 
 function setMapCursor(idx) {
+  if (replayOnChartCursor(idx)) return;  // an engaged replay owns the cursor
   if (idx === mapCursor.idx) return;
   mapCursor.idx = idx;
   drawMapMarker();
@@ -1600,20 +1607,16 @@ function lowerBound(xs, x) {
   return lo;
 }
 
-function drawMapMarker() {
-  const canvas = $("#trackmap");
+/* The hover / pin dots, in draw order, for both renderers: { x, y, r, color,
+   fill, ring, width } in CSS pixels. An index lives on the reference lap's
+   arrays; every other lap is marked at the same track position (its own
+   lower bound on dist), so the dots' spread IS the racing-line difference at
+   that spot. filled = live hover, hollow ring = the pinned point (both when
+   hovering the pinned spot). */
+function mapMarkerDots({ hover = true } = {}) {
   const ref = refPick();
-  if (!canvas || !mapCursor.snap || !mapCursor.proj) return;
-  const ctx = canvas.getContext("2d");
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(mapCursor.snap, 0, 0);
-  ctx.setTransform(mapCursor.dpr, 0, 0, mapCursor.dpr, 0, 0);
-  if (!ref) return;
-  // an index lives on the reference lap's arrays; every other lap is marked
-  // at the same track position (its own lower bound on dist), so the dots'
-  // spread IS the racing-line difference at that spot. filled = live hover,
-  // hollow ring = the pinned point (both when hovering the pinned spot).
+  if (!ref || !mapCursor.proj) return [];
+  const dots = [];
   const markAt = (idx, filled) => {
     const ri = Math.min(idx, ref.data.channels.pos_x.length - 1);
     const dist = ref.data.dist[ri];
@@ -1621,24 +1624,40 @@ function drawMapMarker() {
       const c = p.data.channels;
       const j = Math.min(i, c.pos_x.length - 1);
       const [x, y] = mapCursor.proj(c.pos_x[j], c.pos_y ? c.pos_y[j] : 0, c.pos_z[j], false);
-      ctx.save();
-      ctx.shadowColor = p.color;
-      ctx.shadowBlur = 10;
-      ctx.fillStyle = filled ? p.color : "#0b1520";
-      ctx.strokeStyle = filled ? "#fff" : p.color;
-      ctx.lineWidth = filled ? 2 : 2.5;
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.restore();
+      dots.push({ x, y, r, color: p.color, fill: filled ? p.color : "#0b1520",
+                  ring: filled ? "#fff" : p.color, width: filled ? 2 : 2.5 });
     };
     for (const p of state.picks)
       if (p.data && p !== ref) dot(p, lowerBound(p.data.dist, dist), 4.5);
     dot(ref, ri, 6);  // reference last, on top
   };
   if (mapCursor.pin != null) markAt(mapCursor.pin, false);
-  if (mapCursor.idx != null) markAt(mapCursor.idx, true);
+  if (hover && mapCursor.idx != null) markAt(mapCursor.idx, true);
+  return dots;
+}
+
+function drawMapMarker() {
+  if (pixiMap) return pixiMap.drawMarkers();
+  const canvas = $("#trackmap");
+  if (!canvas || !mapCursor.snap || !mapCursor.proj) return;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(mapCursor.snap, 0, 0);
+  ctx.setTransform(mapCursor.dpr, 0, 0, mapCursor.dpr, 0, 0);
+  for (const d of mapMarkerDots()) {
+    ctx.save();
+    ctx.shadowColor = d.color;
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = d.fill;
+    ctx.strokeStyle = d.ring;
+    ctx.lineWidth = d.width;
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
 /* screen-space contact markers of the last drawMap, for right-click hit
@@ -1711,7 +1730,12 @@ function bindMapDrag(canvas) {
     }
     redrawMap();
   });
-  const stop = () => { map3d.drag = null; };
+  const stop = () => {
+    // the Pixi map thins its lines while a rotate lasts: redraw at full detail
+    const rotated = map3d.drag && map3d.drag.rotate;
+    map3d.drag = null;
+    if (rotated && pixiMap) redrawMap();
+  };
   canvas.addEventListener("pointerup", stop);
   canvas.addEventListener("pointercancel", stop);
   // wheel: zoom about the cursor, so what you point at stays put
@@ -1729,53 +1753,22 @@ function bindMapDrag(canvas) {
   canvas.addEventListener("dblclick", () => { resetMapView(); redrawMap(); });
 }
 
-function drawMap() {
-  const canvas = $("#trackmap");
-  if (!canvas) return;
-  const cssW = Math.max(1, canvas.parentElement.clientWidth - 4);
-  // a fixed 420 leaves a nearly-square map on a phone-width column; below
-  // ~760 px it follows the width instead (issue #74)
-  const cssH = Math.round(Math.min(420, Math.max(240, cssW * 0.55)));
-  const dpr = window.devicePixelRatio || 1;
-  const w = Math.round(cssW * dpr), h = Math.round(cssH * dpr);
-  // only on a real size change: a drag redraws at pointer rate, and each
-  // reassignment reallocates the backing store — ~8 MB at 1200 px x dpr 2
-  // (issue #71). The transform survives now, so reset it by hand.
-  if (canvas.width !== w || canvas.height !== h) {
-    canvas.width = w; canvas.height = h;
-    canvas.style.width = cssW + "px";
-    canvas.style.height = cssH + "px";
-  }
-  const ctx = canvas.getContext("2d");
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, cssW, cssH);
+/* the map's CSS size, from its column: a fixed 420 leaves a nearly-square map
+   on a phone-width column, so below ~760 px it follows the width instead
+   (issue #74) */
+function mapCssSize(el) {
+  const cssW = Math.max(1, el.parentElement.clientWidth - 4);
+  return [cssW, Math.round(Math.min(420, Math.max(240, cssW * 0.55)))];
+}
 
-  mapCursor.proj = null; // stale until this draw completes
-  hitMarkers.length = 0; // refilled by drawHits below
-
-  const loaded = state.picks.filter((p) => p.data);
-  // the drawing is the only place this is said (issue #70)
-  canvas.setAttribute("aria-label", loaded.length
-    ? `Track map of ${loaded.length} tagged `
-      + `${lapWord(state.session && state.session.route_kind, loaded.length)}`
-      + `, ${state.mapMode === "3d" ? "3D" : "2D"} view`
-    : "Track map — no laps tagged yet");
-  const ref = refPick();
-  const multi = state.picks.length >= 2;  // overlay mode: solid distinct colors
-  const three = state.mapMode === "3d";
-  canvas.style.cursor = three || mapView.zoom > 1 ? "grab" : "default";
-  // the speed/slip gradient only exists for a lone lap; in an overlay the
-  // colors identify laps (issue #30), so the select disappears entirely — a
-  // merely-disabled control still looked clickable and confused people
-  const colorWrap = $("#color-wrap");
-  if (colorWrap) colorWrap.style.display = multi ? "none" : "";
-  if (!ref) { // the side stats and color legend describe the reference lap -
-    $("#map-side").innerHTML = "";      // don't let them show a lap that was untagged
-    $("#legend-scale").innerHTML = "";
-  }
-  if (!loaded.length) return;
-
+/* The world -> screen projection both renderers share (the canvas map and
+   the Pixi map, analysis-map.js). Two stages, so a renderer can put the
+   second one in a transform:
+     raw(x, y, z, ground) -> pre-fit coordinates (2D: the map plane; 3D: the
+       rotated, tilted, elevation-lifted plane — depends on map3d.yaw)
+     fit + the user viewport -> CSS pixels: (raw * scale + off) * zoom + pan
+   P = both stages; at(d, i, ground) = P for sample i of a lap's data. */
+function mapProjection(loaded, cssW, cssH, three) {
   // world extent (elevation exaggeration is derived from it)
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity,
       minZ = Infinity, maxZ = -Infinity;
@@ -1847,6 +1840,196 @@ function drawMap() {
     const c = d.channels;
     return P(c.pos_x[i], c.pos_y ? c.pos_y[i] : 0, c.pos_z[i], ground);
   };
+  return { raw, P, at, scale, offX, offY, yRange };
+}
+
+/* chart drag-zoom window -> the matching index range on the reference trace
+   (dist is the charts' shared x-array, ascending by construction) */
+function zoomIndexRange(A) {
+  if (!state.zoomRange || !A.dist || !A.dist.length) return null;
+  const [lo, hi] = state.zoomRange;
+  let i0 = 0, i1 = A.dist.length - 1;
+  while (i0 < i1 && A.dist[i0] < lo) i0++;
+  while (i1 > i0 && A.dist[i1] > hi) i1--;
+  return i0 < i1 ? [i0, i1] : null;
+}
+
+/* the start dot + drive direction: a stem and arrowhead pointing along the
+   first stretch of the lap (sampled in screen space, so it follows the 3D
+   projection too). `arrow` is null when the lap barely moves. */
+const START_COLOR = "#34d399";
+function mapStartArrow(A, at) {
+  const [sx, sy] = at(A, 0, false);
+  const nPts = A.channels.pos_x.length;
+  let j = 1;
+  while (j < nPts - 1) {
+    const [px, py] = at(A, j, false);
+    if (Math.hypot(px - sx, py - sy) >= 14) break;
+    j++;
+  }
+  const [hx, hy] = at(A, j, false);
+  if (Math.hypot(hx - sx, hy - sy) <= 2) return { sx, sy, arrow: null };
+  const ang = Math.atan2(hy - sy, hx - sx);
+  const ax = sx + Math.cos(ang) * 24, ay = sy + Math.sin(ang) * 24;
+  return {
+    sx, sy, arrow: {
+      stem: [sx + Math.cos(ang) * 9, sy + Math.sin(ang) * 9, ax, ay],
+      head: [ax + Math.cos(ang) * 9, ay + Math.sin(ang) * 9,
+             ax + Math.cos(ang + 2.4) * 6.5, ay + Math.sin(ang + 2.4) * 6.5,
+             ax + Math.cos(ang - 2.4) * 6.5, ay + Math.sin(ang - 2.4) * 6.5],
+    },
+  };
+}
+
+/* jump flights (takeoff -> touchdown, detected server-side) and collision
+   points (contact spikes), in screen space and draw order, for both
+   renderers - drawn over the ribbon so they read against any coloring. The
+   reference lap's are full-strength, every other pick's dimmer (they'd drown
+   the overlay in sparks otherwise); every hit also lands in hitMarkers, so
+   right-click dismissal works on any picked lap. Landing spikes are part of
+   the jump glyph (hard = glow + impact ring), not their own spark - not
+   contact. Empty with the contact layer switched off in Settings. */
+function mapGlyphs(loaded, ref, P) {
+  const jumps = [], hits = [];
+  if (!getSettings().contactLayer) return { jumps, hits };
+  const addJumps = (d, color) => {
+    for (const j of d.jumps || []) {
+      const [x0, y0] = P(j.x0, j.y0 ?? 0, j.z0, false);
+      const [x1, y1] = P(j.x1, j.y1 ?? 0, j.z1, false);
+      jumps.push({ x0, y0, x1, y1, color, hard: j.hard });
+    }
+  };
+  const addHits = (d, fill, r) => {
+    for (const h of d.collisions || []) {
+      if (h.landing) continue;   // drawn as its jump's touchdown, not a spark
+      if (h.dismissed) continue; // user said "not a contact"
+      const [x, y] = P(h.x, h.y ?? 0, h.z, false);
+      hitMarkers.push({ x, y, lapId: d.lap.id, t: h.t });
+      hits.push({ x, y, fill, r });
+    }
+  };
+  for (const p of loaded) if (p !== ref) addJumps(p.data, "#7f6f4b");
+  if (ref) addJumps(ref.data, "#f59e0b");
+  for (const p of loaded) if (p !== ref) addHits(p.data, "#7f5b5b", 6);
+  if (ref) addHits(ref.data, "#ef4444", 7);
+  return { jumps, hits };
+}
+
+/* a lone lap keeps the telemetry gradient (speed / slip): one value per
+   sample, its hue (common.js's ramps) and saturation, and the legend that
+   explains it */
+function mapGradient(A) {
+  if (state.colorMode === "speed") {
+    const vals = A.channels.speed_kmh;
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    $("#legend-scale").innerHTML =
+      `<span class="swatch" style="background:hsl(220,80%,55%)"></span> ${speedFromKmh(lo).toFixed(0)} ` +
+      `→ <span class="swatch" style="background:hsl(0,80%,55%)"></span> ${speedFromKmh(hi).toFixed(0)} ${speedUnit()}`;
+    return { vals, hue: (v) => speedHue(v, lo, hi), sat: 0.8 };
+  }
+  $("#legend-scale").innerHTML =
+    `<span class="swatch" style="background:hsl(120,75%,55%)"></span> grip ` +
+    `→ <span class="swatch" style="background:hsl(0,75%,55%)"></span> sliding`;
+  return {
+    vals: A.channels.slip_front.map((f, i) => Math.max(f, A.channels.slip_rear[i])),
+    hue: slipHue, sat: 0.75,
+  };
+}
+
+/* the side stats: one cell per picked lap plus the reference lap's facts */
+function renderMapSide(A, yRange) {
+  // driven length from integrated speed - FH6's DistanceTraveled is a
+  // track-position parameter on real circuits, not meters
+  let drivenM = 0;
+  for (let i = 1; i < A.t.length; i++)
+    drivenM += (A.channels.speed_kmh[i] + A.channels.speed_kmh[i - 1]) / 7.2 * (A.t[i] - A.t[i - 1]);
+
+  const side = $("#map-side");
+  // landings (jump touchdowns) and user-dismissed spikes don't count
+  const contacts = (A.collisions || []).filter((h) => !h.landing && !h.dismissed).length;
+  const jumps = A.jumps || [];
+  const hard = jumps.filter((j) => j.hard).length;
+  // one cell per picked lap (letter + color match tray, map and charts);
+  // letters and numbers only - session names stay in the tray, which
+  // renders them via textContent (user-named sessions must not hit innerHTML)
+  const lapCells = state.picks.map((p) => `
+      <div><div class="label"><span class="swatch" style="background:${p.color}"></span> ${pickLetter(p)} · ${lapLabel(p.session.route_kind, lapNo(p.lap))}</div>
+      <div class="value">${fmtLap(p.lap.lap_time)}</div></div>`).join("");
+  side.innerHTML = `<div class="lap-grid" style="text-align:left">
+      ${lapCells}
+      <div><div class="label">Samples</div><div class="value">${A.n_frames}</div></div>
+      <div><div class="label">Driven</div><div class="value">${distFromM(drivenM).toFixed(2)} ${distUnit()}</div></div>
+      <div><div class="label">Elevation range</div><div class="value">${yRange > 0.3 ? yRange.toFixed(0) + " m" : "flat"}</div></div>
+      <div><div class="label">Contacts</div><div class="value">${contacts ? `<span style="color:#ef4444">${contacts}</span>` : "0"}</div></div>
+      ${jumps.length ? `<div><div class="label">Jumps</div><div class="value">${jumps.length}${hard ? `<span style="color:#f59e0b;font-size:0.9rem" title="${hard} hard landing${hard > 1 ? "s" : ""} — not contact"> (${hard} 🛬)</span>` : ""}</div></div>` : ""}
+    </div>`;
+}
+
+/* Everything the map says outside its pixels (aria-label, cursor, colour
+   select, legend, side stats) is set here for both renderers; the pixels are
+   the Pixi map (analysis-map.js) or, with ?canvas or no renderer, drawCanvasMap. */
+function drawMap() {
+  const canvas = $("#trackmap");
+  if (!canvas) return;
+  const [cssW, cssH] = mapCssSize(canvas);
+  const loaded = state.picks.filter((p) => p.data);
+  // the drawing is the only place this is said (issue #70)
+  canvas.setAttribute("aria-label", loaded.length
+    ? `Track map of ${loaded.length} tagged `
+      + `${lapWord(state.session && state.session.route_kind, loaded.length)}`
+      + `, ${state.mapMode === "3d" ? "3D" : "2D"} view`
+    : "Track map — no laps tagged yet");
+  const ref = refPick();
+  const multi = state.picks.length >= 2;  // overlay mode: solid distinct colors
+  const three = state.mapMode === "3d";
+  canvas.style.cursor = three || mapView.zoom > 1 ? "grab" : "default";
+  // the speed/slip gradient only exists for a lone lap; in an overlay the
+  // colors identify laps (issue #30), so the select disappears entirely — a
+  // merely-disabled control still looked clickable and confused people
+  const colorWrap = $("#color-wrap");
+  if (colorWrap) colorWrap.style.display = multi ? "none" : "";
+  if (!ref) { // the side stats and color legend describe the reference lap -
+    $("#map-side").innerHTML = "";      // don't let them show a lap that was untagged
+    $("#legend-scale").innerHTML = "";
+  }
+  const proj = loaded.length ? mapProjection(loaded, cssW, cssH, three) : null;
+  let grad = null;
+  if (ref) {
+    if (multi) $("#legend-scale").innerHTML = "";
+    else grad = mapGradient(ref.data);
+    renderMapSide(ref.data, proj.yRange);
+  }
+  const scene = { cssW, cssH, loaded, ref, multi, three, proj, grad };
+  if (pixiMap) {
+    // the hover dots project through this; hitMarkers refill in draw()
+    mapCursor.proj = proj ? proj.P : null;
+    hitMarkers.length = 0;
+    pixiMap.draw(scene);
+  } else {
+    drawCanvasMap(canvas, scene);
+  }
+}
+
+function drawCanvasMap(canvas, { cssW, cssH, loaded, ref, three, proj, grad }) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.round(cssW * dpr), h = Math.round(cssH * dpr);
+  // only on a real size change: a drag redraws at pointer rate, and each
+  // reassignment reallocates the backing store — ~8 MB at 1200 px x dpr 2
+  // (issue #71). The transform survives now, so reset it by hand.
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w; canvas.height = h;
+    canvas.style.width = cssW + "px";
+    canvas.style.height = cssH + "px";
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  mapCursor.proj = null; // stale until this draw completes
+  hitMarkers.length = 0; // refilled by drawHits below
+  if (!loaded.length) return;
+  const { P, at } = proj;
 
   const polyline = (d, ground, stroke, width) => {
     ctx.strokeStyle = stroke;
@@ -1880,16 +2063,7 @@ function drawMap() {
 
   if (ref) {
     const A = ref.data;
-    // chart drag-zoom window -> the matching index range on the reference
-    // trace (dist is the charts' shared x-array, ascending by construction)
-    let zi = null;
-    if (state.zoomRange && A.dist && A.dist.length) {
-      const [lo, hi] = state.zoomRange;
-      let i0 = 0, i1 = A.dist.length - 1;
-      while (i0 < i1 && A.dist[i0] < lo) i0++;
-      while (i1 > i0 && A.dist[i1] > hi) i1--;
-      if (i0 < i1) zi = [i0, i1];
-    }
+    const zi = zoomIndexRange(A);
     if (zi) {  // halo under the zoomed stretch so it pops against any colors
       ctx.save();
       ctx.strokeStyle = hexRgba(PICK_COLORS[0], 0.30);
@@ -1904,23 +2078,8 @@ function drawMap() {
       ctx.stroke();
       ctx.restore();
     }
-    if (!multi) {
-      // a lone lap keeps the telemetry gradient (speed / slip)
-      let vals, lo = 0, hi = 1, colorFn;
-      if (state.colorMode === "speed") {
-        vals = A.channels.speed_kmh;
-        lo = Math.min(...vals); hi = Math.max(...vals);
-        colorFn = (v) => speedColor(v, lo, hi);
-        $("#legend-scale").innerHTML =
-          `<span class="swatch" style="background:hsl(220,80%,55%)"></span> ${speedFromKmh(lo).toFixed(0)} ` +
-          `→ <span class="swatch" style="background:hsl(0,80%,55%)"></span> ${speedFromKmh(hi).toFixed(0)} ${speedUnit()}`;
-      } else {
-        vals = A.channels.slip_front.map((f, i) => Math.max(f, A.channels.slip_rear[i]));
-        colorFn = slipColor;
-        $("#legend-scale").innerHTML =
-          `<span class="swatch" style="background:hsl(120,75%,55%)"></span> grip ` +
-          `→ <span class="swatch" style="background:hsl(0,75%,55%)"></span> sliding`;
-      }
+    if (grad) {
+      const { vals, hue, sat } = grad;
       ctx.lineWidth = 3;
       ctx.lineCap = "round";
       let prev = at(A, 0, false);
@@ -1928,7 +2087,7 @@ function drawMap() {
         const cur = at(A, i, false);
         // everything outside the zoom window fades so the span reads instantly
         ctx.globalAlpha = zi && (i <= zi[0] || i > zi[1]) ? 0.22 : 1;
-        ctx.strokeStyle = colorFn(vals[i]);
+        ctx.strokeStyle = `hsl(${hue(vals[i])}, ${sat * 100}%, 55%)`;
         ctx.beginPath();
         ctx.moveTo(prev[0], prev[1]);
         ctx.lineTo(cur[0], cur[1]);
@@ -1938,7 +2097,6 @@ function drawMap() {
       ctx.globalAlpha = 1;
     } else {
       // overlay: the reference wears its solid tray color, on top and wider
-      $("#legend-scale").innerHTML = "";
       polyline(A, false, ref.color, 3);
     }
     if (zi) {  // span endpoints: filled = where the window starts, hollow = ends
@@ -1958,114 +2116,50 @@ function drawMap() {
         ctx.restore();
       }
     }
-    const [sx, sy] = at(A, 0, false);
-    ctx.fillStyle = "#34d399";
+    const { sx, sy, arrow } = mapStartArrow(A, at);
+    ctx.fillStyle = START_COLOR;
     ctx.beginPath();
     ctx.arc(sx, sy, 6, 0, Math.PI * 2);
     ctx.fill();
-
-    // drive direction: stem + arrowhead pointing along the first stretch of
-    // the lap (sampled in screen space, so it follows the 3D projection too)
-    const nPts = A.channels.pos_x.length;
-    let j = 1;
-    while (j < nPts - 1) {
-      const [px, py] = at(A, j, false);
-      if (Math.hypot(px - sx, py - sy) >= 14) break;
-      j++;
-    }
-    const [hx, hy] = at(A, j, false);
-    if (Math.hypot(hx - sx, hy - sy) > 2) {
-      const ang = Math.atan2(hy - sy, hx - sx);
-      const ax = sx + Math.cos(ang) * 24, ay = sy + Math.sin(ang) * 24;
-      ctx.strokeStyle = "#34d399";
+    if (arrow) {
+      const { stem, head } = arrow;
+      ctx.strokeStyle = START_COLOR;
       ctx.lineWidth = 2.5;
       ctx.lineCap = "round";
       ctx.beginPath();
-      ctx.moveTo(sx + Math.cos(ang) * 9, sy + Math.sin(ang) * 9);
-      ctx.lineTo(ax, ay);
+      ctx.moveTo(stem[0], stem[1]);
+      ctx.lineTo(stem[2], stem[3]);
       ctx.stroke();
       ctx.beginPath();
-      ctx.moveTo(ax + Math.cos(ang) * 9, ay + Math.sin(ang) * 9);
-      ctx.lineTo(ax + Math.cos(ang + 2.4) * 6.5, ay + Math.sin(ang + 2.4) * 6.5);
-      ctx.lineTo(ax + Math.cos(ang - 2.4) * 6.5, ay + Math.sin(ang - 2.4) * 6.5);
+      ctx.moveTo(head[0], head[1]);
+      ctx.lineTo(head[2], head[3]);
+      ctx.lineTo(head[4], head[5]);
       ctx.closePath();
       ctx.fill();
     }
-
-    // driven length from integrated speed - FH6's DistanceTraveled is a
-    // track-position parameter on real circuits, not meters
-    let drivenM = 0;
-    for (let i = 1; i < A.t.length; i++)
-      drivenM += (A.channels.speed_kmh[i] + A.channels.speed_kmh[i - 1]) / 7.2 * (A.t[i] - A.t[i - 1]);
-
-    const side = $("#map-side");
-    // landings (jump touchdowns) and user-dismissed spikes don't count
-    const contacts = (A.collisions || []).filter((h) => !h.landing && !h.dismissed).length;
-    const jumps = A.jumps || [];
-    const hard = jumps.filter((j) => j.hard).length;
-    // one cell per picked lap (letter + color match tray, map and charts);
-    // letters and numbers only - session names stay in the tray, which
-    // renders them via textContent (user-named sessions must not hit innerHTML)
-    const lapCells = state.picks.map((p) => `
-      <div><div class="label"><span class="swatch" style="background:${p.color}"></span> ${pickLetter(p)} · ${lapLabel(p.session.route_kind, lapNo(p.lap))}</div>
-      <div class="value">${fmtLap(p.lap.lap_time)}</div></div>`).join("");
-    side.innerHTML = `<div class="lap-grid" style="text-align:left">
-      ${lapCells}
-      <div><div class="label">Samples</div><div class="value">${A.n_frames}</div></div>
-      <div><div class="label">Driven</div><div class="value">${distFromM(drivenM).toFixed(2)} ${distUnit()}</div></div>
-      <div><div class="label">Elevation range</div><div class="value">${yRange > 0.3 ? yRange.toFixed(0) + " m" : "flat"}</div></div>
-      <div><div class="label">Contacts</div><div class="value">${contacts ? `<span style="color:#ef4444">${contacts}</span>` : "0"}</div></div>
-      ${jumps.length ? `<div><div class="label">Jumps</div><div class="value">${jumps.length}${hard ? `<span style="color:#f59e0b;font-size:0.9rem" title="${hard} hard landing${hard > 1 ? "s" : ""} — not contact"> (${hard} 🛬)</span>` : ""}</div></div>` : ""}
-    </div>`;
   }
 
-  // jump flights (takeoff -> touchdown, detected server-side) with the shared
-  // glyph, then collision points (contact spikes) as red bursts - both over
-  // the ribbon so they read against any coloring. The reference lap's are
-  // full-strength, every other pick's dimmer (they'd drown the overlay in
-  // sparks otherwise); all of them land in hitMarkers, so right-click
-  // dismissal works on any picked lap. Landing spikes are part of the jump
-  // glyph (hard = glow + impact ring), not their own spark - not contact.
-  const drawJumps = (d, color) => {
-    if (!d || !d.jumps) return;
-    for (const j of d.jumps) {
-      const [X0, Y0] = P(j.x0, j.y0 ?? 0, j.z0, false);
-      const [X1, Y1] = P(j.x1, j.y1 ?? 0, j.z1, false);
-      drawJump(ctx, X0, Y0, X1, Y1, { color, hard: j.hard });
+  const { jumps, hits } = mapGlyphs(loaded, ref, P);
+  for (const j of jumps) drawJump(ctx, j.x0, j.y0, j.x1, j.y1, { color: j.color, hard: j.hard });
+  for (const { x, y, fill, r } of hits) {
+    ctx.save();
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1.5;
+    ctx.fillStyle = fill;
+    ctx.shadowColor = fill;
+    ctx.shadowBlur = 8;
+    // 4-point spark
+    ctx.beginPath();
+    for (let k = 0; k < 8; k++) {
+      const a = (k * Math.PI) / 4;
+      const rr = k % 2 ? r * 0.4 : r;
+      const px = x + Math.cos(a) * rr, py = y + Math.sin(a) * rr;
+      k === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
     }
-  };
-  const drawHits = (d, fill, r) => {
-    if (!d || !d.collisions) return;
-    for (const h of d.collisions) {
-      if (h.landing) continue;   // drawn as its jump's touchdown, not a spark
-      if (h.dismissed) continue; // user said "not a contact"
-      const [X, Y] = P(h.x, h.y ?? 0, h.z, false);
-      hitMarkers.push({ x: X, y: Y, lapId: d.lap.id, t: h.t });
-      ctx.save();
-      ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 1.5;
-      ctx.fillStyle = fill;
-      ctx.shadowColor = fill;
-      ctx.shadowBlur = 8;
-      // 4-point spark
-      ctx.beginPath();
-      for (let k = 0; k < 8; k++) {
-        const a = (k * Math.PI) / 4;
-        const rr = k % 2 ? r * 0.4 : r;
-        const px = X + Math.cos(a) * rr, py = Y + Math.sin(a) * rr;
-        k === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
-      }
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-      ctx.restore();
-    }
-  };
-  if (getSettings().contactLayer) {
-    for (const p of loaded) if (p !== ref) drawJumps(p.data, "#7f6f4b");
-    if (ref) drawJumps(ref.data, "#f59e0b");
-    for (const p of loaded) if (p !== ref) drawHits(p.data, "#7f5b5b", 6);
-    if (ref) drawHits(ref.data, "#ef4444", 7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
   }
 
   // cache the finished frame + projection for the chart-cursor marker
@@ -2187,9 +2281,10 @@ function downloadBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/* the map canvas is already the shareable artifact - snapshot the cached
-   clean frame (mapCursor.snap: no hover dot, dismissed contacts already
-   absent) and composite a caption bar under it. The canvas itself is
+/* the map canvas is already the shareable artifact - snapshot the clean
+   frame (no hover dot, dismissed contacts already absent: the canvas map's
+   cached mapCursor.snap, or the Pixi map's extract of everything but its
+   marker layer) and composite a caption bar under it. The canvas itself is
    transparent over the page background, so the PNG needs its own fill. */
 function exportMapPng() {
   const ref = refPick();
@@ -2199,12 +2294,17 @@ function exportMapPng() {
   }
   const s = ref.session;      // the caption belongs to the reference lap's
   const lapMeta = ref.lap;    // own session, not the one being browsed
-  if (!mapCursor.snap) drawMap();
-  const snap = mapCursor.snap;
-  const dpr = mapCursor.dpr || 1;
   const css = getComputedStyle(document.documentElement);
   const color = (name, fallback) => (css.getPropertyValue(name) || fallback).trim();
-
+  // the map without its hover / pin dots, at the device pixel size
+  let snap, dpr;
+  if (pixiMap) {
+    ({ snap, dpr } = pixiMap.snapshot(color("--bg", "#06080c")));
+  } else {
+    if (!mapCursor.snap) drawMap();
+    snap = mapCursor.snap;
+    dpr = mapCursor.dpr || 1;
+  }
   const pad = 12, lineH = 21, capH = pad + 2 * lineH + pad / 2;
   const out = document.createElement("canvas");
   out.width = snap.width;
@@ -2278,6 +2378,7 @@ function syncZoom(u) {
   if (JSON.stringify(range) !== JSON.stringify(state.zoomRange)) {
     state.zoomRange = range;
     drawMap();
+    syncReplayControls();  // the zoom span is the playable window
   }
 }
 
@@ -2315,6 +2416,7 @@ function makeChart(el, title, xVals, seriesDefs, height = 150) {
         // and the second click of a double is skipped (dblclick = reset both)
         let downX = null;
         u.over.addEventListener("mousedown", (e) => { downX = e.clientX; });
+        u.over.addEventListener("pointermove", replayChartHover);
         u.over.addEventListener("click", (e) => {
           if (e.detail > 1) return;
           if (downX != null && Math.abs(e.clientX - downX) > 3) return;
@@ -2585,5 +2687,8 @@ onSettingsChange(() => {
 });
 bindImport();
 bindBrowse();
+// resolves once the map's renderer is settled: Pixi, or the canvas fallback
+// (tools/capture_media.py waits on it before shooting the map)
+const pixiMapBoot = bootPixiMap();
 loadSessions();
 setVisibleInterval(loadSessions, 15000); // pick up newly finished sessions

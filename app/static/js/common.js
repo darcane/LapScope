@@ -1,5 +1,19 @@
 /* Shared UI helpers: Forza-colored class badges, track-condition ribbons,
-   and the jump glyph both track maps (live + analysis) draw with. */
+   the slip/speed colour ramps, and the jump glyph both track maps (live +
+   analysis) draw with. */
+
+/* ---------- telemetry colour ramps ----------
+   One rule for every map and gauge that colours by slip or speed, as a hue in
+   degrees: CSS callers wrap it in hsl(), Pixi scenes in hslHex (pixi-kit.js).
+   Slip: green (120) at no slip → red (0) at 1.15 combined slip and beyond.
+   Speed: blue (220) at the lap's slowest → red (0) at its fastest. */
+function slipHue(s) {
+  return Math.max(0, Math.min(120, 120 * (1.15 - s) / 1.15));
+}
+function speedHue(v, lo, hi) {
+  const t = hi > lo ? (v - lo) / (hi - lo) : 0;
+  return 220 - 220 * t;
+}
 
 /* ---------- jump glyph ----------
    A jump is drawn as its flight: a dashed line from takeoff (open circle) to

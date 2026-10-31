@@ -84,6 +84,8 @@ Then just drive. Telemetry is only sent while you're driving (not in menus). You
   distance-aligned delta, speed, input and slip charts.
 - **Racing line in 2D and 3D** — colored by speed or tire slip, with elevation and
   drag-to-rotate.
+- **Ghost replay** — the laps you compare race each other on the map, by time or by
+  distance, with a live gap and the charts following along.
 - **Jumps and contacts** — takeoff → touchdown flight lines, with hard landings told
   apart from real crashes.
 - **Dirty-lap flags** — ⏪ rewind and 💥 contact are inferred and trimmed, and you can
