@@ -59,6 +59,43 @@ def test_lap_time_channel_kept_when_lap_clock_alive(tmp_path):
     assert any(v > 0.5 for v in data["channels"]["lap_time"])
 
 
+def test_lap_time_channel_continues_across_crossing_reset(tmp_path):
+    """Some laps end on the crossing frame, where CurrentLap has already reset
+    to ~0 for the next lap: the Δ chart spiked by a whole lap time at its
+    right edge (issue #104). The channel - and the CSV export, which carries
+    the same column - must keep counting there instead."""
+    from app.api.routes import _lap_csv_rows, _LAP_TIME_COL, lap_data
+
+    def scenario(sim):
+        sim.event(180, "time attack", dirty=True)
+        sim.race_off()
+
+    store = run(scenario, tmp_path, jumps=True)
+    laps = completed_laps(store, sessions(store)[0]["id"])
+    assert laps
+    for lap in laps:
+        data = lap_data(lap["id"], _request_for(store), "lap_time", 20000)
+        lt = data["channels"]["lap_time"]
+        assert lt[-1] > 5.0, f"lap {lap['lap_number']} ends on a reset clock"
+        assert abs(lt[-1] - lap["lap_time"]) < 0.05  # within a frame of the line
+        csv_clock = [row[_LAP_TIME_COL]
+                     for row in _lap_csv_rows(lap, store.lap_frames(lap))]
+        assert csv_clock[-1] == lt[-1]
+
+
+def test_fix_lap_clock_rules():
+    from app.api.routes import _fix_lap_clock
+
+    t = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+    # a trailing reset continues by elapsed time
+    assert _fix_lap_clock([0.1, 1.1, 2.1, 3.1, 4.1, 5.1, 6.1, 0.0], t)[-1] == 7.1
+    # a rewind's drop mid-lap is the game's clock and passes through
+    rewound = [0.1, 1.1, 2.1, 3.1, 1.5, 2.5, 3.5, 4.5]
+    assert _fix_lap_clock(rewound, t) == rewound
+    # a dead clock still falls back to elapsed time
+    assert _fix_lap_clock([0.0] * 8, t) == t
+
+
 def test_raw_channels_cover_every_packet_field(tmp_path):
     """The generated raw_* channels expose every packet field verbatim (wheel
     groups as _fl/_fr/_rl/_rr) without disturbing the curated channels'

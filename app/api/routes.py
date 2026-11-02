@@ -860,15 +860,34 @@ def _apply_dismissals(collisions: list[dict], edits: list[dict]) -> None:
         c["dismissed"] = any(abs(c["t"] - a) <= DISMISS_MATCH_S for a in anchors)
 
 
-def _fix_dead_lap_clock(lap_time: list[float], t_rel: list[float]) -> list[float]:
-    """World Time Attack and bare sprints broadcast no lap clock at all
+# how many trailing samples may carry the next lap's reset clock
+CLOCK_RESET_TAIL = 3
+
+
+def _fix_lap_clock(lap_time: list[float], t_rel: list[float]) -> list[float]:
+    """The lap_time channel as the Δ chart, the CSV export and the replay
+    need it.
+
+    World Time Attack and bare sprints broadcast no lap clock at all
     (CurrentLap stays 0 for the whole event), which made the A/B delta-time
     chart a flat zero line for exactly those events. Fall back to time since
     the lap's first frame - restart_lap re-anchors geometric laps at launch,
-    so it counts from the line like a live lap clock would."""
-    if any(v > 0.5 for v in lap_time):
-        return lap_time
-    return list(t_rel)
+    so it counts from the line like a live lap clock would.
+
+    A live clock can end on the crossing frame, where the game has already
+    reset CurrentLap to ~0 for the next lap: one frame of the next lap, and a
+    +40 s spike at the Δ chart's right edge (issue #104). A reset to ~0 in the
+    last few samples continues the clock by elapsed time instead - the same
+    rule as lapClock() in analysis-replay.js. A rewind's drop mid-lap is left
+    alone: that is the game's clock, and the chart is meant to show it."""
+    if not any(v > 0.5 for v in lap_time):
+        return list(t_rel)
+    out = list(lap_time)
+    n = len(out)
+    for i in range(max(1, n - CLOCK_RESET_TAIL), n):
+        if out[i] < 1.0 and out[i - 1] > 5.0:
+            out[i] = round(out[i - 1] + (t_rel[i] - t_rel[i - 1]), 4)
+    return out
 
 
 @router.get("/laps/{lap_id}/data")
@@ -914,7 +933,7 @@ def lap_data(
     _apply_dismissals(collisions, store.session_edits(lap["session_id"]))
 
     if "lap_time" in out:
-        out["lap_time"] = _fix_dead_lap_clock(out["lap_time"], t_rel)
+        out["lap_time"] = _fix_lap_clock(out["lap_time"], t_rel)
 
     return {"lap": lap, "n_frames": len(rows), "dist": dist, "t": t_rel,
             "channels": out, "collisions": collisions, "jumps": jumps}
@@ -991,7 +1010,7 @@ def _lap_csv_rows(lap: dict, rows: list[tuple[float, bytes]], raw: bool = False)
     only way to read it - one frame at a time.
 
     The whole lap is still built before the first row is yielded, because
-    _fix_dead_lap_clock cannot tell a dead lap clock from a live one until it
+    _fix_lap_clock cannot tell a dead lap clock from a live one until it
     has seen every sample. What is held is the finished rows - numbers - and
     not the parsed frames behind them, which is roughly a tenth of the cost
     (issue #65); the scan itself streams."""
@@ -1009,7 +1028,7 @@ def _lap_csv_rows(lap: dict, rows: list[tuple[float, bytes]], raw: bool = False)
         row += [round(CHANNELS[ch](p), 4) for _, ch in channels]
         lap_times.append(row[_LAP_TIME_COL])
         built.append(row)
-    for row, lap_time in zip(built, _fix_dead_lap_clock(lap_times, t_rel)):
+    for row, lap_time in zip(built, _fix_lap_clock(lap_times, t_rel)):
         row[_LAP_TIME_COL] = lap_time
         yield row
 
