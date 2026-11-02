@@ -18,7 +18,12 @@
    lines are laid out at width / scale (the cockpit map's rule).
 
    Nothing draws on its own: draw() schedules one render on the next frame,
-   and an idle page renders nothing at all. */
+   and an idle page renders nothing at all.
+
+   A pan alone (the follow camera moving it every replay frame, #106) skips
+   draw() altogether: pan() shifts the lines' transform and slides the
+   screen-space overlay by the pan since it was drawn, so neither the
+   projection nor a single glyph is recomputed. */
 
 const PIXI_MAP = !new URLSearchParams(location.search).has("canvas");
 let pixiMap = null;
@@ -66,6 +71,7 @@ function makePixiMap(app) {
   markers.addChild(glowing(markCtx, 6), done, glowing(ghostCtx, 6), letters);
   app.stage.addChild(lines, overlay, markers);
   let builtKey = "", builtScale = 0, sizeKey = "", queued = false;
+  let drawnProj = null, drawnPanX = 0, drawnPanY = 0;  // what pan() shifts from
   const ids = new WeakMap();
   let nextId = 0;
   const idOf = (o) => { if (!ids.has(o)) ids.set(o, ++nextId); return ids.get(o); };
@@ -153,6 +159,15 @@ function makePixiMap(app) {
       t.position.set(g.x, g.y + 0.5);
     });
     if (now) renderNow(); else render();
+  }
+
+  /* mapView's pan, applied to what the last draw() laid out at the same zoom
+     (the caller redraws markers, which renders) */
+  function pan() {
+    if (!drawnProj) return;
+    lines.position.set(drawnProj.offX * mapView.zoom + mapView.panX,
+                       drawnProj.offY * mapView.zoom + mapView.panY);
+    overlay.position.set(mapView.panX - drawnPanX, mapView.panY - drawnPanY);
   }
 
   // what the lines show, as a string: a change means a rebuild
@@ -281,12 +296,15 @@ function makePixiMap(app) {
           builtKey = key;
         }
         lines.scale.set(sc);
-        lines.position.set(proj.offX * mapView.zoom + mapView.panX,
-                           proj.offY * mapView.zoom + mapView.panY);
       }
+      drawnProj = scene.loaded.length ? scene.proj : null;
+      drawnPanX = mapView.panX;
+      drawnPanY = mapView.panY;
+      pan();
       drawOverlay(scene);
       drawMarkers();  // renders
     },
+    pan,
     drawMarkers,
     // the map as drawn minus the hover / pin dots, for Save PNG: an extract
     // of the stage at the device pixel size, on the export's own `background`

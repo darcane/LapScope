@@ -509,11 +509,15 @@ server joining mid-lap, event restart.
   painted by each; a new map feature goes there first, then into both
   painters. There is no packet stream, so nothing draws unless asked: data,
   view or settings changes call `drawMap()`, a chart hover only redraws the
-  dot layer, and the only rAF loop is the ghost replay's, alive while it
-  plays. Pixi's shared `Ticker.system` stays stopped (it spun a rAF loop on
+  dot layer, and the only rAF loops are the ghost replay's, alive while it
+  plays, and the follow camera's ease, alive for its 250 ms. Pixi's shared `Ticker.system` stays stopped (it spun a rAF loop on
   an idle page). Times on the map come from `lapClock()`
   (analysis-replay.js), never raw `t` — `t` counts the seconds a rewind took
-  back.
+  back. The follow camera moves the map every replay frame, so a pan on the
+  Pixi map must stay a transform (`pixiMap.pan()`): anything new drawn in
+  screen space goes in the overlay container, which pan() slides, and
+  anything hit-tested in screen space has to shift by `mapView` pan minus
+  `hitPan`, like `nearestMarker`.
 - The classic live page (`classic.html`, `dashboard.js`, `gauges.js`) sits
   behind the dimmed Classic nav link while
   [#101](https://github.com/darcane/LapScope/issues/101) decides between

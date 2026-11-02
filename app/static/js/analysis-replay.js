@@ -127,14 +127,19 @@ function replayGaps() {
   }));
 }
 
+/* a pick's world position at fractional index j of its kept timeline */
+function pickWorldAt(pick, j) {
+  const c = pick.data.channels;
+  const { a, b, f } = keptSample(lapClock(pick.data), j);
+  const at = (arr) => arr[a] + (arr[b] - arr[a]) * f;
+  return [at(c.pos_x), c.pos_y ? at(c.pos_y) : 0, at(c.pos_z)];
+}
+
 /* screen-space ghosts for the renderer: { x, y, color, letter, done } */
 function replayGhosts() {
   if (!replay.engaged || !mapCursor.proj) return [];
   return replayPositions().map(({ pick, j, done }) => {
-    const c = pick.data.channels;
-    const { a, b, f } = keptSample(lapClock(pick.data), j);
-    const at = (arr) => arr[a] + (arr[b] - arr[a]) * f;
-    const [x, y] = mapCursor.proj(at(c.pos_x), c.pos_y ? at(c.pos_y) : 0, at(c.pos_z), false);
+    const [x, y] = mapCursor.proj(...pickWorldAt(pick, j), false);
     return { x, y, color: pick.color, letter: pickLetter(pick), done };
   });
 }
@@ -179,6 +184,7 @@ function replayUpdate({ drive = true } = {}) {
       + `${fmtReplayClock(replay.t)}` + (gaps.length ? ", " + gaps.map(({ pick, gap }) =>
         `${pickLetter(pick)} ${Math.abs(gap).toFixed(1)} seconds ${gap >= 0 ? "behind" : "ahead of"} ${pickLetter(ref)}`).join(", ") : ""));
   }
+  followUpdate();
   pixiMap.drawMarkers(replay.playing);
 }
 
@@ -263,6 +269,8 @@ function setReplayPlaying(on) {
 /* back to a plain map: a new pick set, a new session, a hidden tab */
 function resetReplay() {
   setReplayPlaying(false);
+  follow.on = false;  // it followed a ghost that is gone now
+  follow.ease = null;
   replay.engaged = false;
   replay.t = 0;
   syncReplayControls();
@@ -285,6 +293,7 @@ function syncReplayControls() {
   $("#rp-clock").textContent = fmtReplayClock(replay.t);
   for (const b of bar.querySelectorAll("#rp-align button"))
     b.setAttribute("aria-pressed", String(b.dataset.align === replay.mode));
+  followSync();
   if (replay.engaged) replayUpdate({ drive: !replay.playing });
   else $("#rp-gap").textContent = "";
 }
@@ -306,20 +315,199 @@ function bindReplayControls() {
   for (const b of bar.querySelectorAll("#rp-align button")) {
     b.onclick = () => {
       replay.mode = b.dataset.align;
+      follow.leader = null;
       syncReplayControls();
     };
   }
+  $("#mf-lock").onclick = () => setFollow(!follow.on);
+  $("#mf-target").onchange = (e) => {
+    const v = e.target.value;
+    follow.target = v === "ref" || v === "leader" ? v : state.picks[Number(v)];
+    follow.leader = null;
+    followEase();
+  };
   setReplayPlaying(false);
   syncReplayControls();
 }
 
-/* Space on the focused map toggles playback (the map canvas is focusable) */
+/* on the focused map (the canvas is focusable): Space toggles playback,
+   F the follow camera */
 function bindReplayKeys(canvas) {
   canvas.addEventListener("keydown", (e) => {
-    if (e.key !== " " || !pixiMap || !refPick()) return;
+    if (!pixiMap || !refPick() || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === " ") setReplayPlaying(!replay.playing);
+    else if (e.key === "f" || e.key === "F") setFollow(!follow.on);
+    else return;
     e.preventDefault();
-    setReplayPlaying(!replay.playing);
   });
+}
+
+/* ---------- follow camera (issue #106) ----------
+   The lock button hands the map's pan to one car: on every update the pan
+   is re-derived so that car's ghost sits at the map's centre. Derived, never
+   accumulated, so the yaw and the zoom stay the user's — and a 3D rotate
+   pivots about the car for free: the drag redraws under the new yaw, and
+   drawMap centres the car again before anything is laid out. A pan drag
+   takes the camera back (bindMapDrag).
+
+   Moves are cuts by default: a scrub, a zoom span looping round, any jump
+   simply lands centred. Only a change of *what* is followed (locking on,
+   another target, a new leader) eases, by bleeding off over FOLLOW_EASE_MS
+   the screen offset the new target started at — plus, locking on at full
+   fit, the zoom in to FOLLOW_ZOOM (following a whole-track view would only
+   slide the track around).
+
+   Per frame the camera costs a transform: pixiMap.pan() moves what was last
+   drawn, no projection and no glyph is recomputed. Only an easing zoom goes
+   through drawMap, for its quarter second. Nothing runs while paused except
+   a running ease, on its own rAF chain that ends with it. */
+
+const FOLLOW_EASE_MS = 250;
+const FOLLOW_ZOOM = 3;
+const LEADER_HOLD_S = 0.5;  // replay seconds a new leader must hold the lead
+
+const follow = {
+  on: false,
+  target: "ref",          // "ref" (lap A, whichever that is) | "leader" | a pick
+  leader: null,           // the pick the camera currently treats as leading
+  cand: null, candT: 0,   // a challenger, and the replay clock it took over at
+  ease: null,             // { t0, dx, dy, z0, z1 }: what is left to bleed off
+  raf: 0,
+  w: 0, h: 0,             // the map's CSS size at the last draw
+};
+
+function setFollow(on) {
+  if (!pixiMap || !refPick() || on === follow.on) return;
+  follow.on = on;
+  follow.leader = null;
+  follow.ease = null;
+  if (on) {
+    replay.engaged = true;  // the camera follows a ghost: show them
+    startEase(mapView.zoom < FOLLOW_ZOOM ? FOLLOW_ZOOM : null);
+  }
+  syncReplayControls();  // ...which runs the first step
+}
+
+/* ease toward the (new) target from wherever it is on screen now */
+function startEase(zoomTo = null) {
+  follow.ease = { t0: null, dx: null, dy: null, z0: mapView.zoom, z1: zoomTo };
+}
+function followEase() {
+  startEase();
+  if (replay.engaged) replayUpdate({ drive: !replay.playing });
+}
+
+/* the car with the most track behind it, held for LEADER_HOLD_S of replay
+   time before the camera moves to it — two close cars would otherwise swap
+   the camera back and forth. Paused, a scrub is a jump anyway: no hold. */
+function followLeader() {
+  let best = null, bestD = -Infinity;
+  for (const { pick, j, done } of replayPositions()) {
+    if (done) continue;
+    const d = lerpAt(lapClock(pick.data).dist, j);
+    if (d > bestD) { bestD = d; best = pick; }
+  }
+  best = best || refPick();  // everyone is home: back to A
+  if (!follow.leader || !state.picks.includes(follow.leader) || !replay.playing) {
+    follow.leader = best;
+    follow.cand = null;
+  } else if (best === follow.leader) {
+    follow.cand = null;
+  } else if (best !== follow.cand) {
+    follow.cand = best;
+    follow.candT = replay.t;
+  } else if (Math.abs(replay.t - follow.candT) >= LEADER_HOLD_S) {
+    follow.leader = best;
+    follow.cand = null;
+    startEase();
+  }
+  return follow.leader;
+}
+
+function followPick() {
+  const ref = refPick();
+  if (!ref || follow.target === "ref") return ref;
+  // By distance stands every car on A's spot: there is no leader to follow
+  if (follow.target === "leader") return replay.mode === "time" ? followLeader() : ref;
+  return follow.target;
+}
+
+/* set mapView's pan so the followed car lands at the centre (or on its way
+   there). `P` is the projection about to be drawn with; it reads mapView
+   live, so the car is measured at the current pan and moved by the rest. */
+function followAim(P, w, h) {
+  follow.w = w;
+  follow.h = h;
+  if (!follow.on) return;
+  const pick = followPick();
+  if (!pick || !pick.data) return;
+  const pos = replayPositions().find((r) => r.pick === pick);
+  if (!pos) return;
+  const e = follow.ease;
+  let left = 0;
+  if (e) {
+    const now = performance.now();
+    if (e.t0 == null) e.t0 = now;
+    const k = Math.min(1, (now - e.t0) / FOLLOW_EASE_MS);
+    left = (1 - k) ** 3;  // ease-out cubic: what is still to go
+    if (e.z1 != null) mapView.zoom = e.z1 + (e.z0 - e.z1) * left;
+    if (k >= 1) follow.ease = null;
+  }
+  const [sx, sy] = P(...pickWorldAt(pick, pos.j), false);
+  if (e && e.dx == null) { e.dx = sx - w / 2; e.dy = sy - h / 2; }
+  const tx = w / 2 + (e ? e.dx * left : 0), ty = h / 2 + (e ? e.dy * left : 0);
+  mapView.panX += tx - sx;
+  mapView.panY += ty - sy;
+}
+
+/* one camera step, from replayUpdate (the caller draws the markers) */
+function followUpdate() {
+  if (!follow.on || !mapCursor.proj) return;
+  if (follow.ease && follow.ease.z1 != null) {
+    drawMap();  // a zoom changes the layout, not just its position
+  } else {
+    followAim(mapCursor.proj, follow.w, follow.h);
+    pixiMap.pan();
+  }
+  if (follow.ease && !replay.playing && !follow.raf) follow.raf = requestAnimationFrame(followTick);
+}
+function followTick() {
+  follow.raf = 0;
+  if (!follow.on || replay.playing) return;  // the replay loop has it now
+  followUpdate();
+  pixiMap.drawMarkers(true);
+}
+
+/* the lock button and its target picker: shown with the replay row */
+function followSync() {
+  const box = $("#map-follow");
+  const ref = refPick();
+  const t = follow.target;
+  if (t !== "ref" && t !== "leader" && (t === ref || !t.data || !state.picks.includes(t))) {
+    if (t !== ref) follow.on = false;  // the followed lap left the tray
+    follow.target = "ref";
+  }
+  if (replay.mode === "dist" && follow.target === "leader") follow.target = "ref";
+  if (!box) return;
+  box.hidden = !pixiMap || !ref;
+  if (box.hidden) {
+    follow.on = false;
+    return;
+  }
+  const btn = $("#mf-lock");
+  btn.setAttribute("aria-pressed", String(follow.on));
+  btn.title = follow.on
+    ? "Following — click (or F on the map) for a free camera; dragging to pan frees it too"
+    : "Follow a car: the map pans with it while you rotate and zoom (F on the map)";
+  const sel = $("#mf-target");
+  sel.hidden = !follow.on;
+  const dist = replay.mode === "dist";
+  sel.innerHTML = `<option value="ref">Lap ${pickLetter(ref)}</option>`
+    + `<option value="leader"${dist ? ` disabled title="By distance, every lap stands where lap ${pickLetter(ref)} is: there is no leader"` : ""}>Leader</option>`
+    + state.picks.filter((p) => p.data && p !== ref)
+        .map((p) => `<option value="${state.picks.indexOf(p)}">Lap ${pickLetter(p)}</option>`).join("");
+  sel.value = typeof follow.target === "string" ? follow.target : String(state.picks.indexOf(follow.target));
+  updateMapHint();
 }
 
 document.addEventListener("visibilitychange", () => {

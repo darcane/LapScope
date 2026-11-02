@@ -654,9 +654,11 @@ function mountDetail() {
       saveSettings({ defaultMapMode: state.mapMode });
       for (const x of document.querySelectorAll("#map-mode button"))
         x.classList.toggle("active", x === b);
+      const following = follow.on;  // ...but a followed car is the same car
       resetMapView(); // a 2D pan/zoom makes no sense under the 3D projection
       updateMapHint();
       drawMap();
+      if (following) setFollow(true);
     };
   }
   updateMapHint();
@@ -1567,10 +1569,17 @@ const map3d = { yaw: -0.9, drag: null };
    a plain 3D drag keeps rotating). zoom 1 = the classic full-fit frame. */
 const mapView = { zoom: 1, panX: 0, panY: 0 };
 
+/* every reset of the view (double-click, a new session, 2D/3D) also frees
+   the follow camera (analysis-replay.js): the view is the user's again */
 function resetMapView() {
   mapView.zoom = 1;
   mapView.panX = 0;
   mapView.panY = 0;
+  if (follow.on) {
+    follow.on = false;
+    follow.ease = null;
+    followSync();
+  }
 }
 
 /* chart cursor -> map marker: drawMap caches its finished frame plus the
@@ -1661,11 +1670,16 @@ function drawMapMarker() {
 }
 
 /* screen-space contact markers of the last drawMap, for right-click hit
-   testing (dismiss flow); refilled on every draw */
+   testing (dismiss flow); refilled on every draw. `hitPan` is the pan they
+   were laid out at: the follow camera pans the Pixi map without a redraw
+   (pixiMap.pan), so a hit test shifts the pointer back by what moved since. */
 const hitMarkers = [];
+const hitPan = { x: 0, y: 0 };
 const HIT_RADIUS_PX = 12;
 
 function nearestMarker(x, y) {
+  x -= mapView.panX - hitPan.x;
+  y -= mapView.panY - hitPan.y;
   let best = null, bestD = HIT_RADIUS_PX;
   for (const m of hitMarkers) {
     const d = Math.hypot(m.x - x, m.y - y);
@@ -1700,9 +1714,13 @@ function updateMapHint() {
   const el = $("#map-hint");
   if (!el) return;
   el.style.display = "";
-  el.textContent = state.mapMode === "3d"
-    ? "↔ drag to rotate · scroll to zoom · shift-drag to pan · double-click resets"
-    : "scroll to zoom · drag to pan · double-click resets";
+  const three = state.mapMode === "3d";
+  el.textContent = follow.on
+    ? (three ? "following · ↔ drag to rotate · scroll to zoom · shift-drag frees the camera"
+             : "following · scroll to zoom · drag frees the camera")
+    : three
+      ? "↔ drag to rotate · scroll to zoom · shift-drag to pan · double-click resets"
+      : "scroll to zoom · drag to pan · double-click resets";
 }
 
 /* the drag/wheel handlers fire per pointer sample; one redraw per frame is
@@ -1712,6 +1730,7 @@ const redrawMap = rafThrottle(() => drawMap());
 function bindMapDrag(canvas) {
   canvas.addEventListener("pointerdown", (e) => {
     const rotate = state.mapMode === "3d" && !e.shiftKey;
+    if (!rotate) setFollow(false);  // a pan drag takes the camera back
     if (!rotate && mapView.zoom <= 1) return; // nothing to pan at full fit
     map3d.drag = {
       rotate, x: e.clientX, y: e.clientY,
@@ -1743,6 +1762,12 @@ function bindMapDrag(canvas) {
     e.preventDefault();
     const zoom = Math.min(12, Math.max(1, mapView.zoom * Math.exp(-e.deltaY * 0.002)));
     if (zoom === mapView.zoom) return;
+    if (follow.on) {  // about the followed car, which drawMap re-centres
+      mapView.zoom = zoom;
+      if (follow.ease) follow.ease.z1 = null;  // the wheel overrides a lock-on zoom
+      redrawMap();
+      return;
+    }
     const k = zoom / mapView.zoom;
     mapView.panX = e.offsetX - (e.offsetX - mapView.panX) * k;
     mapView.panY = e.offsetY - (e.offsetY - mapView.panY) * k;
@@ -2000,6 +2025,9 @@ function drawMap() {
     renderMapSide(ref.data, proj.yRange);
   }
   const scene = { cssW, cssH, loaded, ref, multi, three, proj, grad };
+  if (pixiMap && proj) followAim(proj.P, cssW, cssH);  // before anything is laid out
+  hitPan.x = mapView.panX;
+  hitPan.y = mapView.panY;
   if (pixiMap) {
     // the hover dots project through this; hitMarkers refill in draw()
     mapCursor.proj = proj ? proj.P : null;

@@ -112,8 +112,21 @@
       <h2>Track map</h2>
       <div class="map-row">
         <div>
-          <canvas id="trackmap" role="img"
-                  aria-label="Track map of the tagged laps"></canvas>
+          <div class="map-stage">
+            <canvas id="trackmap" role="img"
+                    aria-label="Track map of the tagged laps"></canvas>
+            <div class="map-follow" id="map-follow" hidden>
+              <select id="mf-target" aria-label="Car to follow" hidden></select>
+              <button type="button" id="mf-lock" aria-pressed="false" aria-label="Follow camera">
+                <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+                  <circle cx="10" cy="10" r="5.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+                  <circle cx="10" cy="10" r="1.6" fill="currentColor"/>
+                  <path d="M10 1.5v4M10 14.5v4M1.5 10h4M14.5 10h4" stroke="currentColor"
+                        stroke-width="1.6" stroke-linecap="round"/>
+                </svg>
+              </button>
+            </div>
+          </div>
           <div class="replay" id="replay" hidden>
             <button type="button" id="rp-play" aria-pressed="false">▶</button>
             <input type="range" id="rp-scrub" min="0" max="1" step="0.1" value="0"
