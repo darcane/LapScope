@@ -120,8 +120,14 @@ function makePixiMap(app) {
           endsCtx.circle(x, y, 5.5).fill(fill).stroke({ width: 2.5, color: ring });
         }
       }
-      const { sx, sy, arrow } = mapStartArrow(A, at);
-      startCtx.circle(sx, sy, 6).fill(START_COLOR);
+      const { sx, sy, start, finish, arrow } = mapStartFinish(A, proj);
+      for (const bar of [start, finish]) {
+        if (!bar) continue;
+        startCtx.poly(bar.outline).fill(CHEQUER_DARK)
+          .stroke({ width: 2, color: CHEQUER_DARK, join: "round" });
+        for (const q of bar.cells) startCtx.poly(q).fill(CHEQUER_LIGHT);
+      }
+      if (!start) startCtx.circle(sx, sy, 6).fill(START_COLOR);  // no heading: the dot
       if (arrow) {
         const { stem, head } = arrow;
         startCtx.moveTo(stem[0], stem[1]).lineTo(stem[2], stem[3])

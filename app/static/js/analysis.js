@@ -1879,10 +1879,72 @@ function zoomIndexRange(A) {
   return i0 < i1 ? [i0, i1] : null;
 }
 
-/* the start dot + drive direction: a stem and arrowhead pointing along the
+/* The start/finish line (issue #107): a chequered bar across the track at
+   lap A's first sample, plus a second one at its last sample when the run
+   ends somewhere else (point-to-point — sprint, dirt, touge, cross-country).
+   A circuit and a WTA lap end where they started, so they get one bar.
+   Same test as the route fingerprint's start radius (store.py's
+   ROUTE_START_RADIUS_M).
+
+   Each bar is built in world space — perpendicular to the drive heading
+   ~10 m in (or ~10 m before the end), at the car's elevation — then
+   projected, so it lies across the road at any 3D yaw and foreshortens with
+   the tilt. Its length is a screen size turned back into meters, growing a
+   little with the zoom (clamped), so it reads at zoom 1 and is no wall at
+   zoom 12. A bar is { outline: quad, cells: [quad…] } — paint the outline
+   dark, then the light cells over it; a quad is [x0,y0, … x3,y3]. A lap that
+   barely moves has no heading and no bars: the start dot stands in. */
+const START_COLOR = "#34d399";
+const CHEQUER_DARK = "#0b1520";
+const CHEQUER_LIGHT = "#f8fafc";
+const ROUTE_START_RADIUS_M = 120;
+const FINISH_HEADING_M = 10;   // how far in the bar's heading is sampled
+const FINISH_CELLS = 6;        // squares across the bar, in two rows
+const finishBarPx = () => Math.min(40, 24 * Math.pow(mapView.zoom, 0.3));
+
+function mapStartFinish(A, proj) {
+  const c = A.channels, n = c.pos_x.length;
+  const y = (i) => (c.pos_y ? c.pos_y[i] : 0);
+  // the unit heading from sample i0 towards the first sample >= 10 m away
+  const heading = (i0, step) => {
+    for (let j = i0 + step; j >= 0 && j < n; j += step) {
+      const dx = c.pos_x[j] - c.pos_x[i0], dz = c.pos_z[j] - c.pos_z[i0];
+      const len = Math.hypot(dx, dz);
+      if (len >= FINISH_HEADING_M) return step > 0 ? [dx / len, dz / len] : [-dx / len, -dz / len];
+    }
+    return null;
+  };
+  const metersPerPx = 1 / (proj.scale * mapView.zoom);
+  const bar = (i, dir) => {
+    if (!dir) return null;
+    const [fx, fz] = dir, ux = -fz, uz = fx;  // across the road
+    const cell = (finishBarPx() * metersPerPx) / FINISH_CELLS;
+    const half = (cell * FINISH_CELLS) / 2;
+    const x0 = c.pos_x[i], z0 = c.pos_z[i], y0 = y(i);
+    // the world point `a` cells across and `b` rows along from the bar's corner
+    const pt = (a, b) => proj.P(x0 + ux * (a * cell - half) + fx * (b - 1) * cell, y0,
+                                z0 + uz * (a * cell - half) + fz * (b - 1) * cell, false);
+    const quad = (a0, b0, a1, b1) => [...pt(a0, b0), ...pt(a1, b0), ...pt(a1, b1), ...pt(a0, b1)];
+    const cells = [];
+    for (let row = 0; row < 2; row++) {
+      for (let k = row % 2; k < FINISH_CELLS; k += 2) cells.push(quad(k, row, k + 1, row + 1));
+    }
+    return { outline: quad(0, 0, FINISH_CELLS, 2), cells };
+  };
+  const [sx, sy] = proj.at(A, 0, false);
+  const pointToPoint = n > 1 && Math.hypot(c.pos_x[n - 1] - c.pos_x[0],
+                                           c.pos_z[n - 1] - c.pos_z[0]) > ROUTE_START_RADIUS_M;
+  return {
+    sx, sy,
+    start: bar(0, heading(0, 1)),
+    finish: pointToPoint ? bar(n - 1, heading(n - 1, -1)) : null,
+    arrow: mapStartArrow(A, proj.at).arrow,
+  };
+}
+
+/* the drive direction at the start: a stem and arrowhead pointing along the
    first stretch of the lap (sampled in screen space, so it follows the 3D
    projection too). `arrow` is null when the lap barely moves. */
-const START_COLOR = "#34d399";
 function mapStartArrow(A, at) {
   const [sx, sy] = at(A, 0, false);
   const nPts = A.channels.pos_x.length;
@@ -2144,14 +2206,35 @@ function drawCanvasMap(canvas, { cssW, cssH, loaded, ref, three, proj, grad }) {
         ctx.restore();
       }
     }
-    const { sx, sy, arrow } = mapStartArrow(A, at);
-    ctx.fillStyle = START_COLOR;
-    ctx.beginPath();
-    ctx.arc(sx, sy, 6, 0, Math.PI * 2);
-    ctx.fill();
+    const { sx, sy, start, finish, arrow } = mapStartFinish(A, proj);
+    const quad = (q) => {
+      ctx.beginPath();
+      ctx.moveTo(q[0], q[1]);
+      for (let k = 2; k < 8; k += 2) ctx.lineTo(q[k], q[k + 1]);
+      ctx.closePath();
+    };
+    for (const bar of [start, finish]) {
+      if (!bar) continue;
+      ctx.fillStyle = CHEQUER_DARK;
+      ctx.strokeStyle = CHEQUER_DARK;
+      ctx.lineWidth = 2;
+      ctx.lineJoin = "round";
+      quad(bar.outline);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = CHEQUER_LIGHT;
+      for (const q of bar.cells) { quad(q); ctx.fill(); }
+    }
+    if (!start) {  // no heading to lay a bar across: the start dot stands in
+      ctx.fillStyle = START_COLOR;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 6, 0, Math.PI * 2);
+      ctx.fill();
+    }
     if (arrow) {
       const { stem, head } = arrow;
       ctx.strokeStyle = START_COLOR;
+      ctx.fillStyle = START_COLOR;
       ctx.lineWidth = 2.5;
       ctx.lineCap = "round";
       ctx.beginPath();

@@ -49,7 +49,10 @@ exact spot.
 ## Track map, 2D and 3D
 
 Your **racing line colored by speed or tire slip**. The 3D view uses the packet's
-elevation and is drag-to-rotate; ✦ markers are detected contacts. Scroll to zoom,
+elevation and is drag-to-rotate. A **chequered bar** lies across the track at the
+start line, with an arrow for the drive direction; a point-to-point run (sprint,
+dirt, touge, cross-country) gets a second one where it finishes. ✦ markers are
+detected contacts. Scroll to zoom,
 drag to pan, double-click to reset. Hovering a chart marks that spot on every
 tagged lap; a drag-zoom on a chart highlights that stretch of track.
 
