@@ -503,9 +503,9 @@ server joining mid-lap, event restart.
   copy them out of `cockpit.js` into a new page.
 - The Analysis track map is a Pixi scene too (`analysis-map.js`), with the
   Canvas 2D map (`drawCanvasMap`) kept as the fallback (`?canvas`, or no
-  renderer). Anything both must agree on — projection, start arrow, glyph
+  renderer). Anything both must agree on — projection, start/finish line, glyph
   and hit positions, hover dots — is computed once in analysis.js
-  (`mapProjection`, `mapStartArrow`, `mapGlyphs`, `mapMarkerDots`) and only
+  (`mapProjection`, `mapStartFinish`, `mapGlyphs`, `mapMarkerDots`) and only
   painted by each; a new map feature goes there first, then into both
   painters. There is no packet stream, so nothing draws unless asked: data,
   view or settings changes call `drawMap()`, a chart hover only redraws the
