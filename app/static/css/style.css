@@ -1620,6 +1620,11 @@ table.laps .pick.on { font-weight: 600; }
   flex-wrap: wrap;
 }
 .legend .swatch { display: inline-block; width: 26px; height: 8px; border-radius: 4px; vertical-align: middle; }
+/* the map's start / finish line: two rows of 4 px squares, like the bar itself */
+.legend .swatch.chequer {
+  height: 8px; border-radius: 1px; outline: 1px solid #0b1520;
+  background: repeating-conic-gradient(#f8fafc 0 25%, #0b1520 0 50%) 0 0 / 8px 8px;
+}
 select {
   background: var(--panel-lo);
   color: var(--text);
