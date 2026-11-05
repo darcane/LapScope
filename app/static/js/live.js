@@ -66,7 +66,35 @@ const liveMap = {
   pendingHard: false, // mid-flight spike waiting for its jump (pushed at touchdown)
 };
 
+/* The stored route the recorder recognized mid-lap (the `route_guess` WS
+   extra, issue #108), named with one fetch per guess - never per frame. It
+   belongs to the drawn track: set and withdrawn under the same gate as the
+   map path, cleared with it, and kept with a finished track like the track
+   itself. name: null = not known (yet), "" = the route has no name. */
+const liveRoute = { id: null, name: null, gen: 0 };
+
+function setLiveRoute(id) {
+  liveRoute.id = id;
+  liveRoute.name = null;
+  liveRoute.gen++;
+  if (id == null) return;
+  apiFetch(`/api/routes/${id}`, { what: "name the route", quiet: true })
+    .then((r) => {
+      if (liveRoute.id !== id) return;  // superseded while in flight
+      liveRoute.name = (r && r.name) || "";
+      liveRoute.gen++;
+    })
+    .catch(() => { /* quiet: the map just goes unnamed */ });
+}
+
+function feedRoute(f) {
+  if (f.session_id == null || !mapActive(f)) return;
+  const id = f.route_guess ?? null;
+  if (id !== liveRoute.id) setLiveRoute(id);
+}
+
 function resetLiveMap(sessionId) {
+  if (liveRoute.id != null) setLiveRoute(null);
   Object.assign(liveMap, {
     session: sessionId, pts: [], last: null, minDist: 3,
     minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity,
@@ -217,6 +245,7 @@ function connect() {
       live.stripN++;
     }
     feedLiveMap(f);
+    feedRoute(f);
     feedCollision(f);
   };
   ws.onopen = () => {

@@ -30,6 +30,18 @@ from app.telemetry.packet import empty_fields, pack  # noqa: E402
 STRAIGHT = 600.0
 RADIUS = 120.0
 PERIMETER = 2 * STRAIGHT + 2 * math.pi * RADIUS
+START_X = -STRAIGHT / 2  # every course grids here, heading +x
+
+# --course: the stadium loop, or a longer one leaving from the SAME grid along
+# the same straight and turning off 300 m later - two courses sharing a start
+# line, like Horizon's (issue #53), for the live route matcher (issue #108)
+COURSES = {"a": 600.0, "b": 900.0}  # bottom straight length per course
+
+
+def set_course(name: str) -> None:
+    global STRAIGHT, PERIMETER
+    STRAIGHT = COURSES[name]
+    PERIMETER = 2 * STRAIGHT + 2 * math.pi * RADIUS
 
 V_STRAIGHT = 75.0     # m/s target on straights (~270 km/h)
 GRIP_LAT = 12.0       # m/s^2 usable lateral acceleration
@@ -46,19 +58,20 @@ def track_point(s: float) -> tuple[float, float, float, float]:
     """Position (x, z), heading, curvature at arc length s along the loop."""
     s %= PERIMETER
     half_circle = math.pi * RADIUS
+    x1 = START_X + STRAIGHT  # where the bottom straight ends
     if s < STRAIGHT:  # bottom straight, heading +x
-        return -STRAIGHT / 2 + s, -RADIUS, 0.0, 0.0
+        return START_X + s, -RADIUS, 0.0, 0.0
     s -= STRAIGHT
-    if s < half_circle:  # right turn (counter-clockwise around (L/2, 0))
+    if s < half_circle:  # right turn (counter-clockwise around (x1, 0))
         a = -math.pi / 2 + s / RADIUS
-        return (STRAIGHT / 2 + RADIUS * math.cos(a), RADIUS * math.sin(a),
+        return (x1 + RADIUS * math.cos(a), RADIUS * math.sin(a),
                 a + math.pi / 2, 1.0 / RADIUS)
     s -= half_circle
     if s < STRAIGHT:  # top straight, heading -x
-        return STRAIGHT / 2 - s, RADIUS, math.pi, 0.0
+        return x1 - s, RADIUS, math.pi, 0.0
     s -= STRAIGHT  # left turn
     a = math.pi / 2 + s / RADIUS
-    return (-STRAIGHT / 2 + RADIUS * math.cos(a), RADIUS * math.sin(a),
+    return (START_X + RADIUS * math.cos(a), RADIUS * math.sin(a),
             a + math.pi / 2, 1.0 / RADIUS)
 
 
@@ -373,7 +386,7 @@ class Sim:
         self.total_dist = 0.0
         self.f["race_position"] = random.randint(1, 8)
         self.open_course = True
-        self._oc_x, self._oc_z, self._oc_s = -STRAIGHT / 2, -RADIUS, 0.0
+        self._oc_x, self._oc_z, self._oc_s = START_X, -RADIUS, 0.0
         self.pace = random.uniform(0.97, 1.0)
         t = 0.0
         while t < seconds:
@@ -490,7 +503,7 @@ class Sim:
         self.open_course = True
         self.surface = "dirt"     # washboard suspension + whoop flights
         self._next_whoop = None
-        self._oc_x, self._oc_z, self._oc_s = -STRAIGHT / 2, -RADIUS, 0.0
+        self._oc_x, self._oc_z, self._oc_s = START_X, -RADIUS, 0.0
         self.pace = random.uniform(0.97, 1.0)
         t = 0.0
         # countdown: clock and CurrentLap count, car held at the grid with
@@ -567,12 +580,16 @@ def main() -> None:
     ap.add_argument("--wta", type=int, default=0, metavar="LAPS",
                     help="run a World Time Attack: all lap fields dead, laps"
                          " only detectable geometrically")
+    ap.add_argument("--course", choices=sorted(COURSES), default="a",
+                    help="circuit to lap: a = the stadium loop, b = a longer"
+                         " loop sharing its start line and first 600 m")
     ap.add_argument("--jumps", action="store_true",
                     help="add sharp elevation spikes (cross-country jumps)")
     args = ap.parse_args()
 
     global JUMPS
     JUMPS = args.jumps
+    set_course(args.course)
 
     sim = Sim(args)
     print(f"Sending to {args.host}:{args.port} at {args.rate:.0f} Hz"

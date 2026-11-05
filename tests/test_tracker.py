@@ -442,7 +442,8 @@ def test_backfill_classifies_routes_recorded_before_kind_existed(tmp_path):
 
 def test_listener_fallback_keeps_frame_contract(tmp_path):
     """A recorder crash must not shrink the published frame: the extras keep
-    the documented shape (session_id/delta/session_best/lap_elapsed/race_mode)."""
+    the documented shape (session_id/delta/session_best/lap_elapsed/race_mode/
+    route_guess)."""
     from app.telemetry.hub import Hub
     from app.telemetry.listener import TelemetryProtocol
 
@@ -455,9 +456,11 @@ def test_listener_fallback_keeps_frame_contract(tmp_path):
     proto = TelemetryProtocol(hub, Boom())
     proto.datagram_received(pack(empty_fields()), ("127.0.0.1", 50000))
     frame = q.get_nowait()
-    for key in ("session_id", "delta", "session_best", "lap_elapsed", "race_mode"):
+    for key in ("session_id", "delta", "session_best", "lap_elapsed", "race_mode",
+                "route_guess"):
         assert key in frame
     assert frame["race_mode"] is False
+    assert frame["route_guess"] is None
 
 
 def test_a_failing_write_is_bounded_logged_once_and_reported(tmp_path, caplog):

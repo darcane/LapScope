@@ -335,3 +335,92 @@ def test_route_kind_circuit_for_geometric_laps(tmp_path):
 
     store = run(scenario, tmp_path)
     assert route_of(store, sessions(store)[0]["id"])["kind"] == "circuit"
+
+
+# -- live route recognition (issue #108) --------------------------------------
+# The guess is a WS extra, never stored: `store.route_guesses` is every change
+# of it the harness saw, as (session_id, route_guess, DistanceTraveled).
+
+def _event(sim):
+    sim.event(75, "event")
+    sim.race_off()
+
+
+def test_live_route_guess_on_lap_one(tmp_path):
+    """Second visit to a route: recognized early in lap 1, and the guess is
+    the route the fingerprint files the session under at the line."""
+    first = run(_event, tmp_path)
+    route = sessions(first)[0]["route_id"]
+    # no history on lap 1; lap 2 is recognized from this session's own lap 1
+    assert [(g, d > 1954) for _, g, d in first.route_guesses] == [(route, True)]
+
+    store = run(_event, tmp_path)
+    sid = max(s["id"] for s in sessions(store))
+    assert sessions(store)[0]["route_id"] == route
+    guesses = [(s, g, d) for s, g, d in store.route_guesses if g is not None]
+    assert guesses and guesses[0][:2] == (sid, route)
+    assert guesses[0][2] < 0.1 * 1954           # within the first ~200 m
+    # held for the rest of the session - no flapping at lap boundaries
+    assert [g for s, g, _ in store.route_guesses if s == sid] == [route]
+
+
+def test_live_route_guess_shared_start_line(tmp_path):
+    """--course a and --course b grid on the same line and share 600 m of
+    straight. With both on record, a lap of b is not guessed until the two
+    part, and then as b - never as a."""
+    a = sessions(run(_event, tmp_path, course="a"))[0]["route_id"]
+    store = run(_event, tmp_path, course="b")
+    b = max(sessions(store), key=lambda s: s["id"])["route_id"]
+    assert a != b                               # two routes on record
+
+    store = run(_event, tmp_path, course="b")
+    guesses = [(g, d) for _, g, d in store.route_guesses if g is not None]
+    assert guesses and guesses[0][0] == b
+    assert guesses[0][1] > 600                  # only once they have parted
+    assert all(g == b for g, _ in guesses)
+
+
+def test_live_route_guess_withdrawn_on_an_unrecorded_course(tmp_path):
+    """Only course a on record, then a lap of b: indistinguishable from a
+    down the shared straight, so a is guessed - and withdrawn once the car
+    goes straight on where a turns. Not re-guessed as a on the next lap -
+    which is recognized as b instead, from this session's own first lap."""
+    a = sessions(run(_event, tmp_path, course="a"))[0]["route_id"]
+    store = run(_event, tmp_path, course="b")
+    sid = max(s["id"] for s in sessions(store))
+    seen = [(g, d) for s, g, d in store.route_guesses if s == sid]
+    assert seen[0][0] == a and seen[0][1] < 600  # the honest early guess
+    assert seen[1][0] is None and seen[1][1] > 600  # withdrawn after the split
+    b = max(sessions(store), key=lambda s: s["id"])["route_id"]
+    assert b != a
+    assert seen[2:] == [(b, seen[2][1])] and seen[2][1] > 2554  # lap 2, as b
+
+
+def test_live_route_guess_never_in_free_roam(tmp_path):
+    """Free roam has no route: cruising the very loop on record guesses
+    nothing (race_mode gates the matcher)."""
+    run(_event, tmp_path)
+
+    def cruise(sim):
+        sim.freeroam(60)
+        sim.race_off()
+
+    store = run(cruise, tmp_path)
+    assert store.route_guesses == []
+
+
+def test_live_route_guess_point_to_point_and_wta(tmp_path):
+    """The other event shapes recognize their route on the second visit:
+    a dirt sprint (lap opens on the grid, CurrentLap counting) and a World
+    Time Attack (lap re-based at the launch)."""
+    for name, drive in (("dirt", lambda sim: sim.dirt_sprint(40)),
+                        ("wta", lambda sim: sim.wta(2))):
+        def scenario(sim, drive=drive):
+            drive(sim)
+            sim.race_off()
+
+        run(scenario, tmp_path / name)
+        store = run(scenario, tmp_path / name)
+        newest = max(sessions(store), key=lambda s: s["id"])
+        guesses = [g for s, g, _ in store.route_guesses if s == newest["id"]]
+        assert guesses == [newest["route_id"]], name

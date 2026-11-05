@@ -200,7 +200,12 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
   laps within a route; **useless for telling routes apart** (see the route
   fingerprint below — this is what issue #53 tripped over), and never display
   it as a length (integrate `Speed` for that). The simulator emits true
-  meters, so this quirk only shows on real-game data.
+  meters, so this quirk only shows on real-game data. **Its zero is the
+  start line, and the grid can sit behind it**: some events open lap 1 at
+  `DistanceTraveled` -71 or -132, counting up to 0 at the line (sessions 35,
+  718). Measure lap-1 progress from 0, not from where the lap opened, or
+  those laps sit ~80 m off every other lap of the route all the way round
+  (`route_match.lap_origin`; found by the #108 sweep, 2026-11-05).
 - `DrivetrainType`: 0=FWD 1=RWD 2=AWD. `CarClass`: index into D,C,B,A,S1,S2,R,X
   (R is new in FH6: 901–998 PI; X is 999 only — verified on a real 998 car).
 - Wheel arrays are ordered FL, FR, RL, RR. `TireTemp` is Fahrenheit.
@@ -406,6 +411,40 @@ All the rules exist because some real behavior broke a naive version:
   the catalogue can correct a name it supplied but can never overwrite a human's.
   A route with NULL spans can't be identified at all — that is the second
   reason to reprocess an old database, after unpicking merged routes.
+- **Live route recognition** (issue #108, `app/recorder/route_match.py`)
+  answers mid-lap what the fingerprint answers at the line, and is
+  **display-only** — the `route_guess` WS extra, never written anywhere; the
+  fingerprint stays the authority on which route a session is filed under.
+  It works *because* `DistanceTraveled` is normalized progress: "progress
+  1200" is the same spot on every lap of one route, whatever the line or the
+  car, and a different spot on any other route even off a shared start line
+  on a shared road (they normalize over different lengths). So each candidate
+  costs one binary search per frame — the car vs. where the route's reference
+  lap was *at the same progress* — not a nearest-point search. Candidates =
+  routes starting within the fingerprint's 120 m of where the lap opened;
+  references are built from each route's fastest usable lap on a worker
+  thread (`RouteRefs`, never on the UDP callback) and invalidated when a
+  session on the route closes — which is also why lap 2 of a brand-new
+  route is recognized from its own lap 1. Rules: commit only to the last
+  candidate standing, once it is within 30 m and 5 % into the lap; drop a
+  candidate (or withdraw a guess) only when the smoothed error stays over
+  60 m for 1.5 % of the route's **progress** — a crash into the scenery
+  stalls progress while the car is away, a different course keeps
+  progressing; a dropped route stays ruled out for the session (or an
+  unrecorded course sharing a known one's start would be guessed and
+  withdrawn every lap); past the reference's end nothing is checked (the
+  post-finish coast proves nothing). Gated on `race_mode` (free roam has no
+  route), re-armed whenever the open lap is (re)based, carried over across
+  laps. It runs inside its own failure fence in `SessionTracker._route_match`:
+  an error turns matching off for the session, logged once, and recording
+  carries on. Every session close logs `live route guess X, fingerprint Y
+  (agree|DISAGREE)` — grep for DISAGREE after driving. Calibrated with
+  `python tools/sweep_route_match.py` (read-only, leave-one-out over every
+  stored lap): 2026-11-05, 429 laps → 371 right, **0 wrong, 0 withdrawn**,
+  18 pending (routes 124/125: one road filed twice — showing nothing is the
+  right answer), 2 none (session 369, a 5 km run filed under The Goliath —
+  the matcher refuses the bad fingerprint), 38 with no reference for their
+  route. Re-run it before touching a `MATCH_*` constant.
 - Sessions with zero completed laps/runs are discarded at close and again at
   startup (`cleanup_sessions`). Every discard logs a `diag:` signal summary
   (duration, race-time range, max LapNumber/CurrentLap, finish seen, gridded,
@@ -554,4 +593,8 @@ a row here, a test, and usually a simulator flag.
 | Track type: route inheritance | two events, same route | a tag set on the route's earlier session wins over telemetry for later ones |
 | Landing vs contact | `--duration 180 --dirty --jumps` | lap 2 `contact` (wall hit), all other laps clean despite hard jump landings; `/laps/{id}/data` tags landing bursts `landing: true` (amber on the map) |
 | Aero cornering vs contact | hand-built frames (`test_tracker.py`, `test_api.py`) | a burst that ramps past 45 m/s² and holds is *not* contact (no flag, no marker); a one-frame jump of `IMPACT_JERK` is, even mid-burst on top of aero load (issue #49) |
+| Live route guess | two runs of `--race 3` (same DB) | run 2 guessed as run 1's route ~5 % into lap 1, held all session, session-close log says `(agree)`; the cockpit map title names the route. Run 1 is recognized from lap 2, off its own lap 1 |
+| Live guess, shared start | `--course a`, `--course b`, then `--course b` again | the third run is not guessed until the courses part (>600 m), then as b, never a |
+| Live guess, unrecorded course | `--course a`, then `--course b` | b guessed as a down the shared straight, withdrawn after the split, not re-guessed as a; lap 2 recognized as b |
+| Live guess, free roam | `--race 3`, then `--freeroam 60` | no guess (race_mode gates the matcher) |
 | Race-mode gating | `--freeroam 35 --race 3` | chip FREE ROAM then RACE MODE; timer dashed in free roam; live map draws the race only |

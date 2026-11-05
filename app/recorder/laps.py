@@ -113,6 +113,8 @@ import logging
 import math
 import os
 
+from .route_match import RouteMatcher, lap_origin
+
 log = logging.getLogger("lapscope.recorder")
 
 RACE_OFF_GRACE = 15.0
@@ -246,8 +248,15 @@ def suggest_track_type(*, geometric_laps: int, drive_s: float, drive_n: int,
 
 
 class SessionTracker:
-    def __init__(self, store) -> None:
+    def __init__(self, store, route_refs=None) -> None:
+        """route_refs: a route_match.RouteRefs, which turns on live route
+        recognition (issue #108); None (reprocess, most tests) leaves it off."""
         self.store = store
+        self.route_refs = route_refs
+        self._matcher = RouteMatcher()
+        self._match_key: tuple | None = None  # the lap the matcher is armed for
+        self._match_req = None                # pending RouteRefs.near() future
+        self._match_off = False               # failed: off until the session ends
         self.session_id: int | None = None
         self.last_frame_t: float | None = None
         self._frame_count = 0
@@ -335,7 +344,7 @@ class SessionTracker:
                     self._end_session(self._race_off_since)
             return {"session_id": self.session_id, "delta": None,
                     "session_best": self.best_lap_time, "lap_elapsed": None,
-                    "race_mode": False}
+                    "race_mode": False, "route_guess": self.route_guess}
 
         self._race_off_since = None
 
@@ -427,6 +436,7 @@ class SessionTracker:
             self._over_impact = False
         self._prev_g = (t, g)
         delta = self._lap_logic(t, frame)
+        self._route_match(t, frame)
         if t - self._last_flush >= FLUSH_INTERVAL:
             self._last_flush = t  # before, not after: a failing flush used to
             self.flush()          # leave this stale and retry on every packet
@@ -439,7 +449,58 @@ class SessionTracker:
                 lap_elapsed = e
         return {"session_id": self.session_id, "delta": delta,
                 "session_best": self.best_lap_time, "lap_elapsed": lap_elapsed,
-                "race_mode": self.race_mode(frame)}
+                "race_mode": self.race_mode(frame), "route_guess": self.route_guess}
+
+    @property
+    def route_guess(self) -> int | None:
+        """The stored route this event is being driven on, as recognized
+        mid-lap by the live matcher - None until it is sure (issue #108).
+        Display-only: the route a session is filed under is still decided by
+        the completed-lap fingerprint, and this is never written anywhere."""
+        g = self._matcher.guess
+        return g.route_id if g is not None else None
+
+    def _route_match(self, t: float, frame: dict) -> None:
+        """Live route recognition, inside its own failure fence: matching is
+        a nicety on the recording path, so any error turns it off for the
+        rest of the session (logged once) and recording carries on."""
+        if self.route_refs is None or self._match_off or self.session_id is None:
+            return
+        try:
+            self._route_match_step(t, frame)
+        except Exception:
+            log.exception("Session %s: live route matching failed - off until"
+                          " the session ends", self.session_id)
+            self._match_off = True
+            self._matcher.stop()
+            self._match_req = None
+
+    def _route_match_step(self, t: float, frame: dict) -> None:
+        # Re-armed whenever the open lap is (re)based - a new lap, the WTA
+        # launch, a mid-session lap-timer start - which is also when the
+        # lap's start position and progress origin are (re)set. A guess
+        # already made in this session carries over and is only re-checked:
+        # the route doesn't change within an event.
+        key = (self._lap_id, self._lap_opened_t)
+        if key != self._match_key:
+            self._match_key = key
+            if self._lap_id is not None:
+                keep = self._matcher.guess
+                self._match_req = None
+                if keep is not None:
+                    self._matcher.start([], keep=keep)
+                else:
+                    # nothing to decide until the references arrive from the
+                    # loader thread - polled below, never waited on
+                    self._matcher.stop()
+                    self._match_req = self.route_refs.near(*self._lap_start_pos)
+        if self._match_req is not None and self._match_req.done():
+            req, self._match_req = self._match_req, None
+            self._matcher.start(req.result())
+        if self._lap_id is not None and self.race_mode(frame):
+            self._matcher.feed(t, frame["distance_traveled"]
+                               - lap_origin(self._lap_start_dist),
+                               frame["pos_x"], frame["pos_z"])
 
     def race_mode(self, frame: dict) -> bool:
         """Is a timed event running right now, as opposed to free-roam
@@ -637,6 +698,7 @@ class SessionTracker:
                      self._frame_count, self._completed_laps,
                      ", wet" if wet else "",
                      f", track={track} (auto)" if track else "")
+        self._route_match_close()
         self.session_id = None
         self._race_off_since = None
         self._lap_number = None
@@ -682,6 +744,24 @@ class SessionTracker:
         self._trk_rough_hi = 0
         self._trk_jumps = 0
         self._lap_flags = set()
+
+    def _route_match_close(self) -> None:
+        if self.route_refs is not None:
+            guess = self.route_guess
+            if guess is not None or self._route_id is not None:
+                # the field check: the live guess against the fingerprint
+                # the session was filed under at the line
+                log.info("Session %d: live route guess %s, fingerprint %s%s",
+                         self.session_id, guess, self._route_id,
+                         "" if guess is None or self._route_id is None
+                         else " (agree)" if guess == self._route_id
+                         else " (DISAGREE)")
+            # this session may hold the route's new best (= reference) lap
+            self.route_refs.invalidate(self._route_id)
+        self._matcher.reset()
+        self._match_key = None
+        self._match_req = None
+        self._match_off = False
 
     def _suggest_track(self) -> str | None:
         """Track type to auto-fill at session close: the route's existing tag

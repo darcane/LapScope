@@ -780,6 +780,26 @@ class Store:
                 " ORDER BY l.lap_time LIMIT 1", (route_id,)).fetchone()
         return dict(row) if row else None
 
+    def route_starts(self) -> list[dict]:
+        """Every route's start point and length - the live route matcher's
+        shortlist (route_match.py). A few hundred rows at most."""
+        with self.reader() as conn:
+            rows = conn.execute(
+                "SELECT id, name, start_x, start_z, lap_length FROM routes").fetchall()
+        return [dict(r) for r in rows]
+
+    def route_ref_laps(self, route_id: int, limit: int) -> list[dict]:
+        """The route's fastest completed laps, fastest first: the candidates
+        for its live-matching reference trace. Same choice as the outline
+        (route_outline_lap) - the fastest lap is also the cleanest line -
+        with a few spares, because the fastest may have been joined mid-lap."""
+        with self.reader() as conn:
+            rows = conn.execute(
+                "SELECT l.* FROM laps l JOIN sessions s ON s.id = l.session_id"
+                " WHERE s.route_id = ? AND l.lap_time IS NOT NULL"
+                " ORDER BY l.lap_time LIMIT ?", (route_id, limit)).fetchall()
+        return [dict(r) for r in rows]
+
     def set_route_outline(self, route_id: int, outline: str) -> None:
         with self.reader() as conn:
             conn.execute("UPDATE routes SET outline = ? WHERE id = ?",

@@ -533,6 +533,19 @@ function makeTires() {
    classic map's glyphs, drawn in box coordinates so they keep their size,
    and redrawn only when live.js adds one or the fit moves. */
 const MAP_BOX = { x: 40, y: 620, w: 720, h: 260 };
+const MAP_TITLE_MAX = 40;  // characters of route name the title row fits
+
+/* The recognized route for the map's title row, or "" while there is none
+   (or its name is still on the way). The bitmap font is ASCII (pixi-kit.js):
+   accents fold to their base letter, anything else drops out, and a name
+   with nothing printable left still says the route was recognized. */
+function routeTitle(r) {
+  if (r.id == null || r.name == null) return "";
+  const ascii = r.name.normalize("NFKD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^\x20-\x7e]/g, "").replace(/\s+/g, " ").trim().toUpperCase();
+  if (!ascii) return r.name ? "KNOWN ROUTE" : "UNNAMED ROUTE";
+  return ascii.length > MAP_TITLE_MAX ? `${ascii.slice(0, MAP_TITLE_MAX - 3).trimEnd()}...` : ascii;
+}
 const MAP_CHUNK = 256;
 function makeMap() {
   const B = MAP_BOX, pad = 18, padTop = 40;  // padTop: clear of the title row
@@ -557,6 +570,7 @@ function makeMap() {
     new PIXI.Graphics(ringCtx), glowing(sparkCtx, 6));
   c.addChild(frame, title, hint, clip, world, marks, glowing(carCtx, 8));
   let marksKey = "";
+  let titleGen = -1;
 
   let chunks = [], builtGen = -1, builtLen = 0, builtScale = 0;
   const strokeFor = (sc) => ({ width: 2.5 / sc, color: accent, alpha: 0.6, join: "round", cap: "round" });
@@ -576,6 +590,11 @@ function makeMap() {
   return {
     root: c,
     update(f) {
+      if (liveRoute.gen !== titleGen) {
+        titleGen = liveRoute.gen;
+        const name = routeTitle(liveRoute);
+        title.text = name ? `TRACK MAP · ${name}` : "TRACK MAP";
+      }
       const pts = liveMap.pts, n = pts.length;
       hint.visible = n < 2;
       carCtx.clear();
@@ -826,7 +845,8 @@ function describe() {
       + ` ${Math.round(f.current_engine_rpm)} of ${Math.round(f.engine_max_rpm)} rpm,`
       + ` throttle ${Math.round(f.accel / 2.55)}%, brake ${Math.round(f.brake / 2.55)}%`
       + (f.race_mode
-        ? `; race mode, lap ${f.lap_number + 1}, position ${f.race_position || "unknown"},`
+        ? `; race mode${liveRoute.name ? ` on ${liveRoute.name}` : ""},`
+          + ` lap ${f.lap_number + 1}, position ${f.race_position || "unknown"},`
           + ` lap time ${fmtLap(f.current_lap || f.lap_elapsed)}`
           + (f.delta == null ? "" : `, ${Math.abs(f.delta).toFixed(2)} s ${f.delta >= 0 ? "behind" : "ahead of"} session best`)
         : "; free roam"));

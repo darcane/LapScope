@@ -54,13 +54,19 @@ These are the facts that shaped the app — each one broke a naive assumption:
   `RacePosition > 0` from the first countdown frame; World Time Attack and
   point-to-point events reset `DistanceTraveled` to 0 at launch; free roam has
   neither.
-- **`DistanceTraveled` is NOT meters on real circuits.** It advances by the
-  same fixed amount every lap of a given route — roughly 2.4–2.5× the true
-  driven length — making it a *track-position parameter*, not an odometer in
-  meters. That's perfect for aligning laps by track position (how the lap
-  comparison charts work) and for fingerprinting routes, but useless as a
-  length: the "Driven" figure on the analysis page is integrated from `Speed`
-  instead.
+- **`DistanceTraveled` is NOT meters on real circuits.** It is *normalized
+  route progress*: 0 → ~5950 over a full route, **whatever the route** (swept
+  over ~56 routes whose true lengths run 2.1–6.9 km). That makes it a
+  *track-position parameter*, not an odometer. It's perfect for aligning laps
+  of one route by track position (how the lap comparison charts work) and for
+  recognizing a route while you drive it (the same progress is the same spot
+  on every lap of a route, and a different spot on any other), but useless as
+  a length or for telling routes apart by length: the "Driven" figure on the
+  analysis page is integrated from `Speed` instead.
+- **Its zero is the start line, and the grid can sit behind it.** Some events
+  open at `DistanceTraveled` -71 or -132 on the grid and count up to 0 as you
+  cross the line, so lap-1 progress has to be measured from 0, not from where
+  the lap began.
 - **`VelocityX/Y/Z` is car-local**, like `AccelerationX/Y/Z`: it reads
   ~`(0, 0, speed)` whatever direction you're going in the world, so it can't
   give a heading. **`Yaw` is world-space** — the car moves along

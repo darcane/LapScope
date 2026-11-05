@@ -394,6 +394,26 @@ def test_route_patch_sets_and_clears_the_shape_override(tmp_path):
     assert sid is not None
 
 
+def test_route_get_names_the_live_guess(tmp_path):
+    """GET /routes/{id} is what the Live page asks once per route_guess:
+    the name (None while unnamed) and the effective shape."""
+    from app.api.routes import RoutePatch, get_route, patch_route
+
+    def scenario(sim):
+        sim.event(75, "event")
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    rid = sessions(store)[0]["route_id"]
+    req = _request_for(store)
+    assert get_route(rid, req) == {"id": rid, "name": None, "kind": "circuit"}
+    patch_route(rid, RoutePatch(name="Bandai Azuma", kind="sprint"), req)
+    assert get_route(rid, req) == {"id": rid, "name": "Bandai Azuma", "kind": "sprint"}
+    with pytest.raises(HTTPException) as exc:
+        get_route(rid + 99, req)
+    assert exc.value.status_code == 404
+
+
 def test_route_outline_is_drawn_once_and_then_cached(tmp_path):
     """GET /routes/{id}/outline is what the browse bar's thumbnails read.
     It costs a lap's worth of frame parsing, so the first call fills
