@@ -413,7 +413,9 @@ All the rules exist because some real behavior broke a naive version:
   reason to reprocess an old database, after unpicking merged routes.
 - **Live route recognition** (issue #108, `app/recorder/route_match.py`)
   answers mid-lap what the fingerprint answers at the line, and is
-  **display-only** — the `route_guess` WS extra, never written anywhere; the
+  **display-only** — the `route_guess` WS extra (plus `route_ref_lap`, the
+  stored lap it was matched against, which the Live page draws as the course
+  outline), never written anywhere; the
   fingerprint stays the authority on which route a session is filed under.
   It works *because* `DistanceTraveled` is normalized progress: "progress
   1200" is the same spot on every lap of one route, whatever the line or the
@@ -593,7 +595,7 @@ a row here, a test, and usually a simulator flag.
 | Track type: route inheritance | two events, same route | a tag set on the route's earlier session wins over telemetry for later ones |
 | Landing vs contact | `--duration 180 --dirty --jumps` | lap 2 `contact` (wall hit), all other laps clean despite hard jump landings; `/laps/{id}/data` tags landing bursts `landing: true` (amber on the map) |
 | Aero cornering vs contact | hand-built frames (`test_tracker.py`, `test_api.py`) | a burst that ramps past 45 m/s² and holds is *not* contact (no flag, no marker); a one-frame jump of `IMPACT_JERK` is, even mid-burst on top of aero load (issue #49) |
-| Live route guess | two runs of `--race 3` (same DB) | run 2 guessed as run 1's route ~5 % into lap 1, held all session, session-close log says `(agree)`; the cockpit map title names the route. Run 1 is recognized from lap 2, off its own lap 1 |
+| Live route guess | two runs of `--race 3` (same DB) | run 2 guessed as run 1's route ~5 % into lap 1, held all session, session-close log says `(agree)`; the cockpit map title names the route and the whole loop appears faintly under the live path (`route_ref_lap` = run 1's fastest lap, fetched once). Run 1 is recognized from lap 2, off its own lap 1 |
 | Live guess, shared start | `--course a`, `--course b`, then `--course b` again | the third run is not guessed until the courses part (>600 m), then as b, never a |
 | Live guess, unrecorded course | `--course a`, then `--course b` | b guessed as a down the shared straight, withdrawn after the split, not re-guessed as a; lap 2 recognized as b |
 | Live guess, free roam | `--race 3`, then `--freeroam 60` | no guess (race_mode gates the matcher) |

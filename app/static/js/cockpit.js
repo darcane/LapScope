@@ -531,7 +531,12 @@ function makeTires() {
    Jumps (amber dashed flight, takeoff ring → touchdown arrow; a hard landing
    glows with a white impact ring) and contact sparks (red, glowing) are the
    classic map's glyphs, drawn in box coordinates so they keep their size,
-   and redrawn only when live.js adds one or the fit moves. */
+   and redrawn only when live.js adds one or the fit moves.
+   Once the recorder recognizes the route (liveRoute, issue #108) the whole
+   course is drawn faintly UNDER the path, from the stored lap it was matched
+   against, and the fit takes it in — so the scale is final from the match on
+   instead of growing with the lap. It is one Graphics in the same world
+   space, built when its trace arrives and on the same 15 % scale drift. */
 const MAP_BOX = { x: 40, y: 620, w: 720, h: 260 };
 const MAP_TITLE_MAX = 40;  // characters of route name the title row fits
 
@@ -559,6 +564,9 @@ function makeMap() {
   const clip = new PIXI.Graphics().rect(B.x, B.y, B.w, B.h).fill(0xffffff);
   const world = new PIXI.Container();
   world.mask = clip;
+  const outline = new PIXI.Graphics();         // the recognized route, under ...
+  const pathLayer = new PIXI.Container();      // ... the chunks of the live path
+  world.addChild(outline, pathLayer);
   const carCtx = new PIXI.GraphicsContext();
   const jumpCtx = new PIXI.GraphicsContext();   // soft landings
   const hardCtx = new PIXI.GraphicsContext();   // hard landings: same glyph, glowing
@@ -573,7 +581,15 @@ function makeMap() {
   let titleGen = -1;
 
   let chunks = [], builtGen = -1, builtLen = 0, builtScale = 0;
+  let outlineTrace = null, outlineScale = 0;
   const strokeFor = (sc) => ({ width: 2.5 / sc, color: accent, alpha: 0.6, join: "round", cap: "round" });
+  function drawOutline(tr, sc) {
+    outline.clear().moveTo(tr.xs[0], tr.zs[0]);
+    for (let i = 1; i < tr.xs.length; i++) outline.lineTo(tr.xs[i], tr.zs[i]);
+    outline.stroke({ width: 7 / sc, color: C.muted, alpha: 0.2, join: "round", cap: "round" });
+    outlineTrace = tr;
+    outlineScale = sc;
+  }
   function drawChunk(g, i0, i1, sc) {
     const pts = liveMap.pts;
     g.clear().moveTo(pts[i0][0], pts[i0][1]);
@@ -581,7 +597,7 @@ function makeMap() {
     g.stroke(strokeFor(sc));
   }
   function rebuildAll(sc) {
-    world.removeChildren().forEach((ch) => ch.destroy());
+    pathLayer.removeChildren().forEach((ch) => ch.destroy());
     chunks = [];
     builtLen = 0;
     builtScale = sc;
@@ -600,15 +616,26 @@ function makeMap() {
       carCtx.clear();
       if (n < 2) {
         if (chunks.length) rebuildAll(0);
+        if (outlineTrace) { outline.clear(); outlineTrace = null; }
         if (marksKey) { marksKey = ""; for (const g of [jumpCtx, hardCtx, ringCtx, sparkCtx]) g.clear(); }
         return;
       }
-      const spanX = Math.max(liveMap.maxX - liveMap.minX, 1), spanZ = Math.max(liveMap.maxZ - liveMap.minZ, 1);
+      const tr = liveRoute.trace;
+      const minX = tr ? Math.min(liveMap.minX, tr.minX) : liveMap.minX;
+      const maxX = tr ? Math.max(liveMap.maxX, tr.maxX) : liveMap.maxX;
+      const minZ = tr ? Math.min(liveMap.minZ, tr.minZ) : liveMap.minZ;
+      const maxZ = tr ? Math.max(liveMap.maxZ, tr.maxZ) : liveMap.maxZ;
+      const spanX = Math.max(maxX - minX, 1), spanZ = Math.max(maxZ - minZ, 1);
       const sc = Math.min((B.w - 2 * pad) / spanX, (B.h - pad - padTop) / spanZ);
       // world (x, z) -> box: x right, z up (same handedness as the classic map)
       world.scale.set(sc, -sc);
-      world.position.set(B.x + (B.w - spanX * sc) / 2 - liveMap.minX * sc,
-        B.y + padTop + (B.h - pad - padTop + spanZ * sc) / 2 + liveMap.minZ * sc);
+      world.position.set(B.x + (B.w - spanX * sc) / 2 - minX * sc,
+        B.y + padTop + (B.h - pad - padTop + spanZ * sc) / 2 + minZ * sc);
+      if (!tr) {
+        if (outlineTrace) { outline.clear(); outlineTrace = null; }
+      } else if (tr !== outlineTrace || Math.abs(sc / outlineScale - 1) > 0.15) {
+        drawOutline(tr, sc);
+      }
       if (liveMap.gen !== builtGen || Math.abs(sc / builtScale - 1) > 0.15) {
         rebuildAll(sc);
         builtGen = liveMap.gen;
@@ -617,7 +644,7 @@ function makeMap() {
         // chunk k covers points [k*CHUNK, (k+1)*CHUNK] — sharing an end point
         // with the next, so the line has no gaps
         for (let k = Math.max(0, chunks.length - 1); k * MAP_CHUNK < n - 1; k++) {
-          if (!chunks[k]) { chunks[k] = new PIXI.Graphics(); world.addChild(chunks[k]); }
+          if (!chunks[k]) { chunks[k] = new PIXI.Graphics(); pathLayer.addChild(chunks[k]); }
           drawChunk(chunks[k], k * MAP_CHUNK, Math.min(n - 1, (k + 1) * MAP_CHUNK), builtScale);
         }
         builtLen = n;

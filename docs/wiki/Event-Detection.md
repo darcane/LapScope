@@ -248,6 +248,8 @@ line drift apart within a few hundred metres even on the same road.
 - It needs history. Your first lap on a new route can't be recognized, but its
   second can, from the first.
 - Free roam never guesses: it has no route.
+- Once it is sure, the Live map names the route and draws the whole course
+  faintly under your line, taken from the lap it matched you against.
 - It is display-only. The session is still filed under the route the
   fingerprint picks at the line, and the server log says whether the two
   agreed (`live route guess …, fingerprint … (agree)`).

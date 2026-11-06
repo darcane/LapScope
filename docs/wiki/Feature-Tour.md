@@ -15,8 +15,9 @@ throttle/brake/steering bars, and a lap timer with a **live delta vs. your
 session-best lap**. Below it, a **track map that draws itself as you drive** and
 a 12-second input trace. The map survives a mid-race pause (photo mode included)
 and marks contacts and jumps as they happen. On a route you've driven before, it
-**names the route a few seconds into the first lap**, recognized from your own
-history (see [Event detection](Event-Detection)). The whole scene scales to fit the
+**recognizes the route a few seconds into the first lap**, from your own
+history: the map names it and draws the whole course faintly ahead of you, from
+your fastest lap there (see [Event detection](Event-Detection)). The whole scene scales to fit the
 window and re-stacks itself on a portrait screen.
 
 The cockpit draws with WebGL, which every current desktop browser has. If yours

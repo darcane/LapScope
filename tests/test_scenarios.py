@@ -364,6 +364,28 @@ def test_live_route_guess_on_lap_one(tmp_path):
     assert [g for s, g, _ in store.route_guesses if s == sid] == [route]
 
 
+def test_live_route_guess_names_its_reference_lap(tmp_path):
+    """route_ref_lap is the stored lap the guess was matched against - the
+    line the Live page draws ahead of the car. It is the route's fastest
+    lap, and /laps/{id}/data hands its world positions over in one request."""
+    from types import SimpleNamespace
+
+    from app.api.routes import lap_data
+
+    first = run(_event, tmp_path)
+    first_sid = sessions(first)[0]["id"]
+    fastest = min(completed_laps(first, first_sid), key=lambda lap: lap["lap_time"])
+
+    store = run(_event, tmp_path)
+    assert store.guess_ref_laps == [fastest["id"]]   # one fetch for the session
+    req = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(store=store)))
+    d = lap_data(fastest["id"], req, channels="pos_x,pos_z", max_points=1500)
+    xs, zs = d["channels"]["pos_x"], d["channels"]["pos_z"]
+    assert 50 <= len(xs) <= 1500
+    assert 830 < max(xs) - min(xs) < 850      # the whole 840 x 240 m loop
+    assert 230 < max(zs) - min(zs) < 250
+
+
 def test_live_route_guess_shared_start_line(tmp_path):
     """--course a and --course b grid on the same line and share 600 m of
     straight. With both on record, a lap of b is not guessed until the two

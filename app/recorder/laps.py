@@ -344,7 +344,8 @@ class SessionTracker:
                     self._end_session(self._race_off_since)
             return {"session_id": self.session_id, "delta": None,
                     "session_best": self.best_lap_time, "lap_elapsed": None,
-                    "race_mode": False, "route_guess": self.route_guess}
+                    "race_mode": False, "route_guess": self.route_guess,
+                    "route_ref_lap": self.route_ref_lap}
 
         self._race_off_since = None
 
@@ -449,7 +450,8 @@ class SessionTracker:
                 lap_elapsed = e
         return {"session_id": self.session_id, "delta": delta,
                 "session_best": self.best_lap_time, "lap_elapsed": lap_elapsed,
-                "race_mode": self.race_mode(frame), "route_guess": self.route_guess}
+                "race_mode": self.race_mode(frame), "route_guess": self.route_guess,
+                "route_ref_lap": self.route_ref_lap}
 
     @property
     def route_guess(self) -> int | None:
@@ -459,6 +461,14 @@ class SessionTracker:
         the completed-lap fingerprint, and this is never written anywhere."""
         g = self._matcher.guess
         return g.route_id if g is not None else None
+
+    @property
+    def route_ref_lap(self) -> int | None:
+        """The stored lap the guess was matched against: the route's line, in
+        world coordinates, that the Live page draws ahead of the car - fetched
+        once per change through /laps/{id}/data, never sent per frame."""
+        g = self._matcher.guess
+        return g.lap_id if g is not None else None
 
     def _route_match(self, t: float, frame: dict) -> None:
         """Live route recognition, inside its own failure fence: matching is

@@ -63,6 +63,7 @@ class FakeSocket:
         # lap progress when it changed) - the WS extra the Live page reads
         self.guesses: list[tuple[int | None, int | None, float]] = []
         self._guess = None
+        self.ref_laps: list[int | None] = []  # every change of route_ref_lap
 
     def sendto(self, data: bytes, _addr) -> None:
         self.t = self.n * self.dt
@@ -73,6 +74,9 @@ class FakeSocket:
             self._guess = extras["route_guess"]
             self.guesses.append((extras["session_id"], self._guess,
                                  frame["distance_traveled"]))
+        ref_lap = extras["route_ref_lap"]
+        if ref_lap != (self.ref_laps[-1] if self.ref_laps else None):
+            self.ref_laps.append(ref_lap)
 
     def close(self) -> None:
         pass
@@ -103,6 +107,7 @@ def run(scenario, tmp_path, *, rate: float = RATE, wet: bool = False,
     tracker.shutdown(sim.sock.t + 1.0)
     store.close()  # checkpoint WAL and release the file for reader() + teardown
     store.route_guesses = sim.sock.guesses
+    store.guess_ref_laps = sim.sock.ref_laps
     simulator.set_course("a")
     return store
 

@@ -48,7 +48,8 @@ class TelemetryProtocol(asyncio.DatagramProtocol):
             log.exception("Recorder failed on frame; telemetry stream continues")
             # keep the documented frame shape (ARCHITECTURE.md, WS contract)
             extras = {"session_id": None, "delta": None, "session_best": None,
-                      "lap_elapsed": None, "race_mode": False, "route_guess": None}
+                      "lap_elapsed": None, "race_mode": False, "route_guess": None,
+                      "route_ref_lap": None}
         frame.update(extras)
         frame["_t"] = now
         hub.publish(frame)

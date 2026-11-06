@@ -67,30 +67,53 @@ const liveMap = {
 };
 
 /* The stored route the recorder recognized mid-lap (the `route_guess` WS
-   extra, issue #108), named with one fetch per guess - never per frame. It
-   belongs to the drawn track: set and withdrawn under the same gate as the
-   map path, cleared with it, and kept with a finished track like the track
-   itself. name: null = not known (yet), "" = the route has no name. */
-const liveRoute = { id: null, name: null, gen: 0 };
+   extra, issue #108), with its name and the line it was matched against
+   (`route_ref_lap`): one fetch each per guess, never per frame. It belongs
+   to the drawn track: set and withdrawn under the same gate as the map path,
+   cleared with it, and kept with a finished track like the track itself.
+   name: null = not known (yet), "" = the route has no name.
+   trace: null, or {xs, zs, minX, maxX, minZ, maxZ} in world metres - the
+   whole course, drawn faintly ahead of the car. `gen` bumps on any change. */
+const liveRoute = { id: null, lap: null, name: null, trace: null, gen: 0 };
+const ROUTE_TRACE_POINTS = 1500;  // plenty for a faint line; the Goliath's
+                                   // ~85 km still lands a point every ~60 m
 
-function setLiveRoute(id) {
+function setLiveRoute(id, lap = null) {
+  const sameRoute = id === liveRoute.id;
   liveRoute.id = id;
-  liveRoute.name = null;
+  liveRoute.lap = lap;
+  liveRoute.trace = null;
+  if (!sameRoute) liveRoute.name = null;
   liveRoute.gen++;
   if (id == null) return;
-  apiFetch(`/api/routes/${id}`, { what: "name the route", quiet: true })
-    .then((r) => {
-      if (liveRoute.id !== id) return;  // superseded while in flight
-      liveRoute.name = (r && r.name) || "";
+  const current = () => liveRoute.id === id && liveRoute.lap === lap;  // not superseded
+  if (!sameRoute) {
+    apiFetch(`/api/routes/${id}`, { what: "name the route", quiet: true })
+      .then((r) => {
+        if (!current()) return;
+        liveRoute.name = (r && r.name) || "";
+        liveRoute.gen++;
+      })
+      .catch(() => { /* quiet: the map just goes unnamed */ });
+  }
+  if (lap == null) return;
+  apiFetch(`/api/laps/${lap}/data?channels=pos_x,pos_z&max_points=${ROUTE_TRACE_POINTS}`,
+    { what: "load the route's line", quiet: true })
+    .then((d) => {
+      if (!current() || !d) return;
+      const xs = d.channels.pos_x, zs = d.channels.pos_z;
+      if (xs.length < 2) return;
+      liveRoute.trace = { xs, zs, minX: Math.min(...xs), maxX: Math.max(...xs),
+                          minZ: Math.min(...zs), maxZ: Math.max(...zs) };
       liveRoute.gen++;
     })
-    .catch(() => { /* quiet: the map just goes unnamed */ });
+    .catch(() => { /* quiet: the map just draws no outline */ });
 }
 
 function feedRoute(f) {
   if (f.session_id == null || !mapActive(f)) return;
-  const id = f.route_guess ?? null;
-  if (id !== liveRoute.id) setLiveRoute(id);
+  const id = f.route_guess ?? null, lap = id == null ? null : (f.route_ref_lap ?? null);
+  if (id !== liveRoute.id || lap !== liveRoute.lap) setLiveRoute(id, lap);
 }
 
 function resetLiveMap(sessionId) {
