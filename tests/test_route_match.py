@@ -199,3 +199,84 @@ def test_a_failing_matcher_never_touches_the_recording(tmp_path, monkeypatch, ca
     assert store.route_guesses == []
     # logged once, then off until the session ends (not once per packet)
     assert sum("live route matching failed" in r.message for r in caplog.records) == 1
+
+
+# -- the live delta's stored reference (phase 3) ---------------------------
+
+def test_build_delta_ref_reads_the_recorders_lap_clock():
+    """CurrentLap while it runs; race time since the lap opened when it is
+    dead (WTA, bare sprints) - the same clock the live lap is timed on."""
+    from app.recorder.route_match import build_delta_ref
+
+    def frames_of(rows):
+        out = []
+        for i, (dist, cur, rt) in enumerate(rows):
+            f = empty_fields()
+            f.update(distance_traveled=dist, current_lap=cur, current_race_time=rt,
+                     is_race_on=1)
+            out.append((float(i), pack(f)))
+        return out
+
+    lap = {"id": 5, "lap_time": 100.0, "start_distance": 0.0}
+    live = [(p, p / 10, 50 + p / 10) for p in range(0, 1001, 2)]
+    r = build_delta_ref("pb", lap, frames_of(live), 1000.0)
+    assert r.t[r.d.index(500)] == pytest.approx(50.0)
+    dead = [(p, 0.0, 50 + p / 10) for p in range(0, 1001, 2)]
+    r = build_delta_ref("pb", lap, frames_of(dead), 1000.0)
+    assert r.t[r.d.index(500)] == pytest.approx(50.0)      # 100 s - 50 s at open
+    short = [(p, p / 10, p / 10) for p in range(0, 501, 2)]
+    assert build_delta_ref("pb", lap, frames_of(short), 1000.0) is None  # half a route
+
+
+def test_delta_ref_skips_excluded_and_rewound_laps(tmp_path):
+    """The stored best is chosen like a best on the Analysis page: a lap the
+    user excluded doesn't count, and neither does a rewound one."""
+    from app.recorder.store import lap_anchor
+
+    def scenario(sim):
+        sim.event(220, "dirty", dirty=True)   # lap 2 contact, lap 3 rewind
+        sim.race_off()
+
+    store = run(scenario, tmp_path)
+    sid = sessions(store)[0]["id"]
+    rid = sessions(store)[0]["route_id"]
+    timed = [lap for lap in store.session_laps(sid) if lap["lap_time"] is not None]
+    rewound = {lap["id"] for lap in timed if "rewind" in (lap["flags"] or "")}
+    assert rewound
+    refs = RouteRefs(store)
+    eligible = sorted((lap for lap in timed if lap["id"] not in rewound),
+                      key=lambda lap: lap["lap_time"])
+    got = refs._load_delta(rid, 269, 6, None)
+    assert got.kind == "pb" and got.lap_id == eligible[0]["id"]
+
+    store.add_edit(sid, "exclude_lap", lap_anchor(eligible[0]))
+    assert refs._load_delta(rid, 269, 6, None).lap_id == eligible[1]["id"]
+    assert refs._load_delta(rid, 269, 6, sid) is None    # its own session excluded
+    assert refs._load_delta(rid, 1, 6, None).kind == "class"
+    assert refs._load_delta(rid, 1, 3, None) is None
+
+
+def test_delta_measures_progress_from_the_start_line():
+    """A lap gridded behind the line opens at DistanceTraveled -71: its
+    lap_dist runs 71 ahead of its progress. The delta has to compare
+    progress, or a lap at exactly the reference's pace reads ~7 s off."""
+    from app.recorder.laps import SessionTracker
+    from app.recorder.route_match import DeltaRef
+
+    tr = SessionTracker(store=None)
+    tr._route_dref = DeltaRef("pb", 1, 100.0, [float(p) for p in range(2, 1001, 2)],
+                              [p / 10 for p in range(2, 1001, 2)])
+    tr._pick_ref()
+    tr._lap_start_dist = -71.0                 # this lap opened behind the line
+    assert tr._delta(500 + 71, 50.0) == pytest.approx(0.0)   # at progress 500, on pace
+    assert tr._delta(30.0, 1.0) is None        # still behind the line
+
+    # and the session-best reference carries its own offset: a lap that
+    # opened behind the line, chased from a lap that opened on it
+    tr._route_dref = None
+    tr._sess_ref = ([float(p + 71) for p in range(2, 1001, 2)],
+                    [p / 10 for p in range(2, 1001, 2)], 71.0, 100.0, 7)
+    tr._pick_ref()
+    assert tr.delta_ref == "session" and tr.delta_ref_lap == 7
+    tr._lap_start_dist = 5951.0                # lap 2, opened at the line
+    assert tr._delta(500.0, 50.0) == pytest.approx(0.0)

@@ -277,8 +277,20 @@ class SessionTracker:
         self._lap_bb = [0.0, 0.0, 0.0, 0.0]  # min x, max x, min z, max z
         self._cur_d: list[float] = []   # lap distance trace of the current lap
         self._cur_t: list[float] = []   # matching elapsed lap time
-        self._ref_d: list[float] | None = None  # best lap reference
+        # the live delta's reference (issue #108): the faster of this
+        # session's best lap and the route's stored best (same car, else same
+        # class), picked by _pick_ref. Active trace in _ref_d/_ref_t; _ref_off
+        # = how far its progress sits from lap_origin (a lap opened behind
+        # the start line - see lap_origin)
+        self._ref_d: list[float] | None = None
         self._ref_t: list[float] | None = None
+        self._ref_off = 0.0
+        self._sess_ref: tuple | None = None   # (d, t, off, lap_time, lap_id)
+        self._route_dref = None               # route_match.DeltaRef
+        self._dref_req = None                 # pending RouteRefs.delta_ref()
+        self._dref_route: int | None = None   # the route it was asked for
+        self.delta_ref: str | None = None     # "pb" / "class" / "session"
+        self.delta_ref_lap: int | None = None # the stored lap being chased
         self.best_lap_time: float | None = None
 
         self._prev_race_time: float | None = None
@@ -345,7 +357,8 @@ class SessionTracker:
             return {"session_id": self.session_id, "delta": None,
                     "session_best": self.best_lap_time, "lap_elapsed": None,
                     "race_mode": False, "route_guess": self.route_guess,
-                    "route_ref_lap": self.route_ref_lap}
+                    "route_ref_lap": self.route_ref_lap,
+                    "delta_ref": self.delta_ref, "delta_ref_lap": self.delta_ref_lap}
 
         self._race_off_since = None
 
@@ -451,7 +464,8 @@ class SessionTracker:
         return {"session_id": self.session_id, "delta": delta,
                 "session_best": self.best_lap_time, "lap_elapsed": lap_elapsed,
                 "race_mode": self.race_mode(frame), "route_guess": self.route_guess,
-                "route_ref_lap": self.route_ref_lap}
+                "route_ref_lap": self.route_ref_lap,
+                "delta_ref": self.delta_ref, "delta_ref_lap": self.delta_ref_lap}
 
     @property
     def route_guess(self) -> int | None:
@@ -484,6 +498,10 @@ class SessionTracker:
             self._match_off = True
             self._matcher.stop()
             self._match_req = None
+            self._dref_req = None
+            self._dref_route = None
+            self._route_dref = None
+            self._pick_ref()
 
     def _route_match_step(self, t: float, frame: dict) -> None:
         # Re-armed whenever the open lap is (re)based - a new lap, the WTA
@@ -511,6 +529,53 @@ class SessionTracker:
             self._matcher.feed(t, frame["distance_traveled"]
                                - lap_origin(self._lap_start_dist),
                                frame["pos_x"], frame["pos_z"])
+        # the route is known: chase its stored best from here on, lap 1
+        # included. Asked once per guess, on the loader thread like the
+        # matcher's references; a withdrawn guess takes it away again.
+        guess = self.route_guess
+        if guess != self._dref_route:
+            self._dref_route = guess
+            self._dref_req = None
+            if self._route_dref is not None:
+                self._route_dref = None
+                self._pick_ref()
+            if guess is not None:
+                self._dref_req = self.route_refs.delta_ref(
+                    guess, frame["car_ordinal"], frame["car_class"], self.session_id)
+        if self._dref_req is not None and self._dref_req.done():
+            req, self._dref_req = self._dref_req, None
+            self._route_dref = req.result()
+            if self._route_dref is not None:
+                log.info("Session %d: delta reference = route %s lap %d (%.3fs, %s)",
+                         self.session_id, guess, self._route_dref.lap_id,
+                         self._route_dref.lap_time, self._route_dref.kind)
+            self._pick_ref()
+
+    def _pick_ref(self) -> None:
+        """Measure the delta against the faster of the session's best lap and
+        the route's stored best. A session lap that beats the stored one is
+        this car's new best on the route, hence "pb" even if the stored one
+        was a class best (a class best is only offered when this car had no
+        lap there at all)."""
+        s, r = self._sess_ref, self._route_dref
+        if r is not None and (s is None or r.lap_time <= s[3]):
+            self._ref_d, self._ref_t, self._ref_off = r.d, r.t, 0.0
+            self.delta_ref, self.delta_ref_lap = r.kind, r.lap_id
+        elif s is not None:
+            self._ref_d, self._ref_t, self._ref_off = s[0], s[1], s[2]
+            self.delta_ref = "pb" if r is not None else "session"
+            self.delta_ref_lap = s[4]
+        else:
+            self._ref_d = self._ref_t = None
+            self._ref_off = 0.0
+            self.delta_ref = self.delta_ref_lap = None
+
+    def _reset_refs(self) -> None:
+        self._sess_ref = None
+        self._route_dref = None
+        self._dref_req = None
+        self._dref_route = None
+        self._pick_ref()
 
     def race_mode(self, frame: dict) -> bool:
         """Is a timed event running right now, as opposed to free-roam
@@ -586,7 +651,7 @@ class SessionTracker:
         self._last_flush = t
         self._lap_id = None
         self._lap_number = None
-        self._ref_d = self._ref_t = None
+        self._reset_refs()
         self.best_lap_time = None
         self._prev_cur_lap = None
         self._prev_frame_rt = None
@@ -712,7 +777,7 @@ class SessionTracker:
         self.session_id = None
         self._race_off_since = None
         self._lap_number = None
-        self._ref_d = self._ref_t = None
+        self._reset_refs()
         self.best_lap_time = None
         self._prev_race_time = None
         self._prev_cur_lap = None
@@ -1156,7 +1221,10 @@ class SessionTracker:
             if full_trace and (self.best_lap_time is None
                                or lap_time < self.best_lap_time):
                 self.best_lap_time = lap_time
-                self._ref_d, self._ref_t = self._cur_d, self._cur_t
+                self._sess_ref = (self._cur_d, self._cur_t,
+                                  lap_origin(self._lap_start_dist) - self._lap_start_dist,
+                                  lap_time, self._lap_id)
+                self._pick_ref()
                 log.info("Session %d: new best lap %.3fs (lap %d)",
                          self.session_id, lap_time, ln + 1)
 
@@ -1230,8 +1298,13 @@ class SessionTracker:
         self._route_id = route_id
 
     def _delta(self, lap_dist: float, cur: float) -> float | None:
-        if not self._ref_d or cur <= 0 or lap_dist <= 0:
+        # lap_dist counts from where the lap opened; both laps are compared
+        # by progress from the start line (lap_origin), so a lap gridded
+        # behind the line is not ~70 units out against one that wasn't
+        prog = lap_dist - (lap_origin(self._lap_start_dist) - self._lap_start_dist)
+        if not self._ref_d or cur <= 0 or prog <= 0:
             return None
+        lap_dist = prog + self._ref_off  # in the reference's own coordinates
         d, rt = self._ref_d, self._ref_t
         if lap_dist >= d[-1]:
             ref = rt[-1]

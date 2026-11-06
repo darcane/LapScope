@@ -250,6 +250,11 @@ line drift apart within a few hundred metres even on the same road.
 - Free roam never guesses: it has no route.
 - Once it is sure, the Live map names the route and draws the whole course
   faintly under your line, taken from the lap it matched you against.
+- The live delta switches to your **best stored lap on that route in this
+  car** (**PB**), or the **class best** if this car has never driven it, never
+  a lap from another class. Laps you excluded and rewound laps don't count,
+  the same as for bests on the Analysis page. Whichever is faster, that or
+  this session's best, is the one you chase.
 - It is display-only. The session is still filed under the route the
   fingerprint picks at the line, and the server log says whether the two
   agreed (`live route guess …, fingerprint … (agree)`).

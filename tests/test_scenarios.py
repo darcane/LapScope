@@ -446,3 +446,85 @@ def test_live_route_guess_point_to_point_and_wta(tmp_path):
         newest = max(sessions(store), key=lambda s: s["id"])
         guesses = [g for s, g, _ in store.route_guesses if s == newest["id"]]
         assert guesses == [newest["route_id"]], name
+
+
+# -- the live delta from lap 1 (issue #108, phase 3) ---------------------------
+
+def _watch_delta():
+    """observe() for run(): every frame's (session, lap, dist, delta, ref, ref lap)."""
+    seen = []
+
+    def observe(frame, extras):
+        seen.append((extras["session_id"], frame["lap_number"], frame["distance_traveled"],
+                     extras["delta"], extras["delta_ref"], extras["delta_ref_lap"]))
+    return seen, observe
+
+
+def _in_car(ordinal, car_class):
+    def scenario(sim):
+        sim.f.update(car_ordinal=ordinal, car_class=car_class)
+        sim.event(75, "event")
+        sim.race_off()
+    return scenario
+
+
+def test_live_delta_from_lap_one_against_this_cars_best(tmp_path):
+    """Second visit in the same car: lap 1 gets a delta, measured against
+    the best stored lap on the route (pb). Once a lap of this session
+    completes, the faster of the two is the reference."""
+    first_seen, observe1 = _watch_delta()
+    first = run(_event, tmp_path, observe=observe1)
+    sid1 = sessions(first)[0]["id"]
+    best1 = min(completed_laps(first, sid1), key=lambda lap: lap["lap_time"])
+    # the first visit has nothing stored to chase: lap 1 has no delta, and
+    # lap 2 chases this session's own lap 1 (recognizing the route from it
+    # brings no stored reference - this session's laps are excluded)
+    assert all(dl is None for _, ln, _, dl, _, _ in first_seen if ln == 0)
+    assert {r for _, ln, _, dl, r, _ in first_seen if ln == 1 and dl is not None} == {"session"}
+
+    seen, observe = _watch_delta()
+    store = run(_event, tmp_path, seed=99, observe=observe)
+    sid = max(s["id"] for s in sessions(store))
+    lap1 = [x for x in seen if x[0] == sid and x[1] == 0]
+    timed = [x for x in lap1 if x[3] is not None]
+    assert timed, "lap 1 should have a delta"
+    assert timed[0][2] < 0.1 * 1954                 # from early in lap 1
+    assert {(x[4], x[5]) for x in timed} == {("pb", best1["id"])}
+    assert all(abs(x[3]) < 3.0 for x in timed)      # same line, similar pace
+
+    mine = min((lap for lap in completed_laps(store, sid) if lap["lap_number"] == 0),
+               key=lambda lap: lap["lap_time"])
+    faster = mine if mine["lap_time"] < best1["lap_time"] else best1
+    lap2 = [x for x in seen if x[0] == sid and x[1] == 1 and x[3] is not None]
+    assert lap2 and {(x[4], x[5]) for x in lap2} == {("pb", faster["id"])}
+
+
+def test_live_delta_class_best_but_never_another_class(tmp_path):
+    """No lap in this car on the route: the class best stands in. A car of
+    another class gets no stored reference at all - lap 1 has no delta."""
+    run(_in_car(269, 6), tmp_path)
+
+    seen, observe = _watch_delta()
+    run(_in_car(1000, 6), tmp_path, observe=observe)   # another car, same class
+    sid = max(x[0] for x in seen if x[0] is not None)
+    refs = {x[4] for x in seen if x[0] == sid and x[1] == 0 and x[3] is not None}
+    assert refs == {"class"}
+
+    seen, observe = _watch_delta()
+    store = run(_in_car(1001, 3), tmp_path, observe=observe)  # another class
+    sid = max(s["id"] for s in sessions(store))
+    assert all(x[3] is None for x in seen if x[0] == sid and x[1] == 0)
+    assert {x[4] for x in seen if x[0] == sid and x[1] == 1 and x[3] is not None} == {"session"}
+
+
+def test_live_delta_reference_goes_with_a_withdrawn_guess(tmp_path):
+    """Course a on record, a lap of course b: a is guessed (and chased) down
+    the shared straight, then withdrawn - and the delta goes with it."""
+    run(_event, tmp_path, course="a")
+    seen, observe = _watch_delta()
+    run(_event, tmp_path, course="b", observe=observe)
+    sid = max(x[0] for x in seen if x[0] is not None)
+    lap1 = [x for x in seen if x[0] == sid and x[1] == 0]
+    chased = [x for x in lap1 if x[4] == "pb"]
+    assert chased and max(x[2] for x in chased) < 900      # only before the split
+    assert all(x[3] is None for x in lap1 if x[2] > 900)   # nothing after it

@@ -11,8 +11,10 @@ The Live page is one **cockpit**, laid out like a car's instrument cluster: a
 tach with shift lights and the gear, speed, power and boost, a friction circle
 (G-forces — an impact past full scale pins to the rim and flashes red), per-tire
 grip (green = grip, red = sliding) with an understeer/oversteer indicator,
-throttle/brake/steering bars, and a lap timer with a **live delta vs. your
-session-best lap**. Below it, a **track map that draws itself as you drive** and
+throttle/brake/steering bars, and a lap timer with a **live delta**: on a route
+you've driven before it runs **from the first lap**, against your best lap there
+in this car (or the class best, if this car has never driven it), and against the
+session's best otherwise. The label says which. Below it, a **track map that draws itself as you drive** and
 a 12-second input trace. The map survives a mid-race pause (photo mode included)
 and marks contacts and jumps as they happen. On a route you've driven before, it
 **recognizes the route a few seconds into the first lap**, from your own

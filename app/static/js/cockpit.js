@@ -295,14 +295,18 @@ function makeTiming() {
   };
 }
 
-/* Top-right: delta to session best, as a number and a centre-zero bar —
-   slower (+) fills right in red, faster (−) fills left in green, full scale
-   at ±2 s. Crossing zero pulses the number once. */
+/* Top-right: the live delta, as a number and a centre-zero bar — slower (+)
+   fills right in red, faster (−) fills left in green, full scale at ±2 s.
+   Crossing zero pulses the number once. The label says what it is measured
+   against (`delta_ref`, issue #108): this car's best lap on the recognized
+   route, the class best when this car has none there, else the session's. */
 const DELTA_FULL_S = 2;
+const DELTA_REF_LABEL = { pb: "PB", class: "CLASS BEST", session: "SESSION BEST" };
+const DELTA_REF_WORDS = { pb: "your best here", class: "the class best here", session: "session best" };
 function makeDelta() {
   const cx = 1335, x0 = 1120, x1 = 1550, y = 226, H = 16;  // clear of the throttle bracket
   const c = new PIXI.Container();
-  const label = bitmapText("DELTA · SESSION BEST", 20, C.muted);
+  const label = bitmapText("DELTA", 20, C.muted);
   label.position.set(cx, 96);
   const num = bitmapText("—", 88, C.text);
   num.position.set(cx, 160);
@@ -317,10 +321,15 @@ function makeDelta() {
   });
   c.addChild(label, num, track, glowing(fillCtx, 8), ...ticks);
 
-  let lastSign = 0, pulse = 0;
+  let lastSign = 0, pulse = 0, labelRef;
   return {
     root: c,
     update(f, dt) {
+      const ref = f.delta_ref ?? null;
+      if (ref !== labelRef) {
+        labelRef = ref;
+        label.text = ref ? `DELTA · ${DELTA_REF_LABEL[ref] || "SESSION BEST"}` : "DELTA";
+      }
       const d = f.delta;
       fillCtx.clear();
       if (d == null) {
@@ -875,7 +884,7 @@ function describe() {
         ? `; race mode${liveRoute.name ? ` on ${liveRoute.name}` : ""},`
           + ` lap ${f.lap_number + 1}, position ${f.race_position || "unknown"},`
           + ` lap time ${fmtLap(f.current_lap || f.lap_elapsed)}`
-          + (f.delta == null ? "" : `, ${Math.abs(f.delta).toFixed(2)} s ${f.delta >= 0 ? "behind" : "ahead of"} session best`)
+          + (f.delta == null ? "" : `, ${Math.abs(f.delta).toFixed(2)} s ${f.delta >= 0 ? "behind" : "ahead of"} ${DELTA_REF_WORDS[f.delta_ref] || "session best"}`)
         : "; free roam"));
 }
 

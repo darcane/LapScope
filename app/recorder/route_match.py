@@ -23,6 +23,9 @@ The pieces, kept apart so each can be tested without the others:
   parsed, tens of ms), cached per route, invalidated when a session closes
   on that route.
 - `RouteMatcher`: the per-lap decision. Pure arithmetic, no I/O.
+- `DeltaRef` + `build_delta_ref` + `RouteRefs.delta_ref`: once the route is
+  known, the lap the live delta is measured against from lap 1 - the best
+  lap on the route in this car, else in this class (never another class).
 
 The guess is display-only: it is never written to the database. The
 completed-lap fingerprint stays the authority on which route a session was.
@@ -50,6 +53,10 @@ REF_START_MAX = 60.0     # the reference lap must start this close to progress
                          # 0, or the server joined it mid-lap
 REF_MIN_COVER = 0.9      # ... and cover this much of the route's length
 REF_CANDIDATE_LAPS = 3   # fastest laps tried per route for a usable trace
+
+DELTA_STEP = 2.0         # progress units between delta-reference samples: the
+                         # delta interpolates between them, so finer than REF_STEP
+DELTA_KINDS = ("pb", "class")  # same car first, then same class - in that order
 
 MATCH_TAU_S = 1.0        # smoothing time constant of the position error
 MATCH_ELIM_M = 60.0      # smoothed error above this drops a candidate
@@ -137,6 +144,59 @@ def build_ref(route_id: int, name: str | None, lap: dict,
     return RouteRef(route_id, name, lap["id"], d, x, z)
 
 
+@dataclass
+class DeltaRef:
+    """A stored lap as the live delta's reference: elapsed lap time `t` at
+    lap progress `d` (counted from `lap_origin`, like the matcher's)."""
+    kind: str        # "pb" (this car's best on the route) or "class"
+    lap_id: int
+    lap_time: float
+    d: list[float]
+    t: list[float]
+
+
+def lap_elapsed(frame: dict, open_rt: float) -> float:
+    """The lap clock the recorder runs on (laps.py `lap_elapsed` in
+    `_lap_logic`): CurrentLap while it runs, else race time since the lap
+    opened - so a stored lap's trace reads exactly like the live one."""
+    cur = frame["current_lap"]
+    if cur > 0.001:
+        return cur
+    rt = frame["current_race_time"]
+    return rt - open_rt if rt > open_rt + 0.05 else 0.0
+
+
+def build_delta_ref(kind: str, lap: dict, frames: list[tuple[float, bytes]],
+                    route_length: float) -> DeltaRef | None:
+    """One stored lap -> (progress, elapsed) samples, or None when it can't
+    serve: joined mid-lap, or not covering the route."""
+    start = lap_origin(lap["start_distance"])
+    d: list[float] = []
+    t: list[float] = []
+    open_rt = None
+    prev = None
+    for _t, raw in frames:
+        p = parse(raw)
+        if open_rt is None:
+            open_rt = p["current_race_time"]
+        prog = p["distance_traveled"] - start
+        if prev is not None and prev - prog > REF_RESET_DROP:
+            break  # the run is over: odometer reset at the finish
+        prev = prog
+        el = lap_elapsed(p, open_rt)
+        if prog <= 0.0 or el <= 0.0:
+            continue
+        while d and d[-1] >= prog:  # rewound: drop the undone stretch
+            d.pop()
+            t.pop()
+        if not d or prog >= d[-1] + DELTA_STEP:
+            d.append(prog)
+            t.append(el)
+    if len(d) < 2 or d[0] > REF_START_MAX or d[-1] < REF_MIN_COVER * route_length:
+        return None
+    return DeltaRef(kind, lap["id"], lap["lap_time"], d, t)
+
+
 class RouteRefs:
     """Reference traces for the routes near a start point, loaded in the
     background and cached per route.
@@ -165,6 +225,53 @@ class RouteRefs:
                 fut.set_exception(e)
             return fut
         return self.executor.submit(self._load_near, x, z)
+
+    def delta_ref(self, route_id: int, car_ordinal: int, car_class: int,
+                  exclude_session: int | None) -> Future:
+        """A future of the DeltaRef for a car on a route, or None if the
+        route has no usable lap in this car or this class. Not cached: it is
+        asked once per session, and a session that just closed may have set
+        the best lap."""
+        args = (route_id, car_ordinal, car_class, exclude_session)
+        if self.executor is None:
+            fut: Future = Future()
+            try:
+                fut.set_result(self._load_delta(*args))
+            except Exception as e:
+                fut.set_exception(e)
+            return fut
+        return self.executor.submit(self._load_delta, *args)
+
+    def _load_delta(self, route_id: int, car_ordinal: int, car_class: int,
+                    exclude_session: int | None) -> DeltaRef | None:
+        """The fastest eligible lap: same car, else same class. Eligible =
+        timed, not excluded by the user, not rewound - read through
+        `session_laps`, so manual edits count exactly as they do for bests
+        on the Analysis page. A rewound lap is a time the game let you take
+        twice; it is no target to chase."""
+        route = self.store.get_route(route_id)
+        if route is None:
+            return None
+        laps: dict[str, list[dict]] = {k: [] for k in DELTA_KINDS}
+        for s in self.store.route_sessions(route_id):
+            if s["id"] == exclude_session:
+                continue  # this session's own laps are the session best's job
+            kind = ("pb" if s["car_ordinal"] == car_ordinal
+                    else "class" if s["car_class"] == car_class else None)
+            if kind is None:
+                continue
+            for lap in self.store.session_laps(s["id"]):
+                if (lap["lap_time"] is None or lap["excluded"]
+                        or "rewind" in (lap["flags"] or "").split(",")):
+                    continue
+                laps[kind].append(lap)
+        for kind in DELTA_KINDS:
+            for lap in sorted(laps[kind], key=lambda x: x["lap_time"])[:REF_CANDIDATE_LAPS]:
+                ref = build_delta_ref(kind, lap, self.store.lap_frames(lap),
+                                      route["lap_length"])
+                if ref is not None:
+                    return ref
+        return None
 
     def invalidate(self, route_id: int | None) -> None:
         """A session on this route just closed: its best lap (the reference)

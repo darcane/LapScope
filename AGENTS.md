@@ -437,7 +437,17 @@ All the rules exist because some real behavior broke a naive version:
   withdrawn every lap); past the reference's end nothing is checked (the
   post-finish coast proves nothing). Gated on `race_mode` (free roam has no
   route), re-armed whenever the open lap is (re)based, carried over across
-  laps. It runs inside its own failure fence in `SessionTracker._route_match`:
+  laps. **Once a route is guessed, the live delta chases its stored best
+  from lap 1** (`RouteRefs.delta_ref`, loaded on the same thread): this car's
+  fastest timed lap there (`pb`), else the class best (`class`), never
+  another class; excluded and rewound laps don't count; the session's own
+  laps are left to the session best. `_pick_ref` measures against the faster
+  of that and the session best (a session lap that beats it is the new
+  `pb`); a withdrawn guess takes the stored reference away. The delta
+  compares **progress from the start line** (`lap_origin`) — before #108 a
+  lap gridded behind the line read ~70 units off the session best's trace.
+  WS extras `delta_ref` / `delta_ref_lap` say what is being chased.
+  It runs inside its own failure fence in `SessionTracker._route_match`:
   an error turns matching off for the session, logged once, and recording
   carries on. Every session close logs `live route guess X, fingerprint Y
   (agree|DISAGREE)` — grep for DISAGREE after driving. Calibrated with
@@ -599,4 +609,7 @@ a row here, a test, and usually a simulator flag.
 | Live guess, shared start | `--course a`, `--course b`, then `--course b` again | the third run is not guessed until the courses part (>600 m), then as b, never a |
 | Live guess, unrecorded course | `--course a`, then `--course b` | b guessed as a down the shared straight, withdrawn after the split, not re-guessed as a; lap 2 recognized as b |
 | Live guess, free roam | `--race 3`, then `--freeroam 60` | no guess (race_mode gates the matcher) |
+| Live delta from lap 1 | two runs of `--race 3` (same DB) | run 2's lap 1 has a delta, label DELTA · PB, vs run 1's fastest lap; from lap 2 the faster of that and run 2's best. Run 1 has no delta on lap 1 and chases its own session best (SESSION BEST) |
+| Live delta, other car | same route in another car of the same class, then one of another class | CLASS BEST on lap 1; another class gets no delta on lap 1 |
+| Live delta, withdrawn guess | `--course a`, then `--course b` | the PB delta runs only down the shared straight and goes with the guess |
 | Race-mode gating | `--freeroam 35 --race 3` | chip FREE ROAM then RACE MODE; timer dashed in free roam; live map draws the race only |

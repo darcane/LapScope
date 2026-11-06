@@ -64,12 +64,15 @@ class FakeSocket:
         self.guesses: list[tuple[int | None, int | None, float]] = []
         self._guess = None
         self.ref_laps: list[int | None] = []  # every change of route_ref_lap
+        self.observe = None  # optional observe(frame, extras), every packet
 
     def sendto(self, data: bytes, _addr) -> None:
         self.t = self.n * self.dt
         self.n += 1
         frame = parse(data)
         extras = self.tracker.on_frame(self.t, data, frame)
+        if self.observe is not None:
+            self.observe(frame, extras)
         if extras["route_guess"] != self._guess:
             self._guess = extras["route_guess"]
             self.guesses.append((extras["session_id"], self._guess,
@@ -83,7 +86,8 @@ class FakeSocket:
 
 
 def run(scenario, tmp_path, *, rate: float = RATE, wet: bool = False,
-        jumps: bool = False, seed: int = 1234, course: str = "a") -> Store:
+        jumps: bool = False, seed: int = 1234, course: str = "a",
+        observe=None) -> Store:
     """Play `scenario(sim)` through a fresh tracker + temp-file store and return
     the closed store for assertions. A fixed RNG seed keeps the simulator's
     pace/puddle jitter deterministic so lap counts and flags are stable.
@@ -91,7 +95,9 @@ def run(scenario, tmp_path, *, rate: float = RATE, wet: bool = False,
     Calling it again with the same `tmp_path` adds to the same database -
     how a test gives the live route matcher a history to recognize. The
     route guesses the tracker reported land on `store.route_guesses` (see
-    FakeSocket.guesses); references load inline here, not on a thread."""
+    FakeSocket.guesses); references load inline here, not on a thread.
+    `observe(frame, extras)`, if given, sees every packet and the tracker's
+    answer to it - for assertions on per-frame extras like the delta."""
     random.seed(seed)
     simulator.JUMPS = jumps
     simulator.set_course(course)
@@ -101,6 +107,7 @@ def run(scenario, tmp_path, *, rate: float = RATE, wet: bool = False,
     sim = simulator.Sim(args)
     sim.sock.close()  # the real UDP socket Sim() opened; we don't use it
     sim.sock = FakeSocket(tracker, rate)
+    sim.sock.observe = observe
     scenario(sim)
     # the game/simulator just stops sending; the production watchdog closes the
     # session after RACE_OFF_GRACE of silence. shutdown() does the same close.

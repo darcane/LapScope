@@ -800,6 +800,15 @@ class Store:
                 " ORDER BY l.lap_time LIMIT ?", (route_id, limit)).fetchall()
         return [dict(r) for r in rows]
 
+    def route_sessions(self, route_id: int) -> list[dict]:
+        """Every session filed under the route, with the car it was driven
+        in - the live delta's reference search (route_match.RouteRefs)."""
+        with self.reader() as conn:
+            rows = conn.execute(
+                "SELECT id, car_ordinal, car_class FROM sessions WHERE route_id = ?",
+                (route_id,)).fetchall()
+        return [dict(r) for r in rows]
+
     def set_route_outline(self, route_id: int, outline: str) -> None:
         with self.reader() as conn:
             conn.execute("UPDATE routes SET outline = ? WHERE id = ?",
