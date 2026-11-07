@@ -1607,15 +1607,6 @@ function togglePin(idx) {
   for (const c of state.charts) c.redraw(); // pin line on every chart
 }
 
-function lowerBound(xs, x) {
-  let lo = 0, hi = xs.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (xs[mid] < x) lo = mid + 1; else hi = mid;
-  }
-  return lo;
-}
-
 /* The hover / pin dots, in draw order, for both renderers: { x, y, r, color,
    fill, ring, width } in CSS pixels. An index lives on the reference lap's
    arrays; every other lap is marked at the same track position (its own

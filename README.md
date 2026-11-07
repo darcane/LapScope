@@ -78,8 +78,9 @@ Then just drive. Telemetry is only sent while you're driving (not in menus). You
 ## Features
 
 - **Live cockpit** — one car-dashboard view: tach and shift lights, friction circle,
-  per-tire grip, inputs, and a lap timer with a **live delta to your session best**,
-  on a track map that draws as you drive.
+  per-tire grip, inputs, and a lap timer with a **live delta to your best lap on the
+  route from lap 1** (recognized while you drive), on a track map that draws as you
+  drive — with that best lap racing you as a **ghost**.
 - **Lap comparison** — overlay up to 6 laps, even across sessions, on
   distance-aligned delta, speed, input and slip charts.
 - **Racing line in 2D and 3D** — colored by speed or tire slip, with elevation and

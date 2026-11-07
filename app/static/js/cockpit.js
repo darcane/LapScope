@@ -295,14 +295,18 @@ function makeTiming() {
   };
 }
 
-/* Top-right: delta to session best, as a number and a centre-zero bar —
-   slower (+) fills right in red, faster (−) fills left in green, full scale
-   at ±2 s. Crossing zero pulses the number once. */
+/* Top-right: the live delta, as a number and a centre-zero bar — slower (+)
+   fills right in red, faster (−) fills left in green, full scale at ±2 s.
+   Crossing zero pulses the number once. The label says what it is measured
+   against (`delta_ref`, issue #108): this car's best lap on the recognized
+   route, the class best when this car has none there, else the session's. */
 const DELTA_FULL_S = 2;
+const DELTA_REF_LABEL = { pb: "PB", class: "CLASS BEST", session: "SESSION BEST" };
+const DELTA_REF_WORDS = { pb: "your best here", class: "the class best here", session: "session best" };
 function makeDelta() {
   const cx = 1335, x0 = 1120, x1 = 1550, y = 226, H = 16;  // clear of the throttle bracket
   const c = new PIXI.Container();
-  const label = bitmapText("DELTA · SESSION BEST", 20, C.muted);
+  const label = bitmapText("DELTA", 20, C.muted);
   label.position.set(cx, 96);
   const num = bitmapText("—", 88, C.text);
   num.position.set(cx, 160);
@@ -317,10 +321,15 @@ function makeDelta() {
   });
   c.addChild(label, num, track, glowing(fillCtx, 8), ...ticks);
 
-  let lastSign = 0, pulse = 0;
+  let lastSign = 0, pulse = 0, labelRef;
   return {
     root: c,
     update(f, dt) {
+      const ref = f.delta_ref ?? null;
+      if (ref !== labelRef) {
+        labelRef = ref;
+        label.text = ref ? `DELTA · ${DELTA_REF_LABEL[ref] || "SESSION BEST"}` : "DELTA";
+      }
       const d = f.delta;
       fillCtx.clear();
       if (d == null) {
@@ -531,8 +540,29 @@ function makeTires() {
    Jumps (amber dashed flight, takeoff ring → touchdown arrow; a hard landing
    glows with a white impact ring) and contact sparks (red, glowing) are the
    classic map's glyphs, drawn in box coordinates so they keep their size,
-   and redrawn only when live.js adds one or the fit moves. */
+   and redrawn only when live.js adds one or the fit moves.
+   Once the recorder recognizes the route (liveRoute, issue #108) the whole
+   course is drawn faintly UNDER the path, from the stored lap it was matched
+   against, and the fit takes it in — so the scale is final from the match on
+   instead of growing with the lap. It is one Graphics in the same world
+   space, built when its trace arrives and on the same 15 % scale drift.
+   The ghost (liveGhost) is the lap the delta chases, at the live lap clock:
+   a hollow accent ring under the car, with a GHOST key in the title row
+   while it is on the map. */
 const MAP_BOX = { x: 40, y: 620, w: 720, h: 260 };
+const MAP_TITLE_MAX = 40;  // characters of route name the title row fits
+
+/* The recognized route for the map's title row, or "" while there is none
+   (or its name is still on the way). The bitmap font is ASCII (pixi-kit.js):
+   accents fold to their base letter, anything else drops out, and a name
+   with nothing printable left still says the route was recognized. */
+function routeTitle(r) {
+  if (r.id == null || r.name == null) return "";
+  const ascii = r.name.normalize("NFKD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^\x20-\x7e]/g, "").replace(/\s+/g, " ").trim().toUpperCase();
+  if (!ascii) return r.name ? "KNOWN ROUTE" : "UNNAMED ROUTE";
+  return ascii.length > MAP_TITLE_MAX ? `${ascii.slice(0, MAP_TITLE_MAX - 3).trimEnd()}...` : ascii;
+}
 const MAP_CHUNK = 256;
 function makeMap() {
   const B = MAP_BOX, pad = 18, padTop = 40;  // padTop: clear of the title row
@@ -543,9 +573,19 @@ function makeMap() {
   title.position.set(B.x + 16, B.y + 18);
   const hint = bitmapText("THE TRACK DRAWS HERE ONCE AN EVENT STARTS", 20, C.muted);
   hint.position.set(B.x + B.w / 2, B.y + B.h / 2);
+  const ghostKey = new PIXI.Container();         // "o GHOST", right of the title
+  const ghostLabel = bitmapText("GHOST", 18, C.muted, 1, 0.5);
+  ghostLabel.position.set(B.x + B.w - 16, B.y + 18);
+  const ghostRing = new PIXI.Graphics();
+  let ringAccent = null;                        // the accent the key was drawn in
+  ghostKey.addChild(ghostRing, ghostLabel);
+  ghostKey.visible = false;
   const clip = new PIXI.Graphics().rect(B.x, B.y, B.w, B.h).fill(0xffffff);
   const world = new PIXI.Container();
   world.mask = clip;
+  const outline = new PIXI.Graphics();         // the recognized route, under ...
+  const pathLayer = new PIXI.Container();      // ... the chunks of the live path
+  world.addChild(outline, pathLayer);
   const carCtx = new PIXI.GraphicsContext();
   const jumpCtx = new PIXI.GraphicsContext();   // soft landings
   const hardCtx = new PIXI.GraphicsContext();   // hard landings: same glyph, glowing
@@ -555,11 +595,20 @@ function makeMap() {
   marks.mask = new PIXI.Graphics().rect(B.x, B.y, B.w, B.h).fill(0xffffff);
   marks.addChild(marks.mask, new PIXI.Graphics(jumpCtx), glowing(hardCtx, 6),
     new PIXI.Graphics(ringCtx), glowing(sparkCtx, 6));
-  c.addChild(frame, title, hint, clip, world, marks, glowing(carCtx, 8));
+  c.addChild(frame, title, ghostKey, hint, clip, world, marks, glowing(carCtx, 8));
   let marksKey = "";
+  let titleGen = -1;
 
   let chunks = [], builtGen = -1, builtLen = 0, builtScale = 0;
+  let outlineTrace = null, outlineScale = 0;
   const strokeFor = (sc) => ({ width: 2.5 / sc, color: accent, alpha: 0.6, join: "round", cap: "round" });
+  function drawOutline(tr, sc) {
+    outline.clear().moveTo(tr.xs[0], tr.zs[0]);
+    for (let i = 1; i < tr.xs.length; i++) outline.lineTo(tr.xs[i], tr.zs[i]);
+    outline.stroke({ width: 7 / sc, color: C.muted, alpha: 0.2, join: "round", cap: "round" });
+    outlineTrace = tr;
+    outlineScale = sc;
+  }
   function drawChunk(g, i0, i1, sc) {
     const pts = liveMap.pts;
     g.clear().moveTo(pts[i0][0], pts[i0][1]);
@@ -567,7 +616,7 @@ function makeMap() {
     g.stroke(strokeFor(sc));
   }
   function rebuildAll(sc) {
-    world.removeChildren().forEach((ch) => ch.destroy());
+    pathLayer.removeChildren().forEach((ch) => ch.destroy());
     chunks = [];
     builtLen = 0;
     builtScale = sc;
@@ -576,20 +625,42 @@ function makeMap() {
   return {
     root: c,
     update(f) {
+      if (liveRoute.gen !== titleGen) {
+        titleGen = liveRoute.gen;
+        const name = routeTitle(liveRoute);
+        title.text = name ? `TRACK MAP · ${name}` : "TRACK MAP";
+      }
       const pts = liveMap.pts, n = pts.length;
       hint.visible = n < 2;
       carCtx.clear();
+      ghostKey.visible = n >= 2 && liveGhost.pos != null;
+      if (ghostKey.visible && ringAccent !== accent) {
+        ringAccent = accent;
+        ghostRing.clear().circle(B.x + B.w - 16 - ghostLabel.width - 14, B.y + 18, 5)
+          .fill({ color: accent, alpha: 0.3 }).stroke({ width: 2, color: accent });
+      }
       if (n < 2) {
         if (chunks.length) rebuildAll(0);
+        if (outlineTrace) { outline.clear(); outlineTrace = null; }
         if (marksKey) { marksKey = ""; for (const g of [jumpCtx, hardCtx, ringCtx, sparkCtx]) g.clear(); }
         return;
       }
-      const spanX = Math.max(liveMap.maxX - liveMap.minX, 1), spanZ = Math.max(liveMap.maxZ - liveMap.minZ, 1);
+      const tr = liveRoute.trace;
+      const minX = tr ? Math.min(liveMap.minX, tr.minX) : liveMap.minX;
+      const maxX = tr ? Math.max(liveMap.maxX, tr.maxX) : liveMap.maxX;
+      const minZ = tr ? Math.min(liveMap.minZ, tr.minZ) : liveMap.minZ;
+      const maxZ = tr ? Math.max(liveMap.maxZ, tr.maxZ) : liveMap.maxZ;
+      const spanX = Math.max(maxX - minX, 1), spanZ = Math.max(maxZ - minZ, 1);
       const sc = Math.min((B.w - 2 * pad) / spanX, (B.h - pad - padTop) / spanZ);
       // world (x, z) -> box: x right, z up (same handedness as the classic map)
       world.scale.set(sc, -sc);
-      world.position.set(B.x + (B.w - spanX * sc) / 2 - liveMap.minX * sc,
-        B.y + padTop + (B.h - pad - padTop + spanZ * sc) / 2 + liveMap.minZ * sc);
+      world.position.set(B.x + (B.w - spanX * sc) / 2 - minX * sc,
+        B.y + padTop + (B.h - pad - padTop + spanZ * sc) / 2 + minZ * sc);
+      if (!tr) {
+        if (outlineTrace) { outline.clear(); outlineTrace = null; }
+      } else if (tr !== outlineTrace || Math.abs(sc / outlineScale - 1) > 0.15) {
+        drawOutline(tr, sc);
+      }
       if (liveMap.gen !== builtGen || Math.abs(sc / builtScale - 1) > 0.15) {
         rebuildAll(sc);
         builtGen = liveMap.gen;
@@ -598,7 +669,7 @@ function makeMap() {
         // chunk k covers points [k*CHUNK, (k+1)*CHUNK] — sharing an end point
         // with the next, so the line has no gaps
         for (let k = Math.max(0, chunks.length - 1); k * MAP_CHUNK < n - 1; k++) {
-          if (!chunks[k]) { chunks[k] = new PIXI.Graphics(); world.addChild(chunks[k]); }
+          if (!chunks[k]) { chunks[k] = new PIXI.Graphics(); pathLayer.addChild(chunks[k]); }
           drawChunk(chunks[k], k * MAP_CHUNK, Math.min(n - 1, (k + 1) * MAP_CHUNK), builtScale);
         }
         builtLen = n;
@@ -615,6 +686,11 @@ function makeMap() {
         for (const [hx, hz] of liveMap.hits) sparkGlyph(sparkCtx, X(hx), Y(hz));
       }
       carCtx.circle(X(pts[0][0]), Y(pts[0][1]), 5).fill(C.good);
+      const gp = liveGhost.pos;
+      if (gp) {
+        carCtx.circle(X(gp[0]), Y(gp[1]), 6)
+          .fill({ color: accent, alpha: 0.3 }).stroke({ width: 2, color: accent });
+      }
       if (mapActive(f) && f.session_id != null && f.pos_x != null) {
         const cx = X(f.pos_x), cy = Y(f.pos_z), hx = Math.sin(f.yaw), hz = Math.cos(f.yaw);
         carCtx.circle(cx, cy, 6).fill(C.text)
@@ -826,9 +902,10 @@ function describe() {
       + ` ${Math.round(f.current_engine_rpm)} of ${Math.round(f.engine_max_rpm)} rpm,`
       + ` throttle ${Math.round(f.accel / 2.55)}%, brake ${Math.round(f.brake / 2.55)}%`
       + (f.race_mode
-        ? `; race mode, lap ${f.lap_number + 1}, position ${f.race_position || "unknown"},`
+        ? `; race mode${liveRoute.name ? ` on ${liveRoute.name}` : ""},`
+          + ` lap ${f.lap_number + 1}, position ${f.race_position || "unknown"},`
           + ` lap time ${fmtLap(f.current_lap || f.lap_elapsed)}`
-          + (f.delta == null ? "" : `, ${Math.abs(f.delta).toFixed(2)} s ${f.delta >= 0 ? "behind" : "ahead of"} session best`)
+          + (f.delta == null ? "" : `, ${Math.abs(f.delta).toFixed(2)} s ${f.delta >= 0 ? "behind" : "ahead of"} ${DELTA_REF_WORDS[f.delta_ref] || "session best"}`)
         : "; free roam"));
 }
 

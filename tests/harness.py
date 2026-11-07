@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.recorder.laps import SessionTracker  # noqa: E402
+from app.recorder.route_match import RouteRefs  # noqa: E402
 from app.recorder.store import Store  # noqa: E402
 from app.telemetry.packet import parse  # noqa: E402
 import tools.simulator as simulator  # noqa: E402
@@ -58,34 +59,63 @@ class FakeSocket:
         self.dt = 1.0 / rate
         self.n = 0
         self.t = 0.0
+        # every change of the live route guess: (session_id, route_guess,
+        # lap progress when it changed) - the WS extra the Live page reads
+        self.guesses: list[tuple[int | None, int | None, float]] = []
+        self._guess = None
+        self.ref_laps: list[int | None] = []  # every change of route_ref_lap
+        self.observe = None  # optional observe(frame, extras), every packet
 
     def sendto(self, data: bytes, _addr) -> None:
         self.t = self.n * self.dt
         self.n += 1
-        self.tracker.on_frame(self.t, data, parse(data))
+        frame = parse(data)
+        extras = self.tracker.on_frame(self.t, data, frame)
+        if self.observe is not None:
+            self.observe(frame, extras)
+        if extras["route_guess"] != self._guess:
+            self._guess = extras["route_guess"]
+            self.guesses.append((extras["session_id"], self._guess,
+                                 frame["distance_traveled"]))
+        ref_lap = extras["route_ref_lap"]
+        if ref_lap != (self.ref_laps[-1] if self.ref_laps else None):
+            self.ref_laps.append(ref_lap)
 
     def close(self) -> None:
         pass
 
 
 def run(scenario, tmp_path, *, rate: float = RATE, wet: bool = False,
-        jumps: bool = False, seed: int = 1234) -> Store:
+        jumps: bool = False, seed: int = 1234, course: str = "a",
+        observe=None) -> Store:
     """Play `scenario(sim)` through a fresh tracker + temp-file store and return
     the closed store for assertions. A fixed RNG seed keeps the simulator's
-    pace/puddle jitter deterministic so lap counts and flags are stable."""
+    pace/puddle jitter deterministic so lap counts and flags are stable.
+
+    Calling it again with the same `tmp_path` adds to the same database -
+    how a test gives the live route matcher a history to recognize. The
+    route guesses the tracker reported land on `store.route_guesses` (see
+    FakeSocket.guesses); references load inline here, not on a thread.
+    `observe(frame, extras)`, if given, sees every packet and the tracker's
+    answer to it - for assertions on per-frame extras like the delta."""
     random.seed(seed)
     simulator.JUMPS = jumps
+    simulator.set_course(course)
     store = Store(str(Path(tmp_path) / "telemetry.db"))
-    tracker = SessionTracker(store)
+    tracker = SessionTracker(store, route_refs=RouteRefs(store))
     args = SimpleNamespace(host="127.0.0.1", port=9999, rate=rate, wet=wet)
     sim = simulator.Sim(args)
     sim.sock.close()  # the real UDP socket Sim() opened; we don't use it
     sim.sock = FakeSocket(tracker, rate)
+    sim.sock.observe = observe
     scenario(sim)
     # the game/simulator just stops sending; the production watchdog closes the
     # session after RACE_OFF_GRACE of silence. shutdown() does the same close.
     tracker.shutdown(sim.sock.t + 1.0)
     store.close()  # checkpoint WAL and release the file for reader() + teardown
+    store.route_guesses = sim.sock.guesses
+    store.guess_ref_laps = sim.sock.ref_laps
+    simulator.set_course("a")
     return store
 
 

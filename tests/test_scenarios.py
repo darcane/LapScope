@@ -335,3 +335,225 @@ def test_route_kind_circuit_for_geometric_laps(tmp_path):
 
     store = run(scenario, tmp_path)
     assert route_of(store, sessions(store)[0]["id"])["kind"] == "circuit"
+
+
+# -- live route recognition (issue #108) --------------------------------------
+# The guess is a WS extra, never stored: `store.route_guesses` is every change
+# of it the harness saw, as (session_id, route_guess, DistanceTraveled).
+
+def _event(sim):
+    sim.event(75, "event")
+    sim.race_off()
+
+
+def test_live_route_guess_on_lap_one(tmp_path):
+    """Second visit to a route: recognized early in lap 1, and the guess is
+    the route the fingerprint files the session under at the line."""
+    first = run(_event, tmp_path)
+    route = sessions(first)[0]["route_id"]
+    # no history on lap 1; lap 2 is recognized from this session's own lap 1
+    assert [(g, d > 1954) for _, g, d in first.route_guesses] == [(route, True)]
+
+    store = run(_event, tmp_path)
+    sid = max(s["id"] for s in sessions(store))
+    assert sessions(store)[0]["route_id"] == route
+    guesses = [(s, g, d) for s, g, d in store.route_guesses if g is not None]
+    assert guesses and guesses[0][:2] == (sid, route)
+    assert guesses[0][2] < 0.1 * 1954           # within the first ~200 m
+    # held for the rest of the session - no flapping at lap boundaries
+    assert [g for s, g, _ in store.route_guesses if s == sid] == [route]
+
+
+def test_live_route_guess_names_its_reference_lap(tmp_path):
+    """route_ref_lap is the stored lap the guess was matched against - the
+    line the Live page draws ahead of the car. It is the route's fastest
+    lap, and /laps/{id}/data hands its world positions over in one request."""
+    from types import SimpleNamespace
+
+    from app.api.routes import lap_data
+
+    first = run(_event, tmp_path)
+    first_sid = sessions(first)[0]["id"]
+    fastest = min(completed_laps(first, first_sid), key=lambda lap: lap["lap_time"])
+
+    store = run(_event, tmp_path)
+    assert store.guess_ref_laps == [fastest["id"]]   # one fetch for the session
+    req = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(store=store)))
+    d = lap_data(fastest["id"], req, channels="pos_x,pos_z", max_points=1500)
+    xs, zs = d["channels"]["pos_x"], d["channels"]["pos_z"]
+    assert 50 <= len(xs) <= 1500
+    assert 830 < max(xs) - min(xs) < 850      # the whole 840 x 240 m loop
+    assert 230 < max(zs) - min(zs) < 250
+
+
+def test_live_route_guess_shared_start_line(tmp_path):
+    """--course a and --course b grid on the same line and share 600 m of
+    straight. With both on record, a lap of b is not guessed until the two
+    part, and then as b - never as a."""
+    a = sessions(run(_event, tmp_path, course="a"))[0]["route_id"]
+    store = run(_event, tmp_path, course="b")
+    b = max(sessions(store), key=lambda s: s["id"])["route_id"]
+    assert a != b                               # two routes on record
+
+    store = run(_event, tmp_path, course="b")
+    guesses = [(g, d) for _, g, d in store.route_guesses if g is not None]
+    assert guesses and guesses[0][0] == b
+    assert guesses[0][1] > 600                  # only once they have parted
+    assert all(g == b for g, _ in guesses)
+
+
+def test_live_route_guess_withdrawn_on_an_unrecorded_course(tmp_path):
+    """Only course a on record, then a lap of b: indistinguishable from a
+    down the shared straight, so a is guessed - and withdrawn once the car
+    goes straight on where a turns. Not re-guessed as a on the next lap -
+    which is recognized as b instead, from this session's own first lap."""
+    a = sessions(run(_event, tmp_path, course="a"))[0]["route_id"]
+    store = run(_event, tmp_path, course="b")
+    sid = max(s["id"] for s in sessions(store))
+    seen = [(g, d) for s, g, d in store.route_guesses if s == sid]
+    assert seen[0][0] == a and seen[0][1] < 600  # the honest early guess
+    assert seen[1][0] is None and seen[1][1] > 600  # withdrawn after the split
+    b = max(sessions(store), key=lambda s: s["id"])["route_id"]
+    assert b != a
+    assert seen[2:] == [(b, seen[2][1])] and seen[2][1] > 2554  # lap 2, as b
+
+
+def test_live_route_guess_never_in_free_roam(tmp_path):
+    """Free roam has no route: cruising the very loop on record guesses
+    nothing (race_mode gates the matcher)."""
+    run(_event, tmp_path)
+
+    def cruise(sim):
+        sim.freeroam(60)
+        sim.race_off()
+
+    store = run(cruise, tmp_path)
+    assert store.route_guesses == []
+
+
+def test_live_route_guess_point_to_point_and_wta(tmp_path):
+    """The other event shapes recognize their route on the second visit:
+    a dirt sprint (lap opens on the grid, CurrentLap counting) and a World
+    Time Attack (lap re-based at the launch)."""
+    for name, drive in (("dirt", lambda sim: sim.dirt_sprint(40)),
+                        ("wta", lambda sim: sim.wta(2))):
+        def scenario(sim, drive=drive):
+            drive(sim)
+            sim.race_off()
+
+        run(scenario, tmp_path / name)
+        store = run(scenario, tmp_path / name)
+        newest = max(sessions(store), key=lambda s: s["id"])
+        guesses = [g for s, g, _ in store.route_guesses if s == newest["id"]]
+        assert guesses == [newest["route_id"]], name
+
+
+# -- the live delta from lap 1 (issue #108, phase 3) ---------------------------
+
+def _watch_delta():
+    """observe() for run(): every frame's (session, lap, dist, delta, ref, ref lap)."""
+    seen = []
+
+    def observe(frame, extras):
+        seen.append((extras["session_id"], frame["lap_number"], frame["distance_traveled"],
+                     extras["delta"], extras["delta_ref"], extras["delta_ref_lap"]))
+    return seen, observe
+
+
+def _in_car(ordinal, car_class):
+    def scenario(sim):
+        sim.f.update(car_ordinal=ordinal, car_class=car_class)
+        sim.event(75, "event")
+        sim.race_off()
+    return scenario
+
+
+def test_live_delta_from_lap_one_against_this_cars_best(tmp_path):
+    """Second visit in the same car: lap 1 gets a delta, measured against
+    the best stored lap on the route (pb). Once a lap of this session
+    completes, the faster of the two is the reference."""
+    first_seen, observe1 = _watch_delta()
+    first = run(_event, tmp_path, observe=observe1)
+    sid1 = sessions(first)[0]["id"]
+    best1 = min(completed_laps(first, sid1), key=lambda lap: lap["lap_time"])
+    # the first visit has nothing stored to chase: lap 1 has no delta, and
+    # lap 2 chases this session's own lap 1 (recognizing the route from it
+    # brings no stored reference - this session's laps are excluded)
+    assert all(dl is None for _, ln, _, dl, _, _ in first_seen if ln == 0)
+    assert {r for _, ln, _, dl, r, _ in first_seen if ln == 1 and dl is not None} == {"session"}
+
+    seen, observe = _watch_delta()
+    store = run(_event, tmp_path, seed=99, observe=observe)
+    sid = max(s["id"] for s in sessions(store))
+    lap1 = [x for x in seen if x[0] == sid and x[1] == 0]
+    timed = [x for x in lap1 if x[3] is not None]
+    assert timed, "lap 1 should have a delta"
+    assert timed[0][2] < 0.1 * 1954                 # from early in lap 1
+    assert {(x[4], x[5]) for x in timed} == {("pb", best1["id"])}
+    assert all(abs(x[3]) < 3.0 for x in timed)      # same line, similar pace
+
+    mine = min((lap for lap in completed_laps(store, sid) if lap["lap_number"] == 0),
+               key=lambda lap: lap["lap_time"])
+    faster = mine if mine["lap_time"] < best1["lap_time"] else best1
+    lap2 = [x for x in seen if x[0] == sid and x[1] == 1 and x[3] is not None]
+    assert lap2 and {(x[4], x[5]) for x in lap2} == {("pb", faster["id"])}
+
+
+def test_live_delta_class_best_but_never_another_class(tmp_path):
+    """No lap in this car on the route: the class best stands in. A car of
+    another class gets no stored reference at all - lap 1 has no delta."""
+    run(_in_car(269, 6), tmp_path)
+
+    seen, observe = _watch_delta()
+    run(_in_car(1000, 6), tmp_path, observe=observe)   # another car, same class
+    sid = max(x[0] for x in seen if x[0] is not None)
+    refs = {x[4] for x in seen if x[0] == sid and x[1] == 0 and x[3] is not None}
+    assert refs == {"class"}
+
+    seen, observe = _watch_delta()
+    store = run(_in_car(1001, 3), tmp_path, observe=observe)  # another class
+    sid = max(s["id"] for s in sessions(store))
+    assert all(x[3] is None for x in seen if x[0] == sid and x[1] == 0)
+    assert {x[4] for x in seen if x[0] == sid and x[1] == 1 and x[3] is not None} == {"session"}
+
+
+def test_live_delta_reference_goes_with_a_withdrawn_guess(tmp_path):
+    """Course a on record, a lap of course b: a is guessed (and chased) down
+    the shared straight, then withdrawn - and the delta goes with it."""
+    run(_event, tmp_path, course="a")
+    seen, observe = _watch_delta()
+    run(_event, tmp_path, course="b", observe=observe)
+    sid = max(x[0] for x in seen if x[0] is not None)
+    lap1 = [x for x in seen if x[0] == sid and x[1] == 0]
+    chased = [x for x in lap1 if x[4] == "pb"]
+    assert chased and max(x[2] for x in chased) < 900      # only before the split
+    assert all(x[3] is None for x in lap1 if x[2] > 900)   # nothing after it
+
+
+def test_live_ghost_lap_is_on_disk_when_it_is_named(tmp_path):
+    """The Live page fetches the ghost lap (delta_ref_lap) the moment it
+    changes. When it changes to a lap this session just completed, that
+    lap's frames have to be in the database already - not up to a second
+    of them still buffered, or the ghost stops short of the line."""
+    import sqlite3
+    db = tmp_path / "telemetry.db"
+    checked = []
+
+    def observe(frame, extras):
+        lap = extras.get("delta_ref_lap")
+        if extras.get("delta_ref") != "session" or lap in {c[0] for c in checked}:
+            return
+        con = sqlite3.connect(db)
+        try:
+            sid, ended = con.execute(
+                "SELECT session_id, ended_t FROM laps WHERE id = ?", (lap,)).fetchone()
+            last = con.execute("SELECT max(t) FROM frames WHERE session_id = ?",
+                               (sid,)).fetchone()[0]
+        finally:
+            con.close()
+        checked.append((lap, ended, last))
+
+    run(_event, tmp_path, observe=observe)
+    assert checked, "a session best should have become the reference"
+    for lap, ended, last in checked:
+        assert last is not None and last >= ended, f"lap {lap} not flushed"

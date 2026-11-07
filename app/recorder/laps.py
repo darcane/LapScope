@@ -113,6 +113,8 @@ import logging
 import math
 import os
 
+from .route_match import RouteMatcher, lap_origin
+
 log = logging.getLogger("lapscope.recorder")
 
 RACE_OFF_GRACE = 15.0
@@ -246,8 +248,15 @@ def suggest_track_type(*, geometric_laps: int, drive_s: float, drive_n: int,
 
 
 class SessionTracker:
-    def __init__(self, store) -> None:
+    def __init__(self, store, route_refs=None) -> None:
+        """route_refs: a route_match.RouteRefs, which turns on live route
+        recognition (issue #108); None (reprocess, most tests) leaves it off."""
         self.store = store
+        self.route_refs = route_refs
+        self._matcher = RouteMatcher()
+        self._match_key: tuple | None = None  # the lap the matcher is armed for
+        self._match_req = None                # pending RouteRefs.near() future
+        self._match_off = False               # failed: off until the session ends
         self.session_id: int | None = None
         self.last_frame_t: float | None = None
         self._frame_count = 0
@@ -268,8 +277,20 @@ class SessionTracker:
         self._lap_bb = [0.0, 0.0, 0.0, 0.0]  # min x, max x, min z, max z
         self._cur_d: list[float] = []   # lap distance trace of the current lap
         self._cur_t: list[float] = []   # matching elapsed lap time
-        self._ref_d: list[float] | None = None  # best lap reference
+        # the live delta's reference (issue #108): the faster of this
+        # session's best lap and the route's stored best (same car, else same
+        # class), picked by _pick_ref. Active trace in _ref_d/_ref_t; _ref_off
+        # = how far its progress sits from lap_origin (a lap opened behind
+        # the start line - see lap_origin)
+        self._ref_d: list[float] | None = None
         self._ref_t: list[float] | None = None
+        self._ref_off = 0.0
+        self._sess_ref: tuple | None = None   # (d, t, off, lap_time, lap_id)
+        self._route_dref = None               # route_match.DeltaRef
+        self._dref_req = None                 # pending RouteRefs.delta_ref()
+        self._dref_route: int | None = None   # the route it was asked for
+        self.delta_ref: str | None = None     # "pb" / "class" / "session"
+        self.delta_ref_lap: int | None = None # the stored lap being chased
         self.best_lap_time: float | None = None
 
         self._prev_race_time: float | None = None
@@ -335,7 +356,9 @@ class SessionTracker:
                     self._end_session(self._race_off_since)
             return {"session_id": self.session_id, "delta": None,
                     "session_best": self.best_lap_time, "lap_elapsed": None,
-                    "race_mode": False}
+                    "race_mode": False, "route_guess": self.route_guess,
+                    "route_ref_lap": self.route_ref_lap,
+                    "delta_ref": self.delta_ref, "delta_ref_lap": self.delta_ref_lap}
 
         self._race_off_since = None
 
@@ -427,6 +450,7 @@ class SessionTracker:
             self._over_impact = False
         self._prev_g = (t, g)
         delta = self._lap_logic(t, frame)
+        self._route_match(t, frame)
         if t - self._last_flush >= FLUSH_INTERVAL:
             self._last_flush = t  # before, not after: a failing flush used to
             self.flush()          # leave this stale and retry on every packet
@@ -439,7 +463,119 @@ class SessionTracker:
                 lap_elapsed = e
         return {"session_id": self.session_id, "delta": delta,
                 "session_best": self.best_lap_time, "lap_elapsed": lap_elapsed,
-                "race_mode": self.race_mode(frame)}
+                "race_mode": self.race_mode(frame), "route_guess": self.route_guess,
+                "route_ref_lap": self.route_ref_lap,
+                "delta_ref": self.delta_ref, "delta_ref_lap": self.delta_ref_lap}
+
+    @property
+    def route_guess(self) -> int | None:
+        """The stored route this event is being driven on, as recognized
+        mid-lap by the live matcher - None until it is sure (issue #108).
+        Display-only: the route a session is filed under is still decided by
+        the completed-lap fingerprint, and this is never written anywhere."""
+        g = self._matcher.guess
+        return g.route_id if g is not None else None
+
+    @property
+    def route_ref_lap(self) -> int | None:
+        """The stored lap the guess was matched against: the route's line, in
+        world coordinates, that the Live page draws ahead of the car - fetched
+        once per change through /laps/{id}/data, never sent per frame."""
+        g = self._matcher.guess
+        return g.lap_id if g is not None else None
+
+    def _route_match(self, t: float, frame: dict) -> None:
+        """Live route recognition, inside its own failure fence: matching is
+        a nicety on the recording path, so any error turns it off for the
+        rest of the session (logged once) and recording carries on."""
+        if self.route_refs is None or self._match_off or self.session_id is None:
+            return
+        try:
+            self._route_match_step(t, frame)
+        except Exception:
+            log.exception("Session %s: live route matching failed - off until"
+                          " the session ends", self.session_id)
+            self._match_off = True
+            self._matcher.stop()
+            self._match_req = None
+            self._dref_req = None
+            self._dref_route = None
+            self._route_dref = None
+            self._pick_ref()
+
+    def _route_match_step(self, t: float, frame: dict) -> None:
+        # Re-armed whenever the open lap is (re)based - a new lap, the WTA
+        # launch, a mid-session lap-timer start - which is also when the
+        # lap's start position and progress origin are (re)set. A guess
+        # already made in this session carries over and is only re-checked:
+        # the route doesn't change within an event.
+        key = (self._lap_id, self._lap_opened_t)
+        if key != self._match_key:
+            self._match_key = key
+            if self._lap_id is not None:
+                keep = self._matcher.guess
+                self._match_req = None
+                if keep is not None:
+                    self._matcher.start([], keep=keep)
+                else:
+                    # nothing to decide until the references arrive from the
+                    # loader thread - polled below, never waited on
+                    self._matcher.stop()
+                    self._match_req = self.route_refs.near(*self._lap_start_pos)
+        if self._match_req is not None and self._match_req.done():
+            req, self._match_req = self._match_req, None
+            self._matcher.start(req.result())
+        if self._lap_id is not None and self.race_mode(frame):
+            self._matcher.feed(t, frame["distance_traveled"]
+                               - lap_origin(self._lap_start_dist),
+                               frame["pos_x"], frame["pos_z"])
+        # the route is known: chase its stored best from here on, lap 1
+        # included. Asked once per guess, on the loader thread like the
+        # matcher's references; a withdrawn guess takes it away again.
+        guess = self.route_guess
+        if guess != self._dref_route:
+            self._dref_route = guess
+            self._dref_req = None
+            if self._route_dref is not None:
+                self._route_dref = None
+                self._pick_ref()
+            if guess is not None:
+                self._dref_req = self.route_refs.delta_ref(
+                    guess, frame["car_ordinal"], frame["car_class"], self.session_id)
+        if self._dref_req is not None and self._dref_req.done():
+            req, self._dref_req = self._dref_req, None
+            self._route_dref = req.result()
+            if self._route_dref is not None:
+                log.info("Session %d: delta reference = route %s lap %d (%.3fs, %s)",
+                         self.session_id, guess, self._route_dref.lap_id,
+                         self._route_dref.lap_time, self._route_dref.kind)
+            self._pick_ref()
+
+    def _pick_ref(self) -> None:
+        """Measure the delta against the faster of the session's best lap and
+        the route's stored best. A session lap that beats the stored one is
+        this car's new best on the route, hence "pb" even if the stored one
+        was a class best (a class best is only offered when this car had no
+        lap there at all)."""
+        s, r = self._sess_ref, self._route_dref
+        if r is not None and (s is None or r.lap_time <= s[3]):
+            self._ref_d, self._ref_t, self._ref_off = r.d, r.t, 0.0
+            self.delta_ref, self.delta_ref_lap = r.kind, r.lap_id
+        elif s is not None:
+            self._ref_d, self._ref_t, self._ref_off = s[0], s[1], s[2]
+            self.delta_ref = "pb" if r is not None else "session"
+            self.delta_ref_lap = s[4]
+        else:
+            self._ref_d = self._ref_t = None
+            self._ref_off = 0.0
+            self.delta_ref = self.delta_ref_lap = None
+
+    def _reset_refs(self) -> None:
+        self._sess_ref = None
+        self._route_dref = None
+        self._dref_req = None
+        self._dref_route = None
+        self._pick_ref()
 
     def race_mode(self, frame: dict) -> bool:
         """Is a timed event running right now, as opposed to free-roam
@@ -515,7 +651,7 @@ class SessionTracker:
         self._last_flush = t
         self._lap_id = None
         self._lap_number = None
-        self._ref_d = self._ref_t = None
+        self._reset_refs()
         self.best_lap_time = None
         self._prev_cur_lap = None
         self._prev_frame_rt = None
@@ -637,10 +773,11 @@ class SessionTracker:
                      self._frame_count, self._completed_laps,
                      ", wet" if wet else "",
                      f", track={track} (auto)" if track else "")
+        self._route_match_close()
         self.session_id = None
         self._race_off_since = None
         self._lap_number = None
-        self._ref_d = self._ref_t = None
+        self._reset_refs()
         self.best_lap_time = None
         self._prev_race_time = None
         self._prev_cur_lap = None
@@ -682,6 +819,24 @@ class SessionTracker:
         self._trk_rough_hi = 0
         self._trk_jumps = 0
         self._lap_flags = set()
+
+    def _route_match_close(self) -> None:
+        if self.route_refs is not None:
+            guess = self.route_guess
+            if guess is not None or self._route_id is not None:
+                # the field check: the live guess against the fingerprint
+                # the session was filed under at the line
+                log.info("Session %d: live route guess %s, fingerprint %s%s",
+                         self.session_id, guess, self._route_id,
+                         "" if guess is None or self._route_id is None
+                         else " (agree)" if guess == self._route_id
+                         else " (DISAGREE)")
+            # this session may hold the route's new best (= reference) lap
+            self.route_refs.invalidate(self._route_id)
+        self._matcher.reset()
+        self._match_key = None
+        self._match_req = None
+        self._match_off = False
 
     def _suggest_track(self) -> str | None:
         """Track type to auto-fill at session close: the route's existing tag
@@ -1066,7 +1221,15 @@ class SessionTracker:
             if full_trace and (self.best_lap_time is None
                                or lap_time < self.best_lap_time):
                 self.best_lap_time = lap_time
-                self._ref_d, self._ref_t = self._cur_d, self._cur_t
+                self._sess_ref = (self._cur_d, self._cur_t,
+                                  lap_origin(self._lap_start_dist) - self._lap_start_dist,
+                                  lap_time, self._lap_id)
+                self._pick_ref()
+                # the live ghost fetches the lap it chases the moment
+                # delta_ref_lap names it: its last second of frames must not
+                # still be sitting in the buffer (never raises - see flush)
+                if self.delta_ref_lap == self._lap_id:
+                    self.flush()
                 log.info("Session %d: new best lap %.3fs (lap %d)",
                          self.session_id, lap_time, ln + 1)
 
@@ -1140,8 +1303,13 @@ class SessionTracker:
         self._route_id = route_id
 
     def _delta(self, lap_dist: float, cur: float) -> float | None:
-        if not self._ref_d or cur <= 0 or lap_dist <= 0:
+        # lap_dist counts from where the lap opened; both laps are compared
+        # by progress from the start line (lap_origin), so a lap gridded
+        # behind the line is not ~70 units out against one that wasn't
+        prog = lap_dist - (lap_origin(self._lap_start_dist) - self._lap_start_dist)
+        if not self._ref_d or cur <= 0 or prog <= 0:
             return None
+        lap_dist = prog + self._ref_off  # in the reference's own coordinates
         d, rt = self._ref_d, self._ref_t
         if lap_dist >= d[-1]:
             ref = rt[-1]

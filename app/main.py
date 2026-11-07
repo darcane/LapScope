@@ -7,6 +7,7 @@ import ipaddress
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -17,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from . import cars, tracks
 from .api.routes import router
 from .recorder.laps import SessionTracker
+from .recorder.route_match import RouteRefs
 from .recorder.store import Store
 from .telemetry.hub import Hub
 from .telemetry.listener import TelemetryProtocol
@@ -49,7 +51,10 @@ async def lifespan(app: FastAPI):
     if removed:
         log.info("Startup cleanup: removed %d session(s) without completed laps", removed)
     hub = Hub()
-    tracker = SessionTracker(store)
+    # live route recognition loads reference laps on its own thread: reading
+    # and parsing one lap's frames would stall the UDP callback (issue #108)
+    ref_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="route-refs")
+    tracker = SessionTracker(store, route_refs=RouteRefs(store, ref_pool))
     app.state.store, app.state.hub, app.state.tracker = store, hub, tracker
     app.state.udp_port = udp_port
 
@@ -86,6 +91,7 @@ async def lifespan(app: FastAPI):
     if transport is not None:
         transport.close()
     tracker.shutdown(time.time())
+    ref_pool.shutdown(wait=True, cancel_futures=True)  # no reader past close()
     store.close()
 
 

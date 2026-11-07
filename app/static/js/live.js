@@ -66,7 +66,102 @@ const liveMap = {
   pendingHard: false, // mid-flight spike waiting for its jump (pushed at touchdown)
 };
 
+/* The stored route the recorder recognized mid-lap (the `route_guess` WS
+   extra, issue #108), with its name and the line it was matched against
+   (`route_ref_lap`): one fetch each per guess, never per frame. It belongs
+   to the drawn track: set and withdrawn under the same gate as the map path,
+   cleared with it, and kept with a finished track like the track itself.
+   name: null = not known (yet), "" = the route has no name.
+   trace: null, or {xs, zs, minX, maxX, minZ, maxZ} in world metres - the
+   whole course, drawn faintly ahead of the car. `gen` bumps on any change. */
+const liveRoute = { id: null, lap: null, name: null, trace: null, gen: 0 };
+const ROUTE_TRACE_POINTS = 1500;  // plenty for a faint line; the Goliath's
+                                   // ~85 km still lands a point every ~60 m
+
+function setLiveRoute(id, lap = null) {
+  const sameRoute = id === liveRoute.id;
+  liveRoute.id = id;
+  liveRoute.lap = lap;
+  liveRoute.trace = null;
+  if (!sameRoute) liveRoute.name = null;
+  liveRoute.gen++;
+  if (id == null) return;
+  const current = () => liveRoute.id === id && liveRoute.lap === lap;  // not superseded
+  if (!sameRoute) {
+    apiFetch(`/api/routes/${id}`, { what: "name the route", quiet: true })
+      .then((r) => {
+        if (!current()) return;
+        liveRoute.name = (r && r.name) || "";
+        liveRoute.gen++;
+      })
+      .catch(() => { /* quiet: the map just goes unnamed */ });
+  }
+  if (lap == null) return;
+  apiFetch(`/api/laps/${lap}/data?channels=pos_x,pos_z&max_points=${ROUTE_TRACE_POINTS}`,
+    { what: "load the route's line", quiet: true })
+    .then((d) => {
+      if (!current() || !d) return;
+      const xs = d.channels.pos_x, zs = d.channels.pos_z;
+      if (xs.length < 2) return;
+      liveRoute.trace = { xs, zs, minX: Math.min(...xs), maxX: Math.max(...xs),
+                          minZ: Math.min(...zs), maxZ: Math.max(...zs) };
+      liveRoute.gen++;
+    })
+    .catch(() => { /* quiet: the map just draws no outline */ });
+}
+
+function feedRoute(f) {
+  if (f.session_id == null || !mapActive(f)) return;
+  const id = f.route_guess ?? null, lap = id == null ? null : (f.route_ref_lap ?? null);
+  if (id !== liveRoute.id || lap !== liveRoute.lap) setLiveRoute(id, lap);
+}
+
+/* The live ghost (issue #108): the lap the delta is chasing (`delta_ref_lap`
+   - your PB on the route, the class best, or this session's best), replayed
+   on the track map at the live lap clock. Fetched once per reference change,
+   then each frame is one bisect into its timeline - the same lapClock() the
+   Analysis replay runs, so a rewind in the stored lap is spliced out and its
+   crossing-frame reset continued. By time, like a real race: the gap between
+   the car and the ghost is the delta, as distance.
+   pos: null, or [x, z] in world metres - null while there is no reference,
+   before it has loaded, outside an event, and once the ghost has finished. */
+const liveGhost = { lap: null, data: null, pos: null, gen: 0 };
+const GHOST_POINTS = 3000;   // ~30 Hz over a 90 s lap; the marker lerps between
+
+function setLiveGhost(lap) {
+  liveGhost.lap = lap;
+  liveGhost.data = null;
+  liveGhost.pos = null;
+  liveGhost.gen++;
+  if (lap == null) return;
+  apiFetch(`/api/laps/${lap}/data?channels=pos_x,pos_z,lap_time&max_points=${GHOST_POINTS}`,
+    { what: "load the ghost lap", quiet: true })
+    .then((d) => {
+      if (liveGhost.lap !== lap || !d || d.t.length < 2) return;  // superseded / empty
+      liveGhost.data = d;
+      liveGhost.gen++;
+    })
+    .catch(() => { /* quiet: the map just has no ghost */ });
+}
+
+function feedGhost(f) {
+  const on = f.session_id != null && f.race_mode && mapActive(f);
+  const lap = on ? (f.delta_ref_lap ?? null) : null;
+  if (lap !== liveGhost.lap) setLiveGhost(lap);
+  const d = liveGhost.data;
+  liveGhost.pos = null;
+  if (!d) return;
+  const lc = lapClock(d);
+  const clock = f.current_lap || f.lap_elapsed || 0;
+  if (clock > lc.end) return;  // it finished: gone until the next lap's clock starts
+  const { a, b, f: k } = keptSample(lc, fracIndex(lc.c, clock));
+  const xs = d.channels.pos_x, zs = d.channels.pos_z;
+  liveGhost.pos = [xs[a] + (xs[b] - xs[a]) * k, zs[a] + (zs[b] - zs[a]) * k];
+}
+
 function resetLiveMap(sessionId) {
+  if (liveRoute.id != null) setLiveRoute(null);
+  if (liveGhost.lap != null) setLiveGhost(null);
   Object.assign(liveMap, {
     session: sessionId, pts: [], last: null, minDist: 3,
     minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity,
@@ -217,6 +312,8 @@ function connect() {
       live.stripN++;
     }
     feedLiveMap(f);
+    feedRoute(f);
+    feedGhost(f);
     feedCollision(f);
   };
   ws.onopen = () => {

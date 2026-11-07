@@ -30,54 +30,8 @@ const replay = {
   said: 0,            // when the aria-label was last refreshed
 };
 
-/* fractional index of x in an ascending array (clamped to its ends) */
-function fracIndex(xs, x) {
-  const n = xs.length;
-  if (!n || x <= xs[0]) return 0;
-  if (x >= xs[n - 1]) return n - 1;
-  const i = lowerBound(xs, x);
-  const span = xs[i] - xs[i - 1];
-  return span > 0 ? i - 1 + (x - xs[i - 1]) / span : i;
-}
-function lerpAt(arr, k) {
-  const i = Math.floor(k), f = k - i;
-  return f && i + 1 < arr.length ? arr[i] + (arr[i + 1] - arr[i]) * f : arr[i];
-}
-
-/* A lap's timeline as the game counts it, strictly increasing: the samples it
-   kept and the lap clock at each. Neither `t` nor the raw lap_time channel
-   will do — `t` keeps counting through a rewind (the 6 s a rewind took back
-   are in it, and the replay would drive that stretch twice), and lap_time
-   drops back at a rewind and to ~0 on the crossing frame, the last sample.
-   So: a rewind discards the samples it took back (the clock dropped below
-   them), and a reset to ~0 in the last few samples continues the clock by
-   elapsed time instead. `dist` is the kept samples' track position. Cached
-   per data object (a refetch is a new one). */
-const lapClocks = new WeakMap();
-function lapClock(d) {
-  let lc = lapClocks.get(d);
-  if (lc) return lc;
-  const lt = d.channels.lap_time, n = lt.length;
-  const idx = [], c = [];
-  for (let i = 0; i < n; i++) {
-    let v = lt[i];
-    const prev = c[c.length - 1];
-    if (c.length && i >= n - 3 && v < 1 && prev > 5)  // the line crossing
-      v = prev + (d.t[i] - d.t[idx[idx.length - 1]]);
-    while (c.length && c[c.length - 1] >= v) { c.pop(); idx.pop(); }  // rewound
-    idx.push(i);
-    c.push(v);
-  }
-  lc = { idx, c, dist: idx.map((i) => d.dist[i]), end: c[c.length - 1] };
-  lapClocks.set(d, lc);
-  return lc;
-}
-/* a fractional position on the kept timeline -> the sample index and the
-   two samples to interpolate between */
-function keptSample(lc, j) {
-  const i = Math.floor(j), f = j - i;
-  return { a: lc.idx[i], b: lc.idx[Math.min(i + 1, lc.idx.length - 1)], f };
-}
+/* fracIndex, lerpAt, lapClock and keptSample live in common.js: the Live
+   page's ghost (issue #108) runs the same clock. */
 const lapClockAtDist = (d, x) => { const lc = lapClock(d); return lerpAt(lc.c, fracIndex(lc.dist, x)); };
 
 /* the playable window, in A's clock: the chart zoom span if there is one;

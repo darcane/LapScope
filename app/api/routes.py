@@ -254,6 +254,18 @@ class RoutePatch(BaseModel):
     kind: str | None = None
 
 
+@router.get("/routes/{route_id}")
+def get_route(route_id: int, request: Request):
+    """One route's identity - what the Live page shows for the route it
+    recognized mid-lap (the `route_guess` WS extra, issue #108): fetched
+    once per guess, never per frame."""
+    route = request.app.state.store.get_route(route_id)
+    if route is None:
+        raise HTTPException(404, "route not found")
+    return {"id": route_id, "name": route["name"] or None,
+            "kind": route["kind_user"] or route["kind"]}
+
+
 @router.patch("/routes/{route_id}")
 def patch_route(route_id: int, body: RoutePatch, request: Request):
     """Rename a route, correct its shape, and/or retag every session recorded

@@ -229,6 +229,39 @@ old capture with no bounding box recorded (they predate the shape term).
 **Reprocess** one of its sessions from the session header and it can be
 identified from then on.
 
+### Recognizing the route while you drive
+
+The fingerprint needs a finished lap. The Live page also recognizes the route
+**mid-lap**, from routes you have driven before. It compares where you are
+with where your fastest lap on each nearby route was *at the same track
+position*, and since `DistanceTraveled` is normalized per route (see
+[FH6 Data Out packet](FH6-Data-Out-Packet)), two courses that share a start
+line drift apart within a few hundred metres even on the same road.
+
+- It **shows nothing until it is sure**: one candidate left, followed closely,
+  5 % into the lap. Two routes over the very same road never separate, so they
+  stay unnamed rather than guessed.
+- A guess is **withdrawn** if you keep progressing away from that route (a
+  course you have never driven that leaves from a known one's start line). A
+  crash into the scenery doesn't count: your track position stalls while
+  you're off the road.
+- It needs history. Your first lap on a new route can't be recognized, but its
+  second can, from the first.
+- Free roam never guesses: it has no route.
+- Once it is sure, the Live map names the route and draws the whole course
+  faintly under your line, taken from the lap it matched you against.
+- The live delta switches to your **best stored lap on that route in this
+  car** (**PB**), or the **class best** if this car has never driven it, never
+  a lap from another class. Laps you excluded and rewound laps don't count,
+  the same as for bests on the Analysis page. Whichever is faster, that or
+  this session's best, is the one you chase.
+- That same lap races you on the Live map as a **ghost**, replayed at your
+  lap clock: it restarts at the line every lap, and when you set a new
+  session best that beats it, the ghost becomes that lap.
+- It is display-only. The session is still filed under the route the
+  fingerprint picks at the line, and the server log says whether the two
+  agreed (`live route guess …, fingerprint … (agree)`).
+
 ## Track type: auto-suggested, always yours to override
 
 The track-type tag (🛣️ road, 🏙️ street, ⛰️ touge, 🟫 dirt, 🏞️ cross-country,

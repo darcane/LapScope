@@ -104,6 +104,8 @@ async function updateCarChip(f) {
 const RAW_EXTRAS = [
   ["session_id", "", 0], ["race_mode", "", 0], ["delta", "s", 3],
   ["session_best", "s", 3], ["lap_elapsed", "s", 3],
+  ["route_guess", "", 0], ["route_ref_lap", "", 0], ["delta_ref", "", 0],
+  ["delta_ref_lap", "", 0],
 ];
 const rawPanel = { cells: [], held: false };
 
