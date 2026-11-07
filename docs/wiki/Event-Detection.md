@@ -255,6 +255,9 @@ line drift apart within a few hundred metres even on the same road.
   a lap from another class. Laps you excluded and rewound laps don't count,
   the same as for bests on the Analysis page. Whichever is faster, that or
   this session's best, is the one you chase.
+- That same lap races you on the Live map as a **ghost**, replayed at your
+  lap clock: it restarts at the line every lap, and when you set a new
+  session best that beats it, the ghost becomes that lap.
 - It is display-only. The session is still filed under the route the
   fingerprint picks at the line, and the server log says whether the two
   agreed (`live route guess …, fingerprint … (agree)`).

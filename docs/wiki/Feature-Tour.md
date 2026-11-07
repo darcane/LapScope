@@ -19,7 +19,11 @@ a 12-second input trace. The map survives a mid-race pause (photo mode included)
 and marks contacts and jumps as they happen. On a route you've driven before, it
 **recognizes the route a few seconds into the first lap**, from your own
 history: the map names it and draws the whole course faintly ahead of you, from
-your fastest lap there (see [Event detection](Event-Detection)). The whole scene scales to fit the
+your fastest lap there (see [Event detection](Event-Detection)). Whatever lap
+the delta is chasing also races you on the map as a **ghost**, a hollow ring
+in your accent colour (the GHOST key in the map's title row says it's there):
+it leaves the line when your lap clock starts and is wherever that lap was at
+the same time, so the gap between you and it is the delta, as track. The whole scene scales to fit the
 window and re-stacks itself on a portrait screen.
 
 The cockpit draws with WebGL, which every current desktop browser has. If yours

@@ -1225,6 +1225,11 @@ class SessionTracker:
                                   lap_origin(self._lap_start_dist) - self._lap_start_dist,
                                   lap_time, self._lap_id)
                 self._pick_ref()
+                # the live ghost fetches the lap it chases the moment
+                # delta_ref_lap names it: its last second of frames must not
+                # still be sitting in the buffer (never raises - see flush)
+                if self.delta_ref_lap == self._lap_id:
+                    self.flush()
                 log.info("Session %d: new best lap %.3fs (lap %d)",
                          self.session_id, lap_time, ln + 1)
 

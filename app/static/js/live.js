@@ -116,8 +116,52 @@ function feedRoute(f) {
   if (id !== liveRoute.id || lap !== liveRoute.lap) setLiveRoute(id, lap);
 }
 
+/* The live ghost (issue #108): the lap the delta is chasing (`delta_ref_lap`
+   - your PB on the route, the class best, or this session's best), replayed
+   on the track map at the live lap clock. Fetched once per reference change,
+   then each frame is one bisect into its timeline - the same lapClock() the
+   Analysis replay runs, so a rewind in the stored lap is spliced out and its
+   crossing-frame reset continued. By time, like a real race: the gap between
+   the car and the ghost is the delta, as distance.
+   pos: null, or [x, z] in world metres - null while there is no reference,
+   before it has loaded, outside an event, and once the ghost has finished. */
+const liveGhost = { lap: null, data: null, pos: null, gen: 0 };
+const GHOST_POINTS = 3000;   // ~30 Hz over a 90 s lap; the marker lerps between
+
+function setLiveGhost(lap) {
+  liveGhost.lap = lap;
+  liveGhost.data = null;
+  liveGhost.pos = null;
+  liveGhost.gen++;
+  if (lap == null) return;
+  apiFetch(`/api/laps/${lap}/data?channels=pos_x,pos_z,lap_time&max_points=${GHOST_POINTS}`,
+    { what: "load the ghost lap", quiet: true })
+    .then((d) => {
+      if (liveGhost.lap !== lap || !d || d.t.length < 2) return;  // superseded / empty
+      liveGhost.data = d;
+      liveGhost.gen++;
+    })
+    .catch(() => { /* quiet: the map just has no ghost */ });
+}
+
+function feedGhost(f) {
+  const on = f.session_id != null && f.race_mode && mapActive(f);
+  const lap = on ? (f.delta_ref_lap ?? null) : null;
+  if (lap !== liveGhost.lap) setLiveGhost(lap);
+  const d = liveGhost.data;
+  liveGhost.pos = null;
+  if (!d) return;
+  const lc = lapClock(d);
+  const clock = f.current_lap || f.lap_elapsed || 0;
+  if (clock > lc.end) return;  // it finished: gone until the next lap's clock starts
+  const { a, b, f: k } = keptSample(lc, fracIndex(lc.c, clock));
+  const xs = d.channels.pos_x, zs = d.channels.pos_z;
+  liveGhost.pos = [xs[a] + (xs[b] - xs[a]) * k, zs[a] + (zs[b] - zs[a]) * k];
+}
+
 function resetLiveMap(sessionId) {
   if (liveRoute.id != null) setLiveRoute(null);
+  if (liveGhost.lap != null) setLiveGhost(null);
   Object.assign(liveMap, {
     session: sessionId, pts: [], last: null, minDist: 3,
     minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity,
@@ -269,6 +313,7 @@ function connect() {
     }
     feedLiveMap(f);
     feedRoute(f);
+    feedGhost(f);
     feedCollision(f);
   };
   ws.onopen = () => {

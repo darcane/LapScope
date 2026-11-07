@@ -528,3 +528,32 @@ def test_live_delta_reference_goes_with_a_withdrawn_guess(tmp_path):
     chased = [x for x in lap1 if x[4] == "pb"]
     assert chased and max(x[2] for x in chased) < 900      # only before the split
     assert all(x[3] is None for x in lap1 if x[2] > 900)   # nothing after it
+
+
+def test_live_ghost_lap_is_on_disk_when_it_is_named(tmp_path):
+    """The Live page fetches the ghost lap (delta_ref_lap) the moment it
+    changes. When it changes to a lap this session just completed, that
+    lap's frames have to be in the database already - not up to a second
+    of them still buffered, or the ghost stops short of the line."""
+    import sqlite3
+    db = tmp_path / "telemetry.db"
+    checked = []
+
+    def observe(frame, extras):
+        lap = extras.get("delta_ref_lap")
+        if extras.get("delta_ref") != "session" or lap in {c[0] for c in checked}:
+            return
+        con = sqlite3.connect(db)
+        try:
+            sid, ended = con.execute(
+                "SELECT session_id, ended_t FROM laps WHERE id = ?", (lap,)).fetchone()
+            last = con.execute("SELECT max(t) FROM frames WHERE session_id = ?",
+                               (sid,)).fetchone()[0]
+        finally:
+            con.close()
+        checked.append((lap, ended, last))
+
+    run(_event, tmp_path, observe=observe)
+    assert checked, "a session best should have become the reference"
+    for lap, ended, last in checked:
+        assert last is not None and last >= ended, f"lap {lap} not flushed"

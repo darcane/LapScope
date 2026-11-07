@@ -545,7 +545,10 @@ function makeTires() {
    course is drawn faintly UNDER the path, from the stored lap it was matched
    against, and the fit takes it in — so the scale is final from the match on
    instead of growing with the lap. It is one Graphics in the same world
-   space, built when its trace arrives and on the same 15 % scale drift. */
+   space, built when its trace arrives and on the same 15 % scale drift.
+   The ghost (liveGhost) is the lap the delta chases, at the live lap clock:
+   a hollow accent ring under the car, with a GHOST key in the title row
+   while it is on the map. */
 const MAP_BOX = { x: 40, y: 620, w: 720, h: 260 };
 const MAP_TITLE_MAX = 40;  // characters of route name the title row fits
 
@@ -570,6 +573,13 @@ function makeMap() {
   title.position.set(B.x + 16, B.y + 18);
   const hint = bitmapText("THE TRACK DRAWS HERE ONCE AN EVENT STARTS", 20, C.muted);
   hint.position.set(B.x + B.w / 2, B.y + B.h / 2);
+  const ghostKey = new PIXI.Container();         // "o GHOST", right of the title
+  const ghostLabel = bitmapText("GHOST", 18, C.muted, 1, 0.5);
+  ghostLabel.position.set(B.x + B.w - 16, B.y + 18);
+  const ghostRing = new PIXI.Graphics();
+  let ringAccent = null;                        // the accent the key was drawn in
+  ghostKey.addChild(ghostRing, ghostLabel);
+  ghostKey.visible = false;
   const clip = new PIXI.Graphics().rect(B.x, B.y, B.w, B.h).fill(0xffffff);
   const world = new PIXI.Container();
   world.mask = clip;
@@ -585,7 +595,7 @@ function makeMap() {
   marks.mask = new PIXI.Graphics().rect(B.x, B.y, B.w, B.h).fill(0xffffff);
   marks.addChild(marks.mask, new PIXI.Graphics(jumpCtx), glowing(hardCtx, 6),
     new PIXI.Graphics(ringCtx), glowing(sparkCtx, 6));
-  c.addChild(frame, title, hint, clip, world, marks, glowing(carCtx, 8));
+  c.addChild(frame, title, ghostKey, hint, clip, world, marks, glowing(carCtx, 8));
   let marksKey = "";
   let titleGen = -1;
 
@@ -623,6 +633,12 @@ function makeMap() {
       const pts = liveMap.pts, n = pts.length;
       hint.visible = n < 2;
       carCtx.clear();
+      ghostKey.visible = n >= 2 && liveGhost.pos != null;
+      if (ghostKey.visible && ringAccent !== accent) {
+        ringAccent = accent;
+        ghostRing.clear().circle(B.x + B.w - 16 - ghostLabel.width - 14, B.y + 18, 5)
+          .fill({ color: accent, alpha: 0.3 }).stroke({ width: 2, color: accent });
+      }
       if (n < 2) {
         if (chunks.length) rebuildAll(0);
         if (outlineTrace) { outline.clear(); outlineTrace = null; }
@@ -670,6 +686,11 @@ function makeMap() {
         for (const [hx, hz] of liveMap.hits) sparkGlyph(sparkCtx, X(hx), Y(hz));
       }
       carCtx.circle(X(pts[0][0]), Y(pts[0][1]), 5).fill(C.good);
+      const gp = liveGhost.pos;
+      if (gp) {
+        carCtx.circle(X(gp[0]), Y(gp[1]), 6)
+          .fill({ color: accent, alpha: 0.3 }).stroke({ width: 2, color: accent });
+      }
       if (mapActive(f) && f.session_id != null && f.pos_x != null) {
         const cx = X(f.pos_x), cy = Y(f.pos_z), hx = Math.sin(f.yaw), hz = Math.cos(f.yaw);
         carCtx.circle(cx, cy, 6).fill(C.text)

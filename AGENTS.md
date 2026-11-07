@@ -446,7 +446,14 @@ All the rules exist because some real behavior broke a naive version:
   `pb`); a withdrawn guess takes the stored reference away. The delta
   compares **progress from the start line** (`lap_origin`) — before #108 a
   lap gridded behind the line read ~70 units off the session best's trace.
-  WS extras `delta_ref` / `delta_ref_lap` say what is being chased.
+  WS extras `delta_ref` / `delta_ref_lap` say what is being chased, and
+  **the Live map replays `delta_ref_lap` as a ghost** at the live lap clock
+  (`liveGhost` in live.js, on the same `lapClock()` as the Analysis
+  replay — by time, so the gap to it *is* the delta as distance). A new
+  session best becomes the reference at the line and the page fetches it
+  at once, so `_complete_current_lap` flushes the frame buffer right
+  there: otherwise up to a second of the lap is still buffered and the
+  ghost stops short of the line.
   It runs inside its own failure fence in `SessionTracker._route_match`:
   an error turns matching off for the session, logged once, and recording
   carries on. Every session close logs `live route guess X, fingerprint Y
@@ -563,7 +570,7 @@ server joining mid-lap, event restart.
   dot layer, and the only rAF loops are the ghost replay's, alive while it
   plays, and the follow camera's ease, alive for its 250 ms. Pixi's shared `Ticker.system` stays stopped (it spun a rAF loop on
   an idle page). Times on the map come from `lapClock()`
-  (analysis-replay.js), never raw `t` — `t` counts the seconds a rewind took
+  (common.js — the Live ghost runs it too), never raw `t` — `t` counts the seconds a rewind took
   back. The follow camera moves the map every replay frame, so a pan on the
   Pixi map must stay a transform (`pixiMap.pan()`): anything new drawn in
   screen space goes in the overlay container, which pan() slides, and
@@ -610,6 +617,7 @@ a row here, a test, and usually a simulator flag.
 | Live guess, unrecorded course | `--course a`, then `--course b` | b guessed as a down the shared straight, withdrawn after the split, not re-guessed as a; lap 2 recognized as b |
 | Live guess, free roam | `--race 3`, then `--freeroam 60` | no guess (race_mode gates the matcher) |
 | Live delta from lap 1 | two runs of `--race 3` (same DB) | run 2's lap 1 has a delta, label DELTA · PB, vs run 1's fastest lap; from lap 2 the faster of that and run 2's best. Run 1 has no delta on lap 1 and chases its own session best (SESSION BEST) |
+| Live ghost | two runs of `--race 3` (same DB) | run 2's lap 1 shows a hollow ring (GHOST key in the map title) ahead of/behind the car by the delta's worth of track; it restarts at the line each lap and replays whatever `delta_ref_lap` names; the session-best lap is fully on disk the moment it becomes the reference. No ghost in free roam |
 | Live delta, other car | same route in another car of the same class, then one of another class | CLASS BEST on lap 1; another class gets no delta on lap 1 |
 | Live delta, withdrawn guess | `--course a`, then `--course b` | the PB delta runs only down the shared straight and goes with the guess |
 | Race-mode gating | `--freeroam 35 --race 3` | chip FREE ROAM then RACE MODE; timer dashed in free roam; live map draws the race only |
