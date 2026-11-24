@@ -14,8 +14,6 @@
   <nav>
     <a class="active" href="index.html">Live</a>
     <a href="analysis.html">Analysis</a>
-    <!-- the pre-cockpit dashboard; remove it or make it a real Lite view: #101 -->
-    <a class="nav-minor" href="classic.html" title="The previous live dashboard: simple panels, plain Canvas 2D">Classic</a>
   </nav>
   <div id="car-chip" class="chip" style="display:none"></div>
   <div id="conn" class="chip"><i class="dot"></i><span>connecting…</span></div>
@@ -54,8 +52,12 @@
   <div class="box">
     <h3>The cockpit could not start</h3>
     <p>This browser could not start any of the cockpit's renderers (WebGL,
-       WebGPU or the Canvas fallback). The
-       <a href="classic.html">classic live dashboard</a> may still work.</p>
+       WebGPU or the Canvas fallback). That is almost always hardware
+       acceleration switched off in the browser's settings, a GPU the browser
+       has blocklisted, or a remote desktop / VM session with no GPU: turn
+       hardware acceleration back on and reload. More in
+       <a href="https://github.com/darcane/LapScope/wiki/Troubleshooting#the-cockpit-could-not-start"
+          target="_blank" rel="noopener">Troubleshooting</a>.</p>
     <div class="stat error" id="cockpit-fail-why"></div>
   </div>
 </div>

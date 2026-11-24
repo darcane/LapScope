@@ -1,7 +1,7 @@
-/* Live feed shared by the live pages (index.html, classic.html): the
-   WebSocket, the connection chip, the friction-trail and input-trace buffers,
-   and the live track map's path + contact/jump detection. Pages only read
-   `live` and `liveMap` and draw them — nothing here touches a canvas.
+/* The Live page's feed (index.html): the WebSocket, the connection chip, the
+   friction-trail and input-trace buffers, and the live track map's path +
+   contact/jump detection. cockpit.js only reads `live` and `liveMap` and
+   draws them — nothing here touches a canvas.
    Load after common.js + settings.js, before the page's own script. */
 
 const STALE_MS = 2500;   // stream silent this long → chip says "paused"

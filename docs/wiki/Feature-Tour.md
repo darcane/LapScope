@@ -26,10 +26,10 @@ it leaves the line when your lap clock starts and is wherever that lap was at
 the same time, so the gap between you and it is the delta, as track. The whole scene scales to fit the
 window and re-stacks itself on a portrait screen.
 
-The cockpit draws with WebGL, which every current desktop browser has. If yours
-can't start it, the page says so and links to the **Classic** dashboard (the
-link at the end of the header), the previous separate-panels layout, which is
-also there if you simply prefer it.
+The cockpit draws with WebGL, which every current desktop browser has, and falls
+back to WebGPU or plain Canvas on its own. If none of them starts, the page says
+so and points at the fix (usually hardware acceleration switched off — see
+[Troubleshooting](Troubleshooting#the-cockpit-could-not-start)).
 
 An optional **raw telemetry panel** (off by default, ⚙ Settings) shows every
 packet field live in game-native units, with a ⏸ Hold button to freeze the values

@@ -554,8 +554,8 @@ server joining mid-lap, event restart.
   `update()` returns true while its own animation runs, and the scene is drawn
   only on a new packet, a running animation or `requestDraw()` — never add an
   unconditional per-display-frame redraw. Anything text-heavy (overlays,
-  banners, the raw panel) stays HTML around the stage, in `live-ui.js`, shared
-  with the classic page. The feed and detection mirror live in `live.js`.
+  banners, the raw panel) stays HTML around the stage, in `live-ui.js`. The
+  feed and detection mirror live in `live.js`.
   Pixi helpers any scene can use (tokens, bitmap font, glows, smoothing,
   map glyphs, `slipHex`) live in `pixi-kit.js` — reach for them there, never
   copy them out of `cockpit.js` into a new page.
@@ -576,11 +576,15 @@ server joining mid-lap, event restart.
   screen space goes in the overlay container, which pan() slides, and
   anything hit-tested in screen space has to shift by `mapView` pan minus
   `hitPan`, like `nearestMarker`.
-- The classic live page (`classic.html`, `dashboard.js`, `gauges.js`) sits
-  behind the dimmed Classic nav link while
-  [#101](https://github.com/darcane/LapScope/issues/101) decides between
-  deleting it and making it a supported Lite view. Until then, don't build new
-  features on it.
+- **There is one live view.** The pre-cockpit "Classic" dashboard was removed
+  in [#101](https://github.com/darcane/LapScope/issues/101): two releases after
+  the cockpit shipped nobody had asked for it, and it had already missed every
+  feature since (#108 landed cockpit-only), so keeping it meant writing each
+  live feature twice. Pixi falls back to Canvas 2D on its own, so a browser
+  that can't start the cockpit can't run a Canvas 2D page either — the
+  `#cockpit-fail` overlay points at the Troubleshooting fix instead. If a weak
+  machine ever needs a cheaper Live page, make it a cockpit setting (lower
+  resolution, fewer effects), not a second page.
 - The live track map resets on session-id change and on any single-frame
   position jump > 250 m (grid snap / event restart — a car can't move that far
   in 1/60 s; keeping the old points would wreck the bounds). The finished

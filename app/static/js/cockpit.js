@@ -35,8 +35,8 @@ let app, root;
 const components = [];
 
 /* The feed (WebSocket, trail + input buffers, track-map path, contact and
-   jump detection) is live.js, shared with the classic dashboard: this file
-   only reads `live` / `liveMap` and draws. */
+   jump detection) is live.js: this file only reads `live` / `liveMap` and
+   draws. */
 
 /* ---------- drawing helpers ---------- */
 
@@ -150,8 +150,7 @@ function makeTach() {
 }
 
 /* Ten shift LEDs across the top: fill from 55 % of max rpm to the redline,
-   4 green / 3 amber / 3 red — the same rule and colours as the classic
-   dashboard. On the limiter they flash (70 ms half-period, as style.css's
+   4 green / 3 amber / 3 red. On the limiter they flash (70 ms half-period, as style.css's
    `blink`); with reduced motion they hold lit instead. */
 function makeShiftLights() {
   const N = 10, W = 52, H = 16, GAP = 14;
@@ -435,7 +434,7 @@ function makeFriction() {
   };
 }
 
-/* the classic balanceText: front vs rear slip angle */
+/* handling balance: front vs rear slip angle */
 function balance(f) {
   const a = f.tire_slip_angle;
   if (!a) return ["NEUTRAL", C.muted];
@@ -539,7 +538,7 @@ function makeTires() {
    growing after the first lap).
    Jumps (amber dashed flight, takeoff ring → touchdown arrow; a hard landing
    glows with a white impact ring) and contact sparks (red, glowing) are the
-   classic map's glyphs, drawn in box coordinates so they keep their size,
+   Analysis map's glyphs (pixi-kit.js), drawn in box coordinates so they keep their size,
    and redrawn only when live.js adds one or the fit moves.
    Once the recorder recognizes the route (liveRoute, issue #108) the whole
    course is drawn faintly UNDER the path, from the stored lap it was matched
@@ -652,7 +651,7 @@ function makeMap() {
       const maxZ = tr ? Math.max(liveMap.maxZ, tr.maxZ) : liveMap.maxZ;
       const spanX = Math.max(maxX - minX, 1), spanZ = Math.max(maxZ - minZ, 1);
       const sc = Math.min((B.w - 2 * pad) / spanX, (B.h - pad - padTop) / spanZ);
-      // world (x, z) -> box: x right, z up (same handedness as the classic map)
+      // world (x, z) -> box: x right, z up (same handedness as the Analysis map)
       world.scale.set(sc, -sc);
       world.position.set(B.x + (B.w - spanX * sc) / 2 - minX * sc,
         B.y + padTop + (B.h - pad - padTop + spanZ * sc) / 2 + minZ * sc);

@@ -1,7 +1,6 @@
-/* Page chrome both live pages share (index.html, classic.html), all plain
-   HTML around whatever draws the gauges: the first-run setup overlay, the car
-   chip, the write-failure banner and the raw-telemetry panel. Each page
-   supplies the elements (#nodata / #nd-port / #nd-stat, #car-chip,
+/* The Live page's chrome (index.html), all plain HTML around the cockpit
+   scene: the first-run setup overlay, the car chip, the write-failure banner
+   and the raw-telemetry panel. The page supplies the elements (#nodata / #nd-port / #nd-stat, #car-chip,
    #raw-panel / #raw-body / #raw-hold); this file fills them.
    Load after live.js. */
 
