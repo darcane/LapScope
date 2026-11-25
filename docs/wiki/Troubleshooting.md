@@ -208,9 +208,11 @@ dropping, which means the server went away. Retries back off from 1.5 s to
 The Live page draws with WebGL (or WebGPU, or a Canvas fallback). This message
 means the browser refused all three — usually hardware acceleration switched
 off in the browser's settings, a GPU blocklisted by the browser, or a remote
-desktop / VM session with no GPU. Turn hardware acceleration back on and reload,
-or use the **Classic** link in the header (the previous dashboard, plain
-Canvas 2D).
+desktop / VM session with no GPU. Turn hardware acceleration back on and reload
+(Chrome: Settings → System; Edge: Settings → System and performance — both
+"Use graphics acceleration when available"; Firefox: Settings → General →
+Performance → "Use hardware acceleration when available"). The page is the only live view, so
+this is the fix rather than a workaround — Analysis still works either way.
 
 ## The Analysis map has no ▶ replay row
 

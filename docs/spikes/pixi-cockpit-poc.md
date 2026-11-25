@@ -502,3 +502,7 @@ for the stage's canvas instead of `#rpm`, so the README/wiki live shots
 - Recapture README/wiki media once that lands:
   [#100](https://github.com/darcane/LapScope/issues/100).
 - The classic page's future: [#101](https://github.com/darcane/LapScope/issues/101).
+  **Decided: removed** (2026-11-24), with `dashboard.js` and `gauges.js`. No
+  one asked for it in the two releases after the swap, and #108 had already
+  shipped cockpit-only. The could-not-start overlay now points at the
+  hardware-acceleration fix in Troubleshooting.

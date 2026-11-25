@@ -88,9 +88,6 @@ nav a.active {
   background: var(--accent);
 }
 nav a:hover:not(.active) { color: var(--text); background: var(--panel-hi); }
-/* a way back to the classic live page (its future: #101), not a peer of
-   Live/Analysis: smaller and dimmer until it is the page you're on */
-nav a.nav-minor:not(.active) { font-size: 0.72rem; opacity: 0.7; }
 
 .update-banner {
   display: flex;
@@ -466,6 +463,7 @@ main.grid .lap-grid { margin-bottom: auto; }
   text-transform: uppercase;
   color: var(--text);
 }
+.overlay a { color: var(--accent); }
 .overlay code {
   background: #0a0d12;
   padding: 2px 8px;

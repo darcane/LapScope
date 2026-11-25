@@ -52,8 +52,8 @@ In:
 Out:
 
 - The charts — they stay uPlot.
-- The classic live page (`gauges.js` keeps its own `slipColor`; #101
-  decides its fate).
+- The classic live page (`gauges.js` kept its own `slipColor`; the page
+  was removed in #101).
 - Backend changes — no new endpoint unless a step below proves one is needed.
 - New README/wiki media — recaptured in
   [#100](https://github.com/darcane/LapScope/issues/100).
@@ -240,7 +240,7 @@ scratch copy of a real `telemetry.db` (a long route with ≥6 laps driven).
   canvas map keeps working without Pixi); `analysis.js`'s `slipColor` /
   `speedColor` wrap them in `hsl()`, the kit's `slipHex` in `hslHex()`.
   `slipHex` checked against the old implementation over slip −0.5…3 in
-  0.001 steps: identical. `gauges.js` keeps its own copy (classic page, #101).
+  0.001 steps: identical. `gauges.js` kept its own copy (classic page, since removed in #101).
 - Verified headless (Playwright Chromium) against a scratch server: the
   same 1 200 captured simulator frames (`--race 3 --jumps`) fed through a
   stubbed WebSocket into the cockpit on `main` and on this branch —

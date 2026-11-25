@@ -173,7 +173,7 @@ function hexRgba(hex, a) {
 
 /* The whole CSS theme keys off --accent (style.css derives glows and fills
    from it via color-mix); canvas renderers can't use var() and instead pull
-   accentDef() again on every settings change (gauges.js / analysis.js). */
+   accentDef() again on every settings change (cockpit.js / analysis.js). */
 function applyAccent() {
   document.documentElement.style.setProperty("--accent", accentDef().accent);
 }
