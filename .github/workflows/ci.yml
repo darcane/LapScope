@@ -1,12 +1,27 @@
 name: CI
 
+# Docs-only work skips the tests, to save Actions minutes:
+#   - a PR from a `docs/...` branch: the job is skipped by `if:` below, which
+#     costs no runner and still reports the required "test" check (a skipped
+#     job counts as passed). A `paths-ignore` here instead would never report
+#     the check at all, and branch protection would wait on it forever.
+#   - a push to main that only touches docs: `paths-ignore` (main has no
+#     required check, so nothing waits).
+# A `docs/...` branch is a promise: docs, media and the maintainer-only media
+# tooling, nothing the app or the exe runs (app/, desktop/, run_desktop.py,
+# requirements*.txt). Run `pytest -q` and `ruff check .` locally before opening it.
 on:
   pull_request:
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "tools/media_shots.json"
 
 jobs:
   test:
+    if: ${{ !startsWith(github.head_ref, 'docs/') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

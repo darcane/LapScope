@@ -27,13 +27,23 @@ database they are refused as missing, so swap in your own. Set an id to
   `python tools/inspect_session.py --list --db <path>` (laps are rows in `laps.id`;
   the analysis page's lap table order is the same).
 - `replay`: `start_s` / `end_s`, offsets into the session's frames, for the live
-  shots (`hero.gif`, `accent-live-sunset.png`, `paused-chip.png`). Pick a stretch
+  shots (`hero.gif`, `accent-live-sunset.png`, `cockpit-portrait.png`,
+  `paused-chip.png`). Pick a stretch
   with the car moving. Frames are replayed in stored real time, so a window that
   covers one finished lap and part of the next (for a live delta and a drawn live
   map) costs a couple of minutes. `capture_after_s` (hero) and `shoot_after_s`
-  (sunset) say how far into the replay to start filming. Replay shots run after
+  (sunset, portrait) say how far into the replay to start filming or shoot. Replay shots run after
   the analysis shots, because each replay records a session of its own into the
   scratch copy and would otherwise top the session list.
+- `ghost` (`ghost-replay.gif`): the Analysis ghost replay of the shot's `laps`
+  (the first one is lap A). `mode` is `"time"` or `"dist"`, `speed` is replay
+  seconds per second of GIF, `from_s` / `to_s` optionally cut a stretch out of
+  the lap, `follow: true` locks the follow camera on lap A and `zoom` sets how
+  close it sits. The replay clock is *stepped* per frame, not filmed, so the
+  result does not depend on how fast the machine takes screenshots. Pick laps a
+  few tenths apart, or the cars sit on top of each other.
+- `cockpit-portrait.png` is a live still like the sunset one; its tall
+  `viewport` is what makes the cockpit pick its portrait layout.
 - `settings`: a partial `ls_settings` (accent, units, `defaultMapMode`...) injected
   before the page loads.
 - `element`: a CSS selector to frame instead of the viewport (one panel, the
@@ -80,7 +90,10 @@ recipes.
 
 ## Before committing
 
-- `hero.gif` must be <= 10 MB. The tool lowers fps, then scale, then colors until it
+- Commit on a `docs/…` branch: CI skips its test job there (see the comment at
+  the top of `.github/workflows/ci.yml`), so run `pytest -q` and `ruff check .`
+  yourself first.
+- Every GIF must be <= 10 MB. The tool lowers fps, then scale, then colors until it
   fits, and reports `failed (over budget, N MB)` (writing nothing) if nothing does.
 - **Look at every image for personal text** — car names, route names, custom session
   names shown in lists, headers and the map caption. Rename in the app (or pick other

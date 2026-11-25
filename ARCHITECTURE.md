@@ -252,7 +252,9 @@ A missing `Origin` (a script, a CLI tool) is allowed.
   imported lazily; maintainer-only, never imported by `app/` or `desktop/`, not
   installed in CI. Copies the DB read-only into a temp dir, runs its own uvicorn
   on it (`LS_OFFLINE=1`, loopback-only browser), replays stored frames over UDP
-  for the live shots, and `os.replace`s each output only after it succeeded. UI
+  for the live shots, steps the Analysis replay clock frame by frame for the
+  ghost-replay GIF (so it doesn't depend on screenshot speed), and
+  `os.replace`s each output only after it succeeded. UI
   selectors live in one constants block at the top of the file.
 
 ## Tests (`tests/`, pytest — no container, no game)

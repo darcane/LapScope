@@ -24,6 +24,52 @@
       "scale_factor": 0.75
     },
     {
+      "output": "ghost-replay.gif",
+      "kind": "clip",
+      "session": 571,
+      "laps": [
+        511,
+        513,
+        515
+      ],
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "settings": {
+        "defaultMapMode": "2d"
+      },
+      "ghost": {
+        "mode": "time",
+        "follow": true,
+        "zoom": 6,
+        "speed": 4
+      },
+      "fps": 12,
+      "scale": 1.0,
+      "element": ".map-row > div:first-child",
+      "pad": 10,
+      "max_height": 452
+    },
+    {
+      "output": "cockpit-portrait.png",
+      "kind": "still",
+      "session": 571,
+      "laps": [],
+      "viewport": {
+        "width": 834,
+        "height": 1194
+      },
+      "settings": {
+        "accent": "cyan"
+      },
+      "replay": {
+        "start_s": 45,
+        "end_s": 140
+      },
+      "shoot_after_s": 90
+    },
+    {
       "output": "analysis-compare.png",
       "kind": "still",
       "session": 714,
