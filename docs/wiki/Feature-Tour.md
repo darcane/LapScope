@@ -35,7 +35,7 @@ An optional **raw telemetry panel** (off by default, ⚙ Settings) shows every
 packet field live in game-native units, with a ⏸ Hold button to freeze the values
 mid-drive.
 
-![The live cockpit: tach, lap timer, live delta, tires, live track map and input trace](https://raw.githubusercontent.com/darcane/LapScope/main/docs/media/hero.gif)
+![The live cockpit: tach, lap timer, live delta, tires, live track map and input trace](https://media.githubusercontent.com/media/darcane/LapScope/main/docs/media/hero.gif)
 
 On a portrait screen (a tablet beside the rig, say) the same cockpit re-stacks
 into one column — tach, timing and delta, then grip, then the map and the trace:
@@ -96,7 +96,7 @@ only; a new leader must hold the lead for half a second before the camera
 moves), or any other tagged lap. Dragging to pan, double-clicking, or clicking
 the button again gives you the free camera back.
 
-![Three tagged laps racing each other on the track map, follow camera on lap A](https://raw.githubusercontent.com/darcane/LapScope/main/docs/media/ghost-replay.gif)
+![Three tagged laps racing each other on the track map, follow camera on lap A](https://media.githubusercontent.com/media/darcane/LapScope/main/docs/media/ghost-replay.gif)
 
 The map draws with WebGL. If your browser can't (hardware acceleration off, a
 VM, remote desktop), it falls back to the plain map without the replay; you can
@@ -104,7 +104,7 @@ also force that with `analysis.html?canvas`.
 
 ![Track map in 2D, colored by speed](https://raw.githubusercontent.com/darcane/LapScope/main/docs/media/track-map.png)
 
-![Track map in 3D, drag-to-rotate](https://raw.githubusercontent.com/darcane/LapScope/main/docs/media/track-map-3d-animated.gif)
+![Track map in 3D, drag-to-rotate](https://media.githubusercontent.com/media/darcane/LapScope/main/docs/media/track-map-3d-animated.gif)
 
 ## Jumps, drawn as jumps
 

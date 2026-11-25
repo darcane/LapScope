@@ -13,7 +13,10 @@ playwright install chromium
 ```
 
 Committing the regenerated media needs **Git LFS** (`*.gif` is tracked by LFS, see
-`.gitattributes`).
+`.gitattributes`). That is also why a wiki page links a GIF through
+`media.githubusercontent.com/media/…`: `raw.githubusercontent.com` serves the LFS
+pointer, not the image. The README's relative links are resolved by GitHub and
+work either way.
 
 ## Fill the manifest
 
