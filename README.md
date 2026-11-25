@@ -14,7 +14,7 @@ you can see *where* you're losing time and *why*.
 [![CI](https://github.com/darcane/LapScope/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-![LapScope live dashboard](docs/media/hero.gif)
+![LapScope's live cockpit replaying a real Forza Horizon 6 lap](docs/media/hero.gif)
 
 </div>
 
@@ -102,7 +102,7 @@ Then just drive. Telemetry is only sent while you're driving (not in menus). You
 
 ![Analysis lap comparison](docs/media/analysis-compare.png)
 
-![Track map in 3D, drag-to-rotate](docs/media/track-map-3d-animated.gif)
+![Three laps racing each other in the ghost replay](docs/media/ghost-replay.gif)
 
 **[Take the full Feature Tour →](../../wiki/Feature-Tour)** — every screen, with
 what each part does.

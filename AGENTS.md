@@ -68,6 +68,11 @@ FH6 ──UDP 9999──▶ listener.py ─▶ packet.py parse ─┬─▶ hub.
   or `fix/…` branch off `main`, commit there, and land it via a pull request
   with CI green — not by committing straight to `main`. `main` is the
   protected, release branch. The owner pushes and opens the PR.
+  Docs-only work (README, `docs/`, media, the media capture tool) goes on a
+  `docs/…` branch: CI skips its test job there to save Actions minutes (see
+  the comment at the top of `.github/workflows/ci.yml`), so run `pytest -q`
+  and `ruff check .` locally first — and never use that prefix for a change
+  the app or the exe runs.
 - **Static files are baked into the image.** Any change under `app/` requires
   `docker compose build` + restart. There is no bind mount for code.
 - **Only `desktop/ui.py` may import tkinter.** The rest of the launcher

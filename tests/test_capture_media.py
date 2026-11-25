@@ -26,7 +26,8 @@ DELETED = ["accent-analysis-violet.png", "hero.png", "live-map-jumps.png",
 SHOT_LIST = ["hero.gif", "analysis-compare.png", "track-map.png", "track-map-3d-jumps.png",
              "track-map-3d-animated.gif", "session-list.png", "session-sidebar.png",
              "settings.png", "accent-live-sunset.png", "paused-chip.png",
-             "browse-bar-menu.png", "csv-export-choice.png", "launcher-window.png"]
+             "browse-bar-menu.png", "csv-export-choice.png", "launcher-window.png",
+             "ghost-replay.gif", "cockpit-portrait.png"]
 
 
 def shot(output="a.png", kind="still", session=1, laps=(), **kw):
@@ -209,6 +210,19 @@ def test_pace_uses_stored_deltas():
     assert d[3] == cm.GAP_CAP_S              # gap capped
     assert d[4] == pytest.approx(0.01)
     assert list(cm.pace([])) == []
+
+
+def test_ghost_clock_steps_window_and_speed():
+    # whole playable window, 4 replay seconds per GIF second at 12 fps
+    steps = cm.ghost_clock_steps(1.0, 11.0, {"speed": 4}, 12)
+    assert steps[0] == 1.0 and steps[-1] <= 11.0
+    assert steps[1] - steps[0] == pytest.approx(4 / 12)
+    assert len(steps) == 31
+    # from_s / to_s are offsets into the window; to_s never runs past its end
+    sub = cm.ghost_clock_steps(1.0, 11.0, {"from_s": 2, "to_s": 50, "speed": 1}, 10)
+    assert sub[0] == 3.0 and sub[-1] <= 11.0 + 1e-9
+    with pytest.raises(RuntimeError, match="empty replay window"):
+        cm.ghost_clock_steps(1.0, 11.0, {"from_s": 20}, 12)
 
 
 # --- framing -----------------------------------------------------------------

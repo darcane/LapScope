@@ -674,8 +674,51 @@ def shot_map_animated(browser, server, shot, _db) -> bytes:
         ctx.close()
 
 
+def ghost_clock_steps(lo: float, hi: float, ghost: dict, fps: float) -> list[float]:
+    """Replay-clock values, one per GIF frame. `from_s`/`to_s` are offsets
+    into the playable window [lo, hi]; `speed` is replay seconds per second
+    of GIF (so a 47 s lap at speed 4 plays in ~12 s)."""
+    start = lo + float(ghost.get("from_s", 0))
+    end = min(hi, lo + float(ghost["to_s"])) if "to_s" in ghost else hi
+    if end <= start:
+        raise RuntimeError(f"empty replay window {start:.1f}-{end:.1f}s")
+    step = float(ghost.get("speed", 4)) / fps
+    n = int((end - start) / step) + 1
+    return [start + i * step for i in range(n)]
+
+
+def shot_ghost_replay(browser, server, shot, _db) -> bytes:
+    """The Analysis ghost replay of the tagged laps, stepped frame by frame on
+    the replay clock rather than filmed in real time: every frame lands on an
+    exact clock value, whatever a screenshot costs."""
+    ctx, page = open_analysis(browser, server.base, shot)
+    try:
+        if not page.evaluate("() => !!pixiMap && !!refPick()"):
+            raise RuntimeError("the ghost replay needs the Pixi map and a tagged lap")
+        ghost = shot.get("ghost") or {}
+        fps = float(shot.get("fps", 12))
+        page.evaluate("m => { replay.mode = m; syncReplayControls(); }", ghost.get("mode", "time"))
+        lo, hi = page.evaluate("() => replayRange()")
+        steps = ghost_clock_steps(lo, hi, ghost, fps)
+        page.evaluate("t => { replay.t = t; replay.engaged = true; replayUpdate(); }", steps[0])
+        if ghost.get("follow"):   # lap A, held at the map's centre (its ease runs on rAF)
+            page.evaluate("() => { follow.target = 'ref'; setFollow(true); }")
+            page.wait_for_timeout(600)
+            if ghost.get("zoom"):   # closer than the camera's own lock-on zoom
+                page.evaluate("z => { mapView.zoom = z; drawMap(); replayUpdate(); }", float(ghost["zoom"]))
+        frames = []
+        for i, t in enumerate(steps):
+            page.evaluate("t => { replay.t = t; replayUpdate(); pixiMap.renderNow(); }", t)
+            frames.append((i / fps, _shoot(page, shot)))
+        return encode_within_budget(frames, shot)
+    finally:
+        ctx.close()
+
+
 RECIPES: dict[str, Callable] = {
     "hero": shot_hero,
+    "ghost-replay": shot_ghost_replay,
+    "cockpit-portrait": shot_accent_live,   # a live still; the viewport makes it tall
     "analysis-compare": shot_analysis_still,
     "track-map": shot_analysis_still,
     "track-map-3d-jumps": shot_analysis_still,
