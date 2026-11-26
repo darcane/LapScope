@@ -26,7 +26,10 @@ and the hard-won behavioral facts that must not be re-derived or regressed.
    (`[text](Page-Name)`, no `.md` — resolves only on the published wiki) and
    link repo files/images by absolute URL
    (`https://github.com/darcane/LapScope/blob/main/…`,
-   `https://raw.githubusercontent.com/darcane/LapScope/main/…`).
+   `https://raw.githubusercontent.com/darcane/LapScope/main/…`). A **GIF** is
+   the exception: `*.gif` is in Git LFS, and `raw.githubusercontent.com` serves
+   an LFS file's 132-byte pointer, not the image, so the wiki links GIFs as
+   `https://media.githubusercontent.com/media/darcane/LapScope/main/…`.
    Maintainers regenerating the README/wiki screenshots: **[docs/MEDIA.md](docs/MEDIA.md)**
    (`tools/capture_media.py`, driven by a manifest and your real `telemetry.db`).
 5. **[GitHub Issues](https://github.com/darcane/LapScope/issues)** — the open
